@@ -6,7 +6,6 @@ import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { CorrelationMatrixTable } from './dashboard/CorrelationMatrixTable';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { TalebRiskWidget } from './dashboard/TalebRiskWidget';
-import { SkinInTheGameTable } from './dashboard/SkinInTheGameTable';
 import { LayoutDashboard, ShieldCheck, RefreshCw } from 'lucide-react';
 import { cn } from '../lib/utils';
 import {
@@ -76,7 +75,7 @@ export const Dashboard: React.FC = () => {
         )
     }
 
-    const { vitals, leverage, history, periodicReturns, volumeWeightedCorrelation, talebMetrics, insiderData } = data;
+    const { vitals, leverage, history, periodicReturns, volumeWeightedCorrelation, talebMetrics } = data;
 
     return (
         <div className="min-h-screen bg-background text-foreground p-4 md:p-8">
@@ -133,9 +132,8 @@ export const Dashboard: React.FC = () => {
                 </div>
 
                 {/* ROW 2.5: Taleb Risk Metrics */}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 gap-4">
                     <TalebRiskWidget metrics={talebMetrics} />
-                    <SkinInTheGameTable insiderData={insiderData} periodicReturns={periodicReturns} />
                 </div>
 
                 {/* ROW 3: Performance Chart (Full Width) */}

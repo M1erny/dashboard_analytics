@@ -10,12 +10,6 @@ export interface TalebMetrics {
     Fat_Tail_Rating: string;
 }
 
-export interface InsiderInfo {
-    Signal: string;
-    Details: string;
-    Held_Pct: string;
-}
-
 export interface Vitals {
     beta: number;
     annualReturn: number;
@@ -109,11 +103,10 @@ export interface FullRiskReport {
     ytdHistory?: HistoryPoint[];
     volumeWeightedCorrelation?: CorrelationMatrix;
     talebMetrics?: TalebMetrics;
-    insiderData?: Record<string, InsiderInfo>;
     error?: string;
 }
 
-export const fetchDashboardData = async (retries = 5, delay = 1000, force = false): Promise<FullRiskReport | null> => {
+export const fetchDashboardData = async (retries = 5, delay = 3000, force = false): Promise<FullRiskReport | null> => {
     for (let i = 0; i < retries; i++) {
         try {
             // Use relative path - Vite proxy will handle forwarding to backend
@@ -121,7 +114,13 @@ export const fetchDashboardData = async (retries = 5, delay = 1000, force = fals
                 ? `/api/metrics?t=${new Date().getTime()}`
                 : `/api/metrics`;
 
-            const response = await fetch(url);
+            // Add 90 second timeout for slow backend (insider data fetching)
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 90000);
+
+            const response = await fetch(url, { signal: controller.signal });
+            clearTimeout(timeoutId);
+
             if (!response.ok) {
                 // If 500 or 404, might be temporary, but usually logic error.
                 // However, if proxy refuses connection, it might appear as bad gateway or similar depending on vite.
@@ -155,7 +154,6 @@ export const fetchDashboardData = async (retries = 5, delay = 1000, force = fals
                     ytdHistory: data.ytdHistory || [],
                     volumeWeightedCorrelation: data.volumeWeightedCorrelation || undefined,
                     talebMetrics: data.talebMetrics,
-                    insiderData: data.insiderData,
                     error: data.error
                 };
             }

@@ -143,79 +143,6 @@ def normalize_to_base_currency(stock_df, fx_df):
             
     return normalized_df
 
-def fetch_insider_data(tickers):
-    print("--- 2.5 Fetching Insider Data ---")
-    insider_info = {}
-    
-    for ticker_symbol in tickers:
-        try:
-            # Skip currencies/benchmarks if they slipped in
-            if ticker_symbol in ['SPY', 'URTH', 'WIG20.WA'] or ticker_symbol.endswith('=X'):
-                 continue
-
-            t = yf.Ticker(ticker_symbol)
-            
-            # 1. Net Insider Buying (Last 6 Months)
-            purchases = t.insider_purchases
-            net_buying_sig = "Neutral"
-            details = "No data"
-            
-            if purchases is not None and not purchases.empty:
-                try:
-                    # Look for "Net Shares Purchased" row
-                    # yfinance format varies, but normally the first column is the Description
-                    net_row = purchases[purchases.iloc[:, 0].astype(str).str.contains("Net Shares Purchased", case=False, na=False)]
-                    if not net_row.empty:
-                        # Depending on version, Shares is usually column 1 or named 'Shares'
-                        if 'Shares' in net_row.columns:
-                            net_shares = net_row['Shares'].values[0]
-                        else:
-                            net_shares = net_row.iloc[0, 1] # Fallback to 2nd col
-                            
-                        if net_shares > 0:
-                            net_buying_sig = "High Buying"
-                            details = f"Net Buy: {net_shares:,.0f}"
-                        elif net_shares < 0:
-                            net_buying_sig = "Selling"
-                            details = f"Net Sell: {net_shares:,.0f}"
-                        else:
-                            details = "Net Flat"
-                except Exception:
-                    pass
-
-            # 2. Major Holders (Inside Ownership)
-            holders = t.major_holders
-            pct_held = "N/A"
-            if holders is not None:
-                try:
-                    # Generic search for "Insider"
-                    # holders is usually a DataFrame with 0: Value, 1: Description OR 0: Description, 1: Value
-                    # We convert to string to search
-                    for idx, row in holders.iterrows():
-                        val0 = str(row.iloc[0])
-                        val1 = str(row.iloc[1])
-                        
-                        if "%" in val0 and "Insider" in val1:
-                            pct_held = val0
-                            break
-                        if "%" in val1 and "Insider" in val0: 
-                             pct_held = val1
-                             break
-                except Exception:
-                    pass
-
-            insider_info[ticker_symbol] = {
-                'Signal': net_buying_sig,
-                'Details': details,
-                'Held_Pct': pct_held
-            }
-            
-        except Exception as e:
-            print(f"Error fetching insider for {ticker_symbol}: {e}")
-            insider_info[ticker_symbol] = {'Signal': 'Error', 'Details': 'Fetch Fail', 'Held_Pct': 'N/A'}
-            
-    return insider_info
-
 # ==========================================
 # 3. RISK CALCULATOR
 # ==========================================
@@ -618,46 +545,36 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
                      print(f"Error calc FX YTD for {fx_ticker}: {e}")
 
         # PLN Return (USD Return + FX Change)
+        # Reuse fx_df data instead of making another API call
         try:
-            usdpln = yf.Ticker("USDPLN=X")
-            # Fetch explicitly covering end of last year
-            pln_hist = usdpln.history(start=(pd.Timestamp(ytd_calc_start) - pd.Timedelta(days=10)))
-            
-            if not pln_hist.empty:
-                # Normalize timezone to match price_df
-                if hasattr(pln_hist.index, 'tz'):
-                    pln_hist.index = pln_hist.index.tz_localize(None)
-
-                # Find the closest available price to YTD start (Dec 31 if possible, else Jan 1/2)
-                # We want the last price BEFORE or ON ytd_calc_start (actually before Jan 1 usually means Dec 31)
-                # But since we use simple pct_change for FX, let's just grab the price at the START of our ytd_prices period.
+            if fx_df is not None and 'USDPLN=X' in fx_df.columns:
+                pln_series = fx_df['USDPLN=X'].dropna()
                 
-                target_start_date = ytd_prices.index[0] # Should be Dec 31 or Jan 2
-                
-                # Find available index closest to target_start_date
-                # Using searchsorted / get_indexer methodology or just loop
-                
-                # Simplest: reindex
-                idx_loc = pln_hist.index.searchsorted(target_start_date)
-                # If exact match or close
-                if idx_loc < len(pln_hist) and pln_hist.index[idx_loc] == target_start_date:
-                    pln_start_val = pln_hist['Close'].iloc[idx_loc]
-                elif idx_loc > 0:
-                     # If target date (e.g. Dec 31) exists, it should be matched. 
-                     # If not (maybe FX trades on Jan 1?), take closest previous.
-                     pln_start_val = pln_hist['Close'].iloc[idx_loc-1]
+                if not pln_series.empty:
+                    # Normalize timezone
+                    if hasattr(pln_series.index, 'tz') and pln_series.index.tz is not None:
+                        pln_series.index = pln_series.index.tz_localize(None)
+                    
+                    target_start_date = ytd_prices.index[0]
+                    idx_loc = pln_series.index.searchsorted(target_start_date)
+                    
+                    if idx_loc < len(pln_series) and pln_series.index[idx_loc] == target_start_date:
+                        pln_start_val = pln_series.iloc[idx_loc]
+                    elif idx_loc > 0:
+                        pln_start_val = pln_series.iloc[idx_loc-1]
+                    else:
+                        pln_start_val = pln_series.iloc[0]
+                    
+                    pln_end_val = pln_series.iloc[-1]
+                    fx_ytd_change = (pln_end_val - pln_start_val) / pln_start_val
+                    ytd_return_pln = (1 + ytd_return) * (1 + fx_ytd_change) - 1
                 else:
-                    pln_start_val = pln_hist['Close'].iloc[0]
-                
-                pln_end_val = pln_hist['Close'].iloc[-1]
-                
-                fx_ytd_change = (pln_end_val - pln_start_val) / pln_start_val
-                ytd_return_pln = (1 + ytd_return) * (1 + fx_ytd_change) - 1
-                
+                    ytd_return_pln = ytd_return
             else:
                 ytd_return_pln = ytd_return
                 
         except Exception as e:
+            print(f"Error calculating PLN return: {e}")
             ytd_return_pln = ytd_return
         
         # WIG YTD
@@ -839,9 +756,14 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
     
     # --- 11. INSIDER DATA ---
     # We fetch it here. Note: this makes it synchronous and potentially slow.
-    # Ideally should be async or cached.
-    params_for_insider = [t for t in active_tickers if t]
-    insider_data = fetch_insider_data(params_for_insider)
+    # Set SKIP_INSIDER=1 to disable for faster response times.
+    import os
+    if os.environ.get('SKIP_INSIDER', '0') != '1':
+        params_for_insider = [t for t in active_tickers if t]
+        insider_data = fetch_insider_data(params_for_insider)
+    else:
+        print("Skipping insider data fetch (SKIP_INSIDER=1)")
+        insider_data = {}
 
     return {
         'Taleb_Metrics': {

@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import numpy as np
+import time
 
 # Import risk.py (Now local)
 try:
@@ -25,6 +26,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Response cache (5 minute TTL)
+_cache = {"data": None, "timestamp": 0}
+CACHE_TTL = 300  # seconds
+
 @app.get("/api/status")
 async def get_status():
     if risk:
@@ -33,11 +38,19 @@ async def get_status():
         return {"state": "error", "message": "Risk module failed to load"}
 
 @app.get("/api/metrics")
-async def get_metrics():
+async def get_metrics(force: bool = False, run_mc: bool = False):
+    global _cache
+    
     if not risk:
         return {"error": "risk.py not found or failed to import"}
+    
+    # Return cached response if fresh (unless force=True)
+    if not force and _cache["data"] and (time.time() - _cache["timestamp"]) < CACHE_TTL:
+        print(f"Returning cached response (age: {int(time.time() - _cache['timestamp'])}s)")
+        return _cache["data"]
 
     try:
+        print("Fetching fresh data...")
         # 1. Fetch and Calculate Base Metrics
         raw_prices, fx_rates, volume_data = risk.fetch_data()
         usd_prices = risk.normalize_to_base_currency(raw_prices, fx_rates)
@@ -60,7 +73,13 @@ async def get_metrics():
 
         # 2. Run Advanced Models
         stress_results = risk.stress_test_portfolio(metrics)
-        mc_paths = risk.run_monte_carlo(metrics, num_sims=500, days=60) # Reduced sims for speed
+        
+        # Monte Carlo is optional (expensive) - default OFF for speed
+        if run_mc:
+            mc_paths = risk.run_monte_carlo(metrics, num_sims=500, days=60)
+        else:
+            mc_paths = None
+            
         periodic_rets = risk.calculate_periodic_returns(usd_prices)
 
         # 3. Format Response
@@ -113,7 +132,6 @@ async def get_metrics():
             },
             "leverage": metrics['Leverage_Stats'],
             "talebMetrics": metrics.get('Taleb_Metrics'),
-            "insiderData": metrics.get('Insider_Data'),
             "riskAttribution": [],
             "stressTests": [],
             "periodicReturns": [],
@@ -314,6 +332,11 @@ async def get_metrics():
             ra["weight"] = to_float(ra["weight"])
             ra["pctRisk"] = to_float(ra["pctRisk"])
             ra["mctr"] = to_float(ra["mctr"])
+
+        # Store in cache
+        _cache["data"] = response
+        _cache["timestamp"] = time.time()
+        print(f"Response cached at {_cache['timestamp']}")
 
         return response
 
