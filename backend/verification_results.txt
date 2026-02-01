@@ -1,0 +1,8 @@
+Fetching data...
+
+--- Running risk.calculate_risk_metrics ---
+Portfolio YTD Return: 3.5448%
+Benchmark YTD: 1.7773%
+
+--- Running risk.calculate_periodic_returns ---
+MSFT YTD Return: -10.3635%

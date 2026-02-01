@@ -1,0 +1,14 @@
+Fetching data...
+
+--- Analysis for MSFT (Year: 2026) ---
+Logic used in risk.py:
+  Start Date (First data point >= 2026-01-01): 2026-01-02 00:00:00
+  Start Price: 472.94000244140625
+  Current Date: 2026-01-29 00:00:00
+  Current Price: 433.5
+  Calculated Return: -8.3393%
+
+Compare with Standard YTD (using Dec 31 close):
+  Prev Year Close Date: 2025-12-31 00:00:00
+  Prev Year Close Price: 483.6199951171875
+  Standard YTD: -10.3635%
