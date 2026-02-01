@@ -4,6 +4,18 @@ export interface PeriodInfo {
     Years: number;
 }
 
+export interface TalebMetrics {
+    Kurtosis: number;
+    Skewness: number;
+    Fat_Tail_Rating: string;
+}
+
+export interface InsiderInfo {
+    Signal: string;
+    Details: string;
+    Held_Pct: string;
+}
+
 export interface Vitals {
     beta: number;
     annualReturn: number;
@@ -96,6 +108,8 @@ export interface FullRiskReport {
     history: HistoryPoint[];
     ytdHistory?: HistoryPoint[];
     volumeWeightedCorrelation?: CorrelationMatrix;
+    talebMetrics?: TalebMetrics;
+    insiderData?: Record<string, InsiderInfo>;
     error?: string;
 }
 
@@ -140,6 +154,8 @@ export const fetchDashboardData = async (retries = 5, delay = 1000, force = fals
                     monteCarlo: data.monteCarlo || [],
                     ytdHistory: data.ytdHistory || [],
                     volumeWeightedCorrelation: data.volumeWeightedCorrelation || undefined,
+                    talebMetrics: data.talebMetrics,
+                    insiderData: data.insiderData,
                     error: data.error
                 };
             }

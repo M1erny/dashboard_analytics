@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta
+from scipy.stats import skew, kurtosis
 
 
 # ==========================================
@@ -141,6 +142,79 @@ def normalize_to_base_currency(stock_df, fx_df):
             print(f"Error: FX data missing for {currency}. Calculations for {ticker} might be wrong.")
             
     return normalized_df
+
+def fetch_insider_data(tickers):
+    print("--- 2.5 Fetching Insider Data ---")
+    insider_info = {}
+    
+    for ticker_symbol in tickers:
+        try:
+            # Skip currencies/benchmarks if they slipped in
+            if ticker_symbol in ['SPY', 'URTH', 'WIG20.WA'] or ticker_symbol.endswith('=X'):
+                 continue
+
+            t = yf.Ticker(ticker_symbol)
+            
+            # 1. Net Insider Buying (Last 6 Months)
+            purchases = t.insider_purchases
+            net_buying_sig = "Neutral"
+            details = "No data"
+            
+            if purchases is not None and not purchases.empty:
+                try:
+                    # Look for "Net Shares Purchased" row
+                    # yfinance format varies, but normally the first column is the Description
+                    net_row = purchases[purchases.iloc[:, 0].astype(str).str.contains("Net Shares Purchased", case=False, na=False)]
+                    if not net_row.empty:
+                        # Depending on version, Shares is usually column 1 or named 'Shares'
+                        if 'Shares' in net_row.columns:
+                            net_shares = net_row['Shares'].values[0]
+                        else:
+                            net_shares = net_row.iloc[0, 1] # Fallback to 2nd col
+                            
+                        if net_shares > 0:
+                            net_buying_sig = "High Buying"
+                            details = f"Net Buy: {net_shares:,.0f}"
+                        elif net_shares < 0:
+                            net_buying_sig = "Selling"
+                            details = f"Net Sell: {net_shares:,.0f}"
+                        else:
+                            details = "Net Flat"
+                except Exception:
+                    pass
+
+            # 2. Major Holders (Inside Ownership)
+            holders = t.major_holders
+            pct_held = "N/A"
+            if holders is not None:
+                try:
+                    # Generic search for "Insider"
+                    # holders is usually a DataFrame with 0: Value, 1: Description OR 0: Description, 1: Value
+                    # We convert to string to search
+                    for idx, row in holders.iterrows():
+                        val0 = str(row.iloc[0])
+                        val1 = str(row.iloc[1])
+                        
+                        if "%" in val0 and "Insider" in val1:
+                            pct_held = val0
+                            break
+                        if "%" in val1 and "Insider" in val0: 
+                             pct_held = val1
+                             break
+                except Exception:
+                    pass
+
+            insider_info[ticker_symbol] = {
+                'Signal': net_buying_sig,
+                'Details': details,
+                'Held_Pct': pct_held
+            }
+            
+        except Exception as e:
+            print(f"Error fetching insider for {ticker_symbol}: {e}")
+            insider_info[ticker_symbol] = {'Signal': 'Error', 'Details': 'Fetch Fail', 'Held_Pct': 'N/A'}
+            
+    return insider_info
 
 # ==========================================
 # 3. RISK CALCULATOR
@@ -733,7 +807,49 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
         except Exception as e:
             print(f"Error calculating FX metrics: {e}")
 
+            print(f"Error calculating FX metrics: {e}")
+
+    # --- 10. TALEB METRICS (Kurtosis, Skew, Fat Tail) ---
+    try:
+        # Fisher Kurtosis (Normal = 0 via scipy default? No, scipy pearson is 3, fisher is 0. 
+        # default fisher=True in scipy.stats.kurtosis)
+        if not portfolio_daily_ret.empty:
+             clean_ret = portfolio_daily_ret.dropna()
+             port_kurtosis = kurtosis(clean_ret, fisher=True)
+             port_skew = skew(clean_ret)
+        else:
+             port_kurtosis = 0
+             port_skew = 0
+        
+        # Fat Tail Score: Simple heuristic
+        # High Kurtosis (>1) + Negative Skew (<-0.5) = Turkey Risk
+        risk_score = 0
+        if port_kurtosis > 1.0: risk_score += 1
+        if port_kurtosis > 3.0: risk_score += 1 # Very fat tails
+        if port_skew < -0.5: risk_score += 1
+        if port_skew < -1.5: risk_score += 2 # Severe negative skew
+        
+        fat_tail_rating = "Low"
+        if risk_score >= 4: fat_tail_rating = "CRITICAL (Turkey)"
+        elif risk_score >= 2: fat_tail_rating = "Moderate"
+        
+    except Exception as e:
+        print(f"Error calculating Taleb metrics: {e}")
+        port_kurtosis, port_skew, fat_tail_rating = 0, 0, "Error"
+    
+    # --- 11. INSIDER DATA ---
+    # We fetch it here. Note: this makes it synchronous and potentially slow.
+    # Ideally should be async or cached.
+    params_for_insider = [t for t in active_tickers if t]
+    insider_data = fetch_insider_data(params_for_insider)
+
     return {
+        'Taleb_Metrics': {
+            'Kurtosis': port_kurtosis,
+            'Skewness': port_skew,
+            'Fat_Tail_Rating': fat_tail_rating
+        },
+        'Insider_Data': insider_data,
         'Beta': portfolio_beta,
         'Annual_Return': annual_ret,
         'Annual_Vol': annual_vol,

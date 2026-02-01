@@ -112,6 +112,8 @@ async def get_metrics():
                 "currencyExposure": {}, # Will be populated below
             },
             "leverage": metrics['Leverage_Stats'],
+            "talebMetrics": metrics.get('Taleb_Metrics'),
+            "insiderData": metrics.get('Insider_Data'),
             "riskAttribution": [],
             "stressTests": [],
             "periodicReturns": [],
