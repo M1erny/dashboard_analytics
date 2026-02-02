@@ -755,23 +755,15 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
         port_kurtosis, port_skew, fat_tail_rating = 0, 0, "Error"
     
     # --- 11. INSIDER DATA ---
-    # We fetch it here. Note: this makes it synchronous and potentially slow.
-    # Set SKIP_INSIDER=1 to disable for faster response times.
-    import os
-    if os.environ.get('SKIP_INSIDER', '0') != '1':
-        params_for_insider = [t for t in active_tickers if t]
-        insider_data = fetch_insider_data(params_for_insider)
-    else:
-        print("Skipping insider data fetch (SKIP_INSIDER=1)")
-        insider_data = {}
-
+    # Removed for performance
+    
     return {
         'Taleb_Metrics': {
             'Kurtosis': port_kurtosis,
             'Skewness': port_skew,
             'Fat_Tail_Rating': fat_tail_rating
         },
-        'Insider_Data': insider_data,
+        # 'Insider_Data': {}, 
         'Beta': portfolio_beta,
         'Annual_Return': annual_ret,
         'Annual_Vol': annual_vol,
