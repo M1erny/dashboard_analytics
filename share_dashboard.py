@@ -79,9 +79,19 @@ def start_dev_server():
         return None
 
 def start_tunnel():
-    if not ensure_ssh_key():
-        print("Failed to ensure SSH key. Tunnel may fail.")
-        
+    # Check if cloudflared exists
+    if not os.path.exists("cloudflared.exe"):
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Cloudflared not found. Downloading...", flush=True)
+        try:
+            # Fallback download if missing (though we did it in task)
+            subprocess.run(
+               ["powershell", "-Command", "Invoke-WebRequest -Uri https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe"],
+               check=True
+            )
+        except Exception as e:
+            print(f"Failed to download cloudflared: {e}")
+            return
+
     # Check/Start Dev Server
     server_proc = None
     if not is_server_running():
@@ -89,15 +99,14 @@ def start_tunnel():
     else:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Local server already running.", flush=True)
 
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting secure tunnel...", flush=True)
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Starting Cloudflare Tunnel...", flush=True)
     
+    # Cloudflared command
     cmd = [
-        "ssh", 
-        "-o", "StrictHostKeyChecking=no", 
-        "-o", "ServerAliveInterval=30",
-        "-o", "ServerAliveCountMax=3",
-        "-R", "80:127.0.0.1:5173",  # Explicitly bind to IPv4 localhost
-        "localhost.run" # Removed nokey@ to use identity
+        "cloudflared.exe", 
+        "tunnel", 
+        "--url", "http://127.0.0.1:5173",
+        "--metrics", "localhost:49589" # Bind metrics to random port to avoid conflicts? or just let it default
     ]
     
     process = subprocess.Popen(
@@ -106,7 +115,8 @@ def start_tunnel():
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
-        encoding='utf-8'
+        encoding='utf-8',
+        errors='replace'
     )
 
     url_found = False
@@ -121,15 +131,12 @@ def start_tunnel():
             # print(line.strip())
 
             if not url_found:
-                # matches things like https://abcd-1234.localhost.run
-                match = re.search(r'(https://[a-zA-Z0-9-]+\.lhr\.life)', line) or \
-                        re.search(r'(https://[a-zA-Z0-9-]+\.localhost\.run)', line)
+                # matches things like https://dark-forest-123.trycloudflare.com
+                match = re.search(r'(https://[a-zA-Z0-9-]+\.trycloudflare\.com)', line)
                 if match:
                     url = match.group(1)
-                    # Ignore generic admin/landing pages if they somehow match
-                    if "admin" not in url and url != "https://localhost.run":
-                        url_found = True
-                        generate_qr(url)
+                    url_found = True
+                    generate_qr(url)
             
             if process.poll() is not None:
                 break

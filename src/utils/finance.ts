@@ -111,7 +111,7 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
         try {
             // Use relative path - Vite proxy will handle forwarding to backend
             const url = force
-                ? `/api/metrics?t=${new Date().getTime()}`
+                ? `/api/metrics?force=true&t=${new Date().getTime()}`
                 : `/api/metrics`;
 
             // Add 90 second timeout for slow backend (insider data fetching)
