@@ -345,6 +345,71 @@ async def get_metrics(force: bool = False, run_mc: bool = False):
         traceback.print_exc()
         return {"error": str(e)}
 
+# ... existing imports ...
+from pydantic import BaseModel
+try:
+    from portfolio_tracker import PortfolioTracker
+except ImportError:
+    PortfolioTracker = None
+
+tracker = PortfolioTracker() if PortfolioTracker else None
+
+# Pydantic Models
+class PositionRequest(BaseModel):
+    ticker: str
+    shares: float
+    price: float
+    date: str
+    currency: str = "USD"
+    type: str = "Long"
+
+@app.get("/api/tracker")
+async def get_portfolio_tracker():
+    if not tracker:
+        return {"error": "Portfolio Tracker module not loaded"}
+    try:
+        # For now return raw DB data, heavy calc later
+        return tracker.get_portfolio()
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/tracker/summary")
+async def get_portfolio_summary():
+    if not tracker:
+        return {"error": "Portfolio Tracker module not loaded"}
+    try:
+        # This triggers live price fetch
+        return tracker.get_summary()
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/api/tracker/position")
+async def add_position(pos: PositionRequest):
+    if not tracker:
+        return {"error": "Portfolio Tracker module not loaded"}
+    try:
+        tracker.add_position(
+            pos.ticker, 
+            pos.shares, 
+            pos.price, 
+            pos.date, 
+            pos.currency, 
+            pos.type
+        )
+        return {"status": "success", "message": f"Added {pos.ticker}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.delete("/api/tracker/position/{ticker}")
+async def remove_position(ticker: str):
+    if not tracker:
+        return {"error": "Portfolio Tracker module not loaded"}
+    try:
+        tracker.remove_position(ticker)
+        return {"status": "success", "message": f"Removed {ticker}"}
+    except Exception as e:
+        return {"error": str(e)}
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
