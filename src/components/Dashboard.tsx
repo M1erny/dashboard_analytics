@@ -19,7 +19,8 @@ export const Dashboard: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
 
     useEffect(() => {
-        fetchDashboardData().then(res => {
+        // Force refresh on initial load (true as 3rd arg) to avoid stale cache
+        fetchDashboardData(5, 3000, true).then(res => {
             if (res) {
                 if (res.error) {
                     setError(res.error);

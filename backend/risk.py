@@ -82,9 +82,10 @@ def fetch_data():
             fx_pairs.append(fx)
     
     start_date = (datetime.now() - timedelta(days=LOOKBACK_YEARS*365)).strftime('%Y-%m-%d')
+    end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     
-    print(f"Fetching stock data for {len(tickers)} tickers from {start_date}...")
-    stock_raw = yf.download(tickers, start=start_date, auto_adjust=True)
+    print(f"Fetching stock data for {len(tickers)} tickers from {start_date} to {end_date}...")
+    stock_raw = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True)
     print(f"Stock Raw Shape: {stock_raw.shape}")
     if stock_raw.empty:
          print("WARNING: Stock Raw is EMPTY!")
@@ -92,16 +93,16 @@ def fetch_data():
     # Handle Data Structure (MultiIndex vs Single)
     if isinstance(stock_raw.columns, pd.MultiIndex):
         try:
-            stock_data = stock_raw['Close']
-            volume_data = stock_raw['Volume']
+            stock_data = stock_raw['Close'].ffill() # Fallback to prev close
+            volume_data = stock_raw['Volume'].fillna(0)
         except KeyError:
-             stock_data = stock_raw.xs('Close', axis=1, level=0, drop_level=True)
-             volume_data = stock_raw.xs('Volume', axis=1, level=0, drop_level=True)
+             stock_data = stock_raw.xs('Close', axis=1, level=0, drop_level=True).ffill()
+             volume_data = stock_raw.xs('Volume', axis=1, level=0, drop_level=True).fillna(0)
     elif 'Close' in stock_raw.columns:
-         stock_data = stock_raw['Close']
-         volume_data = stock_raw['Volume']
+         stock_data = stock_raw['Close'].ffill()
+         volume_data = stock_raw['Volume'].fillna(0)
     else:
-        stock_data = stock_raw
+        stock_data = stock_raw.ffill()
         # Use dummy volume if missing (should not happen with standard downloads)
         volume_data = pd.DataFrame(1, index=stock_raw.index, columns=stock_raw.columns)
         
@@ -110,13 +111,13 @@ def fetch_data():
     
     if isinstance(fx_raw.columns, pd.MultiIndex):
         try:
-            fx_data = fx_raw['Close']
+            fx_data = fx_raw['Close'].ffill()
         except KeyError:
-             fx_data = fx_raw.xs('Close', axis=1, level=0, drop_level=True)
+             fx_data = fx_raw.xs('Close', axis=1, level=0, drop_level=True).ffill()
     elif 'Close' in fx_raw.columns:
-         fx_data = fx_raw['Close']
+         fx_data = fx_raw['Close'].ffill()
     else:
-        fx_data = fx_raw
+        fx_data = fx_raw.ffill()
 
     return stock_data, fx_data, volume_data
 
