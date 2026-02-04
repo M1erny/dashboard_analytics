@@ -495,9 +495,17 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
         bench_ytd_ann_ret = np.mean(ytd_benchmark) * ANNUAL_FACTOR
         bench_ytd_sharpe = (bench_ytd_ann_ret - rf_rate) / bench_ytd_vol if bench_ytd_vol > 0 else 0
         
-        # YTD Jensen's Alpha
+        # Calculate YTD risk-free rate (scaled by actual trading days)
+        ytd_trading_days = len(ytd_portfolio_daily_ret)
+        ytd_rf_rate = rf_rate * (ytd_trading_days / ANNUAL_FACTOR)  # Scale annual RF to YTD period
+        
+        # YTD Jensen's Alpha (Annualized) - uses full annual rf_rate since returns are annualized
         ytd_expected_return = rf_rate + ytd_beta * (bench_ytd_ann_ret - rf_rate)
         ytd_alpha = ytd_ann_ret - ytd_expected_return
+        
+        # YTD Jensen's Alpha (Raw, non-annualized) - uses scaled YTD rf_rate
+        # Formula: α = Rp - [Rf + β × (Rm - Rf)]
+        ytd_alpha_raw = ytd_return - (ytd_rf_rate + ytd_beta * (benchmark_ytd - ytd_rf_rate))
 
         # Benchmark Historical Sharpe
         bench_ann_vol = np.std(benchmark_ret) * np.sqrt(ANNUAL_FACTOR)
@@ -793,6 +801,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
         'YTD_Longs_Contrib': ytd_longs_contrib,
         'YTD_Shorts_Contrib': ytd_shorts_contrib,
         'YTD_Alpha': ytd_alpha,
+        'YTD_Alpha_Raw': ytd_alpha_raw,
         'YTD_Max_Drawdown': ytd_max_drawdown,
         'Benchmark_YTD_Max_Drawdown': ytd_bench_max_drawdown,
         'Returns_Stream': portfolio_daily_ret,

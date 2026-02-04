@@ -5,13 +5,9 @@ import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { CorrelationMatrixTable } from './dashboard/CorrelationMatrixTable';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
-import { TalebRiskWidget } from './dashboard/TalebRiskWidget';
+import { CountryMapWidget } from './dashboard/CountryMapWidget';
 import { LayoutDashboard, ShieldCheck, RefreshCw } from 'lucide-react';
 import { cn } from '../lib/utils';
-import {
-    ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip,
-    CartesianGrid, Legend
-} from 'recharts';
 
 export const Dashboard: React.FC = () => {
     const [data, setData] = useState<FullRiskReport | null>(null);
@@ -76,7 +72,7 @@ export const Dashboard: React.FC = () => {
         )
     }
 
-    const { vitals, leverage, history, periodicReturns, volumeWeightedCorrelation, talebMetrics } = data;
+    const { vitals, leverage, periodicReturns, volumeWeightedCorrelation, countryAllocation } = data;
 
     return (
         <div className="min-h-screen bg-background text-foreground p-4 md:p-8">
@@ -90,7 +86,7 @@ export const Dashboard: React.FC = () => {
                             Portfolio
                         </h1>
                         <p className="text-muted-foreground mt-1 text-sm md:text-base">
-                            Live quantitative analysis • {history[history.length - 1]?.date}
+                            Live quantitative analysis
                         </p>
                     </div>
 
@@ -132,31 +128,9 @@ export const Dashboard: React.FC = () => {
                     <CorrelationMatrixTable data={volumeWeightedCorrelation} />
                 </div>
 
-                {/* ROW 2.5: Taleb Risk Metrics */}
+                {/* ROW 2.5: World Map (Full Width) */}
                 <div className="grid grid-cols-1 gap-4">
-                    <TalebRiskWidget metrics={talebMetrics} />
-                </div>
-
-                {/* ROW 3: Performance Chart (Full Width) */}
-                <div className="rounded-xl border border-white/10 bg-white/5 p-4 backdrop-blur-lg h-[400px]">
-                    <h3 className="text-lg font-semibold text-white mb-4">Cumulative Performance vs Benchmark</h3>
-                    <div className="h-[calc(100%-2rem)]">
-                        <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={history}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
-                                <XAxis dataKey="date" hide />
-                                <YAxis domain={['auto', 'auto']} tickFormatter={(v) => `$${v}`} stroke="#666" fontSize={11} tickLine={false} axisLine={false} />
-                                <Tooltip
-                                    contentStyle={{ backgroundColor: '#0f172a', borderColor: '#334155' }}
-                                    formatter={(val) => val !== undefined ? [`$${Number(val).toFixed(0)}`, ''] : ['', '']}
-                                    labelStyle={{ color: '#94a3b8' }}
-                                />
-                                <Legend />
-                                <Line type="monotone" dataKey="portfolio" name="Portfolio" stroke="#8b5cf6" strokeWidth={2} dot={false} />
-                                <Line type="monotone" dataKey="benchmark" name="Market (SPY)" stroke="#64748b" strokeWidth={2} strokeDasharray="4 4" dot={false} />
-                            </LineChart>
-                        </ResponsiveContainer>
-                    </div>
+                    <CountryMapWidget countryAllocation={countryAllocation} />
                 </div>
 
             </div>

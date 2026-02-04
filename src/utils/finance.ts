@@ -35,6 +35,7 @@ export interface Vitals {
     ytdShortsContrib: number;
     jensensAlpha: number;
     ytdAlpha: number;
+    ytdAlphaRaw: number;
     ytdMaxDrawdown: number;
     benchmarkYtdMaxDrawdown: number;
     currencyExposure: Record<string, number>;
@@ -161,6 +162,7 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     ytdHistory: data.ytdHistory || [],
                     volumeWeightedCorrelation: data.volumeWeightedCorrelation || undefined,
                     talebMetrics: data.talebMetrics,
+                    countryAllocation: data.countryAllocation,
                     error: data.error
                 };
             }

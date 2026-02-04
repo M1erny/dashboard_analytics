@@ -92,11 +92,11 @@ export const CountryMapWidget: React.FC<CountryMapWidgetProps> = memo(({ country
                 </div>
             </div>
 
-            <div className="h-[300px]">
+            <div className="h-[600px]">
                 <ComposableMap
                     projectionConfig={{
                         rotate: [-10, 0, 0],
-                        scale: 147
+                        scale: 180
                     }}
                     style={{ width: '100%', height: '100%' }}
                 >

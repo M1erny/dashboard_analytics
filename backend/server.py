@@ -113,6 +113,7 @@ async def get_metrics(force: bool = False, run_mc: bool = False):
                 # New YTD Fields
                 "ytdReturn": to_float(metrics.get('YTD_Return')),
                 "ytdAlpha": to_float(metrics.get('YTD_Alpha')),
+                "ytdAlphaRaw": to_float(metrics.get('YTD_Alpha_Raw')),
                 "benchmarkYtd": to_float(metrics.get('Benchmark_YTD')),
                 "ytdBeta": to_float(metrics.get('YTD_Beta')),
                 "ytdMaxDrawdown": to_float(metrics.get('YTD_Max_Drawdown')),
