@@ -92,6 +92,12 @@ export interface CorrelationMatrix {
     matrix: (number | null)[][];
 }
 
+export interface CountryAllocation {
+    long: number;
+    short: number;
+    tickers: { ticker: string; weight: number; type: string }[];
+}
+
 export interface FullRiskReport {
     vitals: Vitals;
     leverage: LeverageStats;
@@ -103,6 +109,7 @@ export interface FullRiskReport {
     ytdHistory?: HistoryPoint[];
     volumeWeightedCorrelation?: CorrelationMatrix;
     talebMetrics?: TalebMetrics;
+    countryAllocation?: Record<string, CountryAllocation>;
     error?: string;
 }
 

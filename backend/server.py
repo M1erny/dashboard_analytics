@@ -196,6 +196,30 @@ async def get_metrics(force: bool = False, run_mc: bool = False):
         
         response["vitals"]["currencyExposure"] = curr_exposure
 
+        # Calculate Country Allocation for World Map
+        country_allocation = {}
+        if portfolio_config:
+            for ticker, info in portfolio_config.items():
+                country = info.get('country', 'USA')  # Default to USA if not specified
+                weight = info.get('weight', 0)
+                pos_type = info.get('type', 'Long')
+                
+                if country not in country_allocation:
+                    country_allocation[country] = {'long': 0, 'short': 0, 'tickers': []}
+                
+                if pos_type == 'Long':
+                    country_allocation[country]['long'] += weight
+                else:
+                    country_allocation[country]['short'] += weight
+                
+                country_allocation[country]['tickers'].append({
+                    'ticker': ticker,
+                    'weight': weight,
+                    'type': pos_type
+                })
+        
+        response["countryAllocation"] = country_allocation
+
         # Format Periodic Returns
         # Periodic returns is a DataFrame: index=ticker, columns=['YTD', '1Y', '3Y', '5Y']
         # We need to add 1M returns and YTD contribution
