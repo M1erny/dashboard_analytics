@@ -38,7 +38,7 @@ async def get_status():
         return {"state": "error", "message": "Risk module failed to load"}
 
 @app.get("/api/metrics")
-async def get_metrics(force: bool = False, run_mc: bool = False):
+async def get_metrics(force: bool = False):
     global _cache
     
     if not risk:
@@ -66,19 +66,12 @@ async def get_metrics(force: bool = False, run_mc: bool = False):
                 "riskAttribution": [],
                 "stressTests": [],
                 "periodicReturns": [],
-                "monteCarlo": [],
                 "history": [],
                 "leverage": {}
              }
 
         # 2. Run Advanced Models
         stress_results = risk.stress_test_portfolio(metrics)
-        
-        # Monte Carlo is optional (expensive) - default OFF for speed
-        if run_mc:
-            mc_paths = risk.run_monte_carlo(metrics, num_sims=500, days=60)
-        else:
-            mc_paths = None
             
         periodic_rets = risk.calculate_periodic_returns(usd_prices)
 
@@ -136,7 +129,6 @@ async def get_metrics(force: bool = False, run_mc: bool = False):
             "riskAttribution": [],
             "stressTests": [],
             "periodicReturns": [],
-            "monteCarlo": [],
             "history": []
         }
 
@@ -240,12 +232,30 @@ async def get_metrics(force: bool = False, run_mc: bool = False):
             
             # Calculate 1M return from the returns data
             r1m = None
+            last_price = None
+            volatility = None
+            currency = ticker_config.get('currency', 'USD') if ticker_config else 'USD'
+            
+            # Get last price from raw_prices (original currency)
+            if ticker in raw_prices.columns:
+                raw_series = raw_prices[ticker].dropna()
+                if len(raw_series) > 0:
+                    last_price = float(raw_series.iloc[-1])
+            
             if ticker in usd_prices.columns:
                 series = usd_prices[ticker].dropna()
+                
+                # 1M return
                 if len(series) > 21:  # ~1 month of trading days
                     current = series.iloc[-1]
                     past = series.iloc[-22]
                     r1m = (current - past) / past if past != 0 else None
+                
+                # Annualized volatility (std dev of daily returns * sqrt(252))
+                if len(series) > 20:
+                    daily_returns = series.pct_change().dropna()
+                    if len(daily_returns) > 0:
+                        volatility = float(daily_returns.std() * np.sqrt(252))
             
             response["periodicReturns"].append({
                 "ticker": ticker,
@@ -255,25 +265,12 @@ async def get_metrics(force: bool = False, run_mc: bool = False):
                 "r5y": row['5Y'] if not pd.isna(row['5Y']) else None,
                 "ytdContribution": to_float(ytd_contribution),
                 "weight": to_float(weight) if weight else None,
-                "direction": direction
+                "direction": direction,
+                "lastPrice": last_price,
+                "currency": currency,
+                "volatility": volatility
             })
         
-        # Format Monte Carlo (Percentiles for Cone Chart)
-        if mc_paths is not None:
-            # mc_paths shape: (sims, days+1)
-            days = mc_paths.shape[1]
-            p05 = np.percentile(mc_paths, 5, axis=0)
-            p50 = np.percentile(mc_paths, 50, axis=0)
-            p95 = np.percentile(mc_paths, 95, axis=0)
-            
-            for t in range(days):
-                response["monteCarlo"].append({
-                    "day": t,
-                    "p05": p05[t],
-                    "p50": p50[t],
-                    "p95": p95[t]
-                })
-
         # Format History (Cumulative 1000 base)
         portfolio_cum = (1 + metrics['Returns_Stream']).cumprod() * 1000
         benchmark_cum = (1 + metrics['Benchmark_Stream']).cumprod() * 1000
@@ -343,11 +340,6 @@ async def get_metrics(force: bool = False, run_mc: bool = False):
                         if i < len(bench_curve):
                              item["benchmark"] = to_float(bench_curve.iloc[i])
 
-        # Sanitize Monte Carlo values too
-        for mc_point in response["monteCarlo"]:
-            for key in ["p05", "p50", "p95"]:
-                mc_point[key] = to_float(mc_point[key])
-        
         # Sanitize stress tests
         for st in response["stressTests"]:
             st["impact"] = to_float(st["impact"])

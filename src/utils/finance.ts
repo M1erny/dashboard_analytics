@@ -72,13 +72,9 @@ export interface PeriodicReturn {
     ytdContribution: number | null;  // weight * return * direction
     weight: number | null;
     direction: 'Long' | 'Short' | null;
-}
-
-export interface MonteCarloPoint {
-    day: number;
-    p05: number;
-    p50: number;
-    p95: number;
+    lastPrice: number | null;  // Last fetched price (original currency)
+    currency: string;  // Original currency (USD, EUR, etc.)
+    volatility: number | null;  // Annualized volatility (std dev)
 }
 
 export interface HistoryPoint {
@@ -105,7 +101,6 @@ export interface FullRiskReport {
     activeRisks: RiskAttribution[];
     stressTests: StressTest[];
     periodicReturns: PeriodicReturn[];
-    monteCarlo: MonteCarloPoint[];
     history: HistoryPoint[];
     ytdHistory?: HistoryPoint[];
     volumeWeightedCorrelation?: CorrelationMatrix;
@@ -158,7 +153,6 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     periodicReturns: data.periodicReturns || [],
                     activeRisks: data.riskAttribution || [], // Rename data.riskAttribution -> activeRisks
                     stressTests: data.stressTests || [],
-                    monteCarlo: data.monteCarlo || [],
                     ytdHistory: data.ytdHistory || [],
                     volumeWeightedCorrelation: data.volumeWeightedCorrelation || undefined,
                     talebMetrics: data.talebMetrics,

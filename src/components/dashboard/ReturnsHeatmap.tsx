@@ -7,7 +7,7 @@ interface ReturnsHeatmapProps {
     periodicReturns: PeriodicReturn[];
 }
 
-type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r1m' | 'r1y' | 'r5y';
+type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r1m' | 'r1y' | 'r5y' | 'lastPrice' | 'volatility';
 type SortDir = 'asc' | 'desc';
 
 const getReturnColor = (val: number | null): string => {
@@ -24,6 +24,14 @@ const getReturnColor = (val: number | null): string => {
     return 'bg-emerald-900/80 text-emerald-200';
 };
 
+const getVolatilityColor = (val: number | null): string => {
+    if (val === null || val === undefined) return 'bg-gray-800/50 text-gray-500';
+    if (val > 0.80) return 'bg-rose-900/70 text-rose-200';  // >80% very high
+    if (val > 0.50) return 'bg-amber-700/60 text-amber-200';  // >50% high
+    if (val > 0.30) return 'bg-yellow-600/40 text-yellow-200';  // >30% moderate
+    return 'bg-blue-600/30 text-blue-200';  // <30% low
+};
+
 const formatPercent = (val: number | null): string => {
     if (val === null || val === undefined) return '—';
     const sign = val > 0 ? '+' : '';
@@ -34,6 +42,20 @@ const formatContribution = (val: number | null): string => {
     if (val === null || val === undefined) return '—';
     const sign = val > 0 ? '+' : '';
     return `${sign}${(val * 100).toFixed(2)}%`;
+};
+
+const formatPrice = (val: number | null, currency: string = 'USD'): string => {
+    if (val === null || val === undefined) return '—';
+    const symbols: Record<string, string> = {
+        'USD': '$', 'EUR': '€', 'GBP': '£', 'PLN': 'zł', 'SEK': 'kr', 'NOK': 'kr', 'CHF': 'Fr'
+    };
+    const symbol = symbols[currency] || currency + ' ';
+    return `${symbol}${val.toFixed(2)}`;
+};
+
+const formatVolatility = (val: number | null): string => {
+    if (val === null || val === undefined) return '—';
+    return `${(val * 100).toFixed(0)}%`;
 };
 
 export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns }) => {
@@ -58,6 +80,8 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
             case 'r1m': return row.r1m ?? null;
             case 'r1y': return row.r1y ?? null;
             case 'r5y': return row.r5y ?? null;
+            case 'lastPrice': return row.lastPrice ?? null;
+            case 'volatility': return row.volatility ?? null;
             default: return null;
         }
     };
@@ -80,11 +104,13 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
 
     const columns: { key: SortKey; label: string; tooltip?: string }[] = [
         { key: 'ticker', label: 'Ticker' },
+        { key: 'lastPrice', label: 'Price', tooltip: 'Last fetched price (USD)' },
         { key: 'ytdContribution', label: 'YTD Contrib', tooltip: 'Weight × Return × Direction' },
         { key: 'ytd', label: 'YTD' },
         { key: 'r1m', label: '1M' },
         { key: 'r1y', label: '1Y' },
         { key: 'r5y', label: '5Y' },
+        { key: 'volatility', label: 'Vol', tooltip: 'Annualized volatility (std dev)' },
     ];
 
     const SortIcon = ({ columnKey }: { columnKey: SortKey }) => {
@@ -101,19 +127,19 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
                 <span className="text-xs text-gray-400 font-normal">(Click headers to sort)</span>
             </h3>
 
-            <div className="overflow-x-auto">
+            <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
                 <table className="w-full text-sm">
-                    <thead>
-                        <tr className="border-b border-white/10">
+                    <thead className="sticky top-0 bg-slate-900/95 backdrop-blur-sm z-10">
+                        <tr className="border-b-2 border-white/20">
                             {columns.map(col => (
                                 <th
                                     key={col.key}
                                     onClick={() => handleSort(col.key)}
                                     title={col.tooltip}
                                     className={cn(
-                                        "px-3 py-2 text-left font-medium cursor-pointer hover:bg-white/5 transition-colors whitespace-nowrap",
-                                        col.key === 'ticker' ? "text-gray-300" : "text-gray-400 text-center",
-                                        sortKey === col.key && "text-white"
+                                        "px-4 py-3 text-left font-semibold cursor-pointer hover:bg-white/10 transition-colors whitespace-nowrap",
+                                        col.key === 'ticker' ? "text-gray-200" : "text-gray-300 text-center",
+                                        sortKey === col.key && "text-white bg-white/5"
                                     )}
                                 >
                                     {col.label}
@@ -123,13 +149,21 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
                         </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
-                        {sortedData.map((row) => (
-                            <tr key={row.ticker} className="hover:bg-white/5 transition-colors">
+                        {sortedData.map((row, idx) => (
+                            <tr key={row.ticker} className={cn(
+                                "hover:bg-white/10 transition-colors",
+                                idx % 2 === 0 ? "bg-white/[0.02]" : ""
+                            )}>
                                 {/* Ticker with direction indicator */}
-                                <td className="px-3 py-2 font-medium text-white flex items-center gap-1">
-                                    {row.ticker}
-                                    {row.direction === 'Long' && <ArrowUpRight className="h-3 w-3 text-emerald-400" />}
-                                    {row.direction === 'Short' && <ArrowDownRight className="h-3 w-3 text-rose-400" />}
+                                <td className="px-4 py-3 font-semibold text-white flex items-center gap-2">
+                                    <span className="text-base">{row.ticker}</span>
+                                    {row.direction === 'Long' && <ArrowUpRight className="h-4 w-4 text-emerald-400" />}
+                                    {row.direction === 'Short' && <ArrowDownRight className="h-4 w-4 text-rose-400" />}
+                                </td>
+
+                                {/* Price */}
+                                <td className="px-4 py-3 text-center font-mono text-sm text-gray-200 bg-white/[0.02]">
+                                    {formatPrice(row.lastPrice, row.currency)}
                                 </td>
 
                                 {/* YTD Contribution */}
@@ -137,7 +171,7 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
                                     onMouseEnter={() => setHoveredCell({ ticker: row.ticker, period: 'ytdContribution' })}
                                     onMouseLeave={() => setHoveredCell(null)}
                                     className={cn(
-                                        "px-3 py-2 text-center font-mono text-sm transition-all",
+                                        "px-4 py-3 text-center font-mono text-sm transition-all",
                                         getReturnColor(row.ytdContribution),
                                         hoveredCell?.ticker === row.ticker && hoveredCell?.period === 'ytdContribution' && "ring-2 ring-white/50 scale-105"
                                     )}
@@ -157,7 +191,7 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
                                             onMouseEnter={() => setHoveredCell({ ticker: row.ticker, period })}
                                             onMouseLeave={() => setHoveredCell(null)}
                                             className={cn(
-                                                "px-3 py-2 text-center font-mono text-sm transition-all",
+                                                "px-4 py-3 text-center font-mono text-sm transition-all",
                                                 getReturnColor(val),
                                                 isHovered && "ring-2 ring-white/50 scale-105"
                                             )}
@@ -166,6 +200,20 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
                                         </td>
                                     );
                                 })}
+
+                                {/* Volatility */}
+                                <td
+                                    onMouseEnter={() => setHoveredCell({ ticker: row.ticker, period: 'volatility' })}
+                                    onMouseLeave={() => setHoveredCell(null)}
+                                    className={cn(
+                                        "px-4 py-3 text-center font-mono text-sm transition-all",
+                                        getVolatilityColor(row.volatility),
+                                        hoveredCell?.ticker === row.ticker && hoveredCell?.period === 'volatility' && "ring-2 ring-white/50 scale-105"
+                                    )}
+                                    title="Annualized volatility"
+                                >
+                                    {formatVolatility(row.volatility)}
+                                </td>
                             </tr>
                         ))}
                     </tbody>

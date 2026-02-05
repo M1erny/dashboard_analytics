@@ -122,16 +122,14 @@ export const Dashboard: React.FC = () => {
                 {/* NEW: Executive Summary (YTD Returns, Alpha, Benchmarks) */}
                 <ExecutiveSummary vitals={vitals} />
 
-                {/* ROW 2: Returns Heatmap & Portfolio Contribution */}
-                <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-                    <ReturnsHeatmap periodicReturns={periodicReturns} />
-                    <CorrelationMatrixTable data={volumeWeightedCorrelation} />
-                </div>
+                {/* ROW 2: Returns Heatmap & Portfolio Contribution (Full Width) */}
+                <ReturnsHeatmap periodicReturns={periodicReturns} />
 
-                {/* ROW 2.5: World Map (Full Width) */}
-                <div className="grid grid-cols-1 gap-4">
-                    <CountryMapWidget countryAllocation={countryAllocation} />
-                </div>
+                {/* ROW 3: World Map (Full Width) */}
+                <CountryMapWidget countryAllocation={countryAllocation} />
+
+                {/* ROW 4: Correlation Matrix (Full Width, at bottom) */}
+                <CorrelationMatrixTable data={volumeWeightedCorrelation} />
 
             </div>
         </div>
