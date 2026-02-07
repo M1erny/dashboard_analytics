@@ -196,19 +196,32 @@ async def get_metrics(force: bool = False):
                 country = info.get('country', 'USA')  # Default to USA if not specified
                 weight = info.get('weight', 0)
                 pos_type = info.get('type', 'Long')
+                direction = 1 if pos_type == 'Long' else -1
                 
+                # Get YTD Return for contribution
+                ytd_ret = 0
+                if ticker in periodic_rets.index:
+                    val = periodic_rets.loc[ticker, 'YTD']
+                    if not pd.isna(val):
+                        ytd_ret = val
+
+                contribution = weight * ytd_ret * direction
+
                 if country not in country_allocation:
-                    country_allocation[country] = {'long': 0, 'short': 0, 'tickers': []}
+                    country_allocation[country] = {'long': 0, 'short': 0, 'contribution': 0, 'tickers': []}
                 
                 if pos_type == 'Long':
                     country_allocation[country]['long'] += weight
                 else:
                     country_allocation[country]['short'] += weight
                 
+                country_allocation[country]['contribution'] += contribution
+                
                 country_allocation[country]['tickers'].append({
                     'ticker': ticker,
                     'weight': weight,
-                    'type': pos_type
+                    'type': pos_type,
+                    'contribution': contribution
                 })
         
         response["countryAllocation"] = country_allocation
@@ -235,6 +248,7 @@ async def get_metrics(force: bool = False):
             last_price = None
             volatility = None
             currency = ticker_config.get('currency', 'USD') if ticker_config else 'USD'
+            sector = ticker_config.get('sector', 'Unknown') if ticker_config else 'Unknown'
             
             # Get last price from raw_prices (original currency)
             if ticker in raw_prices.columns:
@@ -257,8 +271,9 @@ async def get_metrics(force: bool = False):
                     if len(daily_returns) > 0:
                         volatility = float(daily_returns.std() * np.sqrt(252))
             
-            response["periodicReturns"].append({
+            item = {
                 "ticker": ticker,
+                "sector": sector,
                 "ytd": row['YTD'] if 'YTD' in row and not pd.isna(row['YTD']) else None,
                 "r1m": to_float(r1m),
                 "r1y": row['1Y'] if not pd.isna(row['1Y']) else None,
@@ -269,8 +284,9 @@ async def get_metrics(force: bool = False):
                 "lastPrice": last_price,
                 "currency": currency,
                 "volatility": volatility
-            })
-        
+            }
+            response["periodicReturns"].append(item)
+            
         # Format History (Cumulative 1000 base)
         portfolio_cum = (1 + metrics['Returns_Stream']).cumprod() * 1000
         benchmark_cum = (1 + metrics['Benchmark_Stream']).cumprod() * 1000

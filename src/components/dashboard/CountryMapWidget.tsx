@@ -28,7 +28,8 @@ const COUNTRY_NAMES: Record<string, string> = {
 interface CountryAllocation {
     long: number;
     short: number;
-    tickers: { ticker: string; weight: number; type: string }[];
+    contribution: number;
+    tickers: { ticker: string; weight: number; type: string; contribution: number }[];
 }
 
 interface CountryMapWidgetProps {
@@ -143,12 +144,20 @@ export const CountryMapWidget: React.FC<CountryMapWidgetProps> = memo(({ country
                     <div className="flex gap-4 text-sm mb-2">
                         <span className="text-emerald-400">Long: {(tooltipContent.data.long * 100).toFixed(1)}%</span>
                         <span className="text-rose-400">Short: {(tooltipContent.data.short * 100).toFixed(1)}%</span>
+                        <span className={`${tooltipContent.data.contribution >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                            Contrib: {(tooltipContent.data.contribution * 100).toFixed(2)}%
+                        </span>
                     </div>
                     <div className="text-xs text-muted-foreground">
                         {tooltipContent.data.tickers.map(t => (
-                            <span key={t.ticker} className={`mr-2 ${t.type === 'Long' ? 'text-emerald-300' : 'text-rose-300'}`}>
-                                {t.ticker}
-                            </span>
+                            <div key={t.ticker} className="flex justify-between w-full mb-1">
+                                <span className={`${t.type === 'Long' ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                    {t.ticker}
+                                </span>
+                                <span className={`${t.contribution >= 0 ? 'text-emerald-300' : 'text-rose-300'} ml-2`}>
+                                    {(t.contribution * 100).toFixed(2)}%
+                                </span>
+                            </div>
                         ))}
                     </div>
                 </div>

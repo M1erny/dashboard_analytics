@@ -6,6 +6,7 @@ import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { CorrelationMatrixTable } from './dashboard/CorrelationMatrixTable';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { CountryMapWidget } from './dashboard/CountryMapWidget';
+import { DexterWidget } from './dashboard/DexterWidget';
 import { LayoutDashboard, ShieldCheck, RefreshCw } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -131,6 +132,7 @@ export const Dashboard: React.FC = () => {
                 {/* ROW 4: Correlation Matrix (Full Width, at bottom) */}
                 <CorrelationMatrixTable data={volumeWeightedCorrelation} />
 
+                <DexterWidget />
             </div>
         </div>
     );

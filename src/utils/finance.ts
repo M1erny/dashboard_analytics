@@ -65,6 +65,7 @@ export interface StressTest {
 
 export interface PeriodicReturn {
     ticker: string;
+    sector?: string;
     r1m: number | null;  // 1 Month return
     r1y: number | null;
     r5y: number | null;
@@ -92,7 +93,8 @@ export interface CorrelationMatrix {
 export interface CountryAllocation {
     long: number;
     short: number;
-    tickers: { ticker: string; weight: number; type: string }[];
+    contribution: number;
+    tickers: { ticker: string; weight: number; type: string; contribution: number }[];
 }
 
 export interface FullRiskReport {

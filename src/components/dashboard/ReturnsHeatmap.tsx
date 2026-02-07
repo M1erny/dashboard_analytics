@@ -58,7 +58,7 @@ const formatVolatility = (val: number | null): string => {
     return `${(val * 100).toFixed(0)}%`;
 };
 
-export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns }) => {
+export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicReturn[] }) => {
     const [sortKey, setSortKey] = useState<SortKey>('ytdContribution');
     const [sortDir, setSortDir] = useState<SortDir>('desc');
     const [hoveredCell, setHoveredCell] = useState<{ ticker: string; period: string } | null>(null);
@@ -75,6 +75,7 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
     const getValue = (row: PeriodicReturn, key: SortKey): number | null => {
         switch (key) {
             case 'ticker': return null;
+            case 'sector': return null;
             case 'ytd': return row.ytd ?? null;
             case 'ytdContribution': return row.ytdContribution ?? null;
             case 'r1m': return row.r1m ?? null;
@@ -88,9 +89,12 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
 
     const sortedData = [...periodicReturns].sort((a, b) => {
         if (sortKey === 'ticker') {
-            return sortDir === 'asc'
-                ? a.ticker.localeCompare(b.ticker)
-                : b.ticker.localeCompare(a.ticker);
+            return sortDir === 'asc' ? a.ticker.localeCompare(b.ticker) : b.ticker.localeCompare(a.ticker);
+        }
+        if (sortKey === 'sector') {
+            const sA = a.sector || '';
+            const sB = b.sector || '';
+            return sortDir === 'asc' ? sA.localeCompare(sB) : sB.localeCompare(sA);
         }
 
         const aVal = getValue(a, sortKey);
@@ -104,6 +108,7 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
 
     const columns: { key: SortKey; label: string; tooltip?: string }[] = [
         { key: 'ticker', label: 'Ticker' },
+        { key: 'sector', label: 'Sector' },
         { key: 'lastPrice', label: 'Price', tooltip: 'Last fetched price (USD)' },
         { key: 'ytdContribution', label: 'YTD Contrib', tooltip: 'Weight × Return × Direction' },
         { key: 'ytd', label: 'YTD' },
@@ -159,6 +164,11 @@ export const ReturnsHeatmap: React.FC<ReturnsHeatmapProps> = ({ periodicReturns 
                                     <span className="text-base">{row.ticker}</span>
                                     {row.direction === 'Long' && <ArrowUpRight className="h-4 w-4 text-emerald-400" />}
                                     {row.direction === 'Short' && <ArrowDownRight className="h-4 w-4 text-rose-400" />}
+                                </td>
+
+                                {/* Sector */}
+                                <td className="px-4 py-3 text-left text-sm text-gray-400">
+                                    {row.sector || '—'}
                                 </td>
 
                                 {/* Price */}
