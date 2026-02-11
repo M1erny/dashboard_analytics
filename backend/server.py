@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import numpy as np
 import time
+from datetime import datetime
 
 # Import risk.py (Now local)
 try:
@@ -245,6 +246,7 @@ async def get_metrics(force: bool = False):
             
             # Calculate 1M return from the returns data
             r1m = None
+            r7d = None
             last_price = None
             volatility = None
             currency = ticker_config.get('currency', 'USD') if ticker_config else 'USD'
@@ -256,8 +258,30 @@ async def get_metrics(force: bool = False):
                 if len(raw_series) > 0:
                     last_price = float(raw_series.iloc[-1])
             
+            # Volume indicator: 7d avg vs YTD avg
+            vol_7d_avg = None
+            vol_ytd_avg = None
+            volume_indicator = None  # ratio: >1 means higher recent volume
+            if volume_data is not None and ticker in volume_data.columns:
+                vol_series = volume_data[ticker].dropna()
+                if len(vol_series) > 7:
+                    vol_7d_avg = float(vol_series.iloc[-7:].mean())
+                    # YTD volume average
+                    ytd_start = pd.Timestamp(datetime.now().year, 1, 1)
+                    ytd_vol = vol_series[vol_series.index >= ytd_start]
+                    if len(ytd_vol) > 0:
+                        vol_ytd_avg = float(ytd_vol.mean())
+                        if vol_ytd_avg > 0:
+                            volume_indicator = vol_7d_avg / vol_ytd_avg
+
             if ticker in usd_prices.columns:
                 series = usd_prices[ticker].dropna()
+                
+                # 7D return
+                if len(series) > 5:  # ~1 week of trading days
+                    current = series.iloc[-1]
+                    past_7d = series.iloc[-6]
+                    r7d = (current - past_7d) / past_7d if past_7d != 0 else None
                 
                 # 1M return
                 if len(series) > 21:  # ~1 month of trading days
@@ -275,15 +299,16 @@ async def get_metrics(force: bool = False):
                 "ticker": ticker,
                 "sector": sector,
                 "ytd": row['YTD'] if 'YTD' in row and not pd.isna(row['YTD']) else None,
+                "r7d": to_float(r7d),
                 "r1m": to_float(r1m),
                 "r1y": row['1Y'] if not pd.isna(row['1Y']) else None,
-                "r5y": row['5Y'] if not pd.isna(row['5Y']) else None,
                 "ytdContribution": to_float(ytd_contribution),
                 "weight": to_float(weight) if weight else None,
                 "direction": direction,
                 "lastPrice": last_price,
                 "currency": currency,
-                "volatility": volatility
+                "volatility": volatility,
+                "volumeIndicator": to_float(volume_indicator),
             }
             response["periodicReturns"].append(item)
             

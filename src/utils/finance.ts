@@ -66,9 +66,9 @@ export interface StressTest {
 export interface PeriodicReturn {
     ticker: string;
     sector?: string;
+    r7d: number | null;  // 7 Day return
     r1m: number | null;  // 1 Month return
     r1y: number | null;
-    r5y: number | null;
     ytd: number;
     ytdContribution: number | null;  // weight * return * direction
     weight: number | null;
@@ -76,6 +76,7 @@ export interface PeriodicReturn {
     lastPrice: number | null;  // Last fetched price (original currency)
     currency: string;  // Original currency (USD, EUR, etc.)
     volatility: number | null;  // Annualized volatility (std dev)
+    volumeIndicator: number | null;  // 7d avg volume / YTD avg volume
 }
 
 export interface HistoryPoint {

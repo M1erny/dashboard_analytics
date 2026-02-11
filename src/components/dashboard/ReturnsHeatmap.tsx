@@ -7,7 +7,7 @@ interface ReturnsHeatmapProps {
     periodicReturns: PeriodicReturn[];
 }
 
-type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r1m' | 'r1y' | 'r5y' | 'lastPrice' | 'volatility';
+type SortKey = 'ticker' | 'sector' | 'ytd' | 'ytdContribution' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator';
 type SortDir = 'asc' | 'desc';
 
 const getReturnColor = (val: number | null): string => {
@@ -30,6 +30,15 @@ const getVolatilityColor = (val: number | null): string => {
     if (val > 0.50) return 'bg-amber-700/60 text-amber-200';  // >50% high
     if (val > 0.30) return 'bg-yellow-600/40 text-yellow-200';  // >30% moderate
     return 'bg-blue-600/30 text-blue-200';  // <30% low
+};
+
+const getVolumeColor = (val: number | null): string => {
+    if (val === null || val === undefined) return 'bg-gray-800/50 text-gray-500';
+    if (val > 2.0) return 'bg-violet-700/70 text-violet-100';   // >200% extreme
+    if (val > 1.5) return 'bg-amber-600/60 text-amber-100';     // >150% high
+    if (val > 1.1) return 'bg-emerald-600/40 text-emerald-200'; // >110% above avg
+    if (val > 0.9) return 'bg-gray-700/50 text-gray-300';       // ~100% normal
+    return 'bg-blue-600/30 text-blue-300';                      // <90% below avg
 };
 
 const formatPercent = (val: number | null): string => {
@@ -78,11 +87,12 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
             case 'sector': return null;
             case 'ytd': return row.ytd ?? null;
             case 'ytdContribution': return row.ytdContribution ?? null;
+            case 'r7d': return row.r7d ?? null;
             case 'r1m': return row.r1m ?? null;
             case 'r1y': return row.r1y ?? null;
-            case 'r5y': return row.r5y ?? null;
             case 'lastPrice': return row.lastPrice ?? null;
             case 'volatility': return row.volatility ?? null;
+            case 'volumeIndicator': return row.volumeIndicator ?? null;
             default: return null;
         }
     };
@@ -112,10 +122,11 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
         { key: 'lastPrice', label: 'Price', tooltip: 'Last fetched price (USD)' },
         { key: 'ytdContribution', label: 'YTD Contrib', tooltip: 'Weight × Return × Direction' },
         { key: 'ytd', label: 'YTD' },
+        { key: 'r7d', label: '7D', tooltip: '7-day return' },
         { key: 'r1m', label: '1M' },
         { key: 'r1y', label: '1Y' },
-        { key: 'r5y', label: '5Y' },
         { key: 'volatility', label: 'Vol', tooltip: 'Annualized volatility (std dev)' },
+        { key: 'volumeIndicator', label: 'Vol 7D/YTD', tooltip: '7-day avg volume ÷ YTD avg volume' },
     ];
 
     const SortIcon = ({ columnKey }: { columnKey: SortKey }) => {
@@ -191,7 +202,7 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
                                 </td>
 
                                 {/* Return Periods */}
-                                {(['ytd', 'r1m', 'r1y', 'r5y'] as const).map((period) => {
+                                {(['ytd', 'r7d', 'r1m', 'r1y'] as const).map((period) => {
                                     const val = period === 'ytd' ? row.ytd : row[period];
                                     const isHovered = hoveredCell?.ticker === row.ticker && hoveredCell?.period === period;
 
@@ -223,6 +234,22 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
                                     title="Annualized volatility"
                                 >
                                     {formatVolatility(row.volatility)}
+                                </td>
+
+                                {/* Volume Indicator 7D vs YTD */}
+                                <td
+                                    onMouseEnter={() => setHoveredCell({ ticker: row.ticker, period: 'volumeIndicator' })}
+                                    onMouseLeave={() => setHoveredCell(null)}
+                                    className={cn(
+                                        "px-4 py-3 text-center font-mono text-sm transition-all",
+                                        getVolumeColor(row.volumeIndicator),
+                                        hoveredCell?.ticker === row.ticker && hoveredCell?.period === 'volumeIndicator' && "ring-2 ring-white/50 scale-105"
+                                    )}
+                                    title={row.volumeIndicator ? `7d avg vol is ${(row.volumeIndicator * 100).toFixed(0)}% of YTD avg` : 'No volume data'}
+                                >
+                                    {row.volumeIndicator !== null && row.volumeIndicator !== undefined
+                                        ? `${row.volumeIndicator.toFixed(2)}x`
+                                        : '—'}
                                 </td>
                             </tr>
                         ))}
