@@ -20,6 +20,6 @@ timeout /t 10 >nul
 
 :: Open in Chrome
 echo Opening Dashboard in Chrome...
-start chrome http://localhost:5173
+start chrome http://localhost:2137
 
 exit

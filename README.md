@@ -93,7 +93,7 @@ python server.py
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+Open [http://localhost:2137](http://localhost:2137) in your browser.
 
 ---
 
