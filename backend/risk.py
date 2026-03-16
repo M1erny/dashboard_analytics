@@ -161,30 +161,6 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
     # This prevents dropping rows where just some tickers are missing
     returns_df = price_df.pct_change().dropna(how='all')
     
-    # ... (skipping unchanged parts) ...
-
-    # --- 5. YTD METRICS ---
-    # ... (skipping calculation setup) ...
-
-    # [Locate where we insert the FX Logic]
-    # It was around line 493 where the error happened.
-    pass
-
-    # ... (Wait, I need to replace the whole function start or find the specific block)
-    # Let's replace the signature first.
-
-# Actually, let's fix the block I messed up first.
-
-    print("--- 3. Calculating Advanced Risk Metrics ---")
-    
-    if price_df.empty or len(price_df) < 2:
-        print("Error: Insufficient price data.")
-        return None
-        
-    # Use dropna(how='all') to only drop rows where ALL values are NaN
-    # This prevents dropping rows where just some tickers are missing
-    returns_df = price_df.pct_change().dropna(how='all')
-    
     if returns_df.empty or len(returns_df) < 2:
         print("Error: Insufficient returns data after pct_change.")
         return None
@@ -262,7 +238,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
     
     if len(clean_bench) > 1:
         covariance = np.cov(clean_port, clean_bench)[0][1]
-        market_variance = np.var(clean_bench)
+        market_variance = np.var(clean_bench, ddof=1)
         portfolio_beta = covariance / market_variance if market_variance > 0 else 0
     else:
         portfolio_beta = 0
@@ -344,8 +320,6 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
                 'Pct_Risk': pct_contribution,
                 'Weight': signed_weight
             }
-            total_risk_sum += mctr
-
             total_risk_sum += mctr
             
     # --- 4.4 Rolling Volatility ---
@@ -480,8 +454,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
         ytd_portfolio_daily_ret = ytd_portfolio_daily_ret.loc[ytd_benchmark_aligned.index]
 
         # YTD Beta
-        if not ytd_benchmark_aligned.empty and np.var(ytd_benchmark_aligned) > 0:
-            ytd_beta = np.cov(ytd_portfolio_daily_ret, ytd_benchmark_aligned)[0][1] / np.var(ytd_benchmark_aligned)
+        if not ytd_benchmark_aligned.empty and np.var(ytd_benchmark_aligned, ddof=1) > 0:
+            ytd_beta = np.cov(ytd_portfolio_daily_ret, ytd_benchmark_aligned)[0][1] / np.var(ytd_benchmark_aligned, ddof=1)
         else:
             ytd_beta = 0
             

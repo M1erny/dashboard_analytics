@@ -1,0 +1,11 @@
+YTD 2026 BETA COMPARISON
+========================
+Trading days (N):          52
+Inflation factor N/(N-1):  1.0196  (1.96%)
+
+Old beta (np.var pop):      1.3199
+Fixed beta (np.var ddof=1): 1.2945
+OLS beta (ground truth):    1.2945
+
+Difference (old - fixed):   +0.0254
+Matches OLS? Fixed: True  Old: False
