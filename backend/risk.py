@@ -85,7 +85,7 @@ def fetch_data():
     end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     
     print(f"Fetching stock data for {len(tickers)} tickers from {start_date} to {end_date}...")
-    stock_raw = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True)
+    stock_raw = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True, threads=False)
     print(f"Stock Raw Shape: {stock_raw.shape}")
     if stock_raw.empty:
          print("WARNING: Stock Raw is EMPTY!")
@@ -107,7 +107,7 @@ def fetch_data():
         volume_data = pd.DataFrame(1, index=stock_raw.index, columns=stock_raw.columns)
         
     print(f"Fetching FX rates for: {fx_pairs}...")
-    fx_raw = yf.download(fx_pairs, start=start_date, auto_adjust=True)
+    fx_raw = yf.download(fx_pairs, start=start_date, auto_adjust=True, threads=False)
     
     if isinstance(fx_raw.columns, pd.MultiIndex):
         try:

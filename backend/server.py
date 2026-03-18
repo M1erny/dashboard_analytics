@@ -403,6 +403,83 @@ async def get_metrics(force: bool = False):
         traceback.print_exc()
         return {"error": str(e)}
 
+# ==========================================
+# Portfolio Details API (lightweight, no market data fetch)
+# ==========================================
+
+@app.get("/api/portfolio")
+async def get_portfolio():
+    """Return the full portfolio composition from PORTFOLIO_CONFIG."""
+    if not risk:
+        return {"error": "Risk module not loaded"}
+
+    portfolio_config = getattr(risk, 'PORTFOLIO_CONFIG', {})
+    benchmark = getattr(risk, 'BENCHMARK', 'SPY')
+
+    positions = []
+    long_exposure = 0.0
+    short_exposure = 0.0
+
+    for ticker, info in portfolio_config.items():
+        positions.append({
+            "ticker": ticker,
+            "weight": info.get('weight', 0),
+            "type": info.get('type', 'Long'),
+            "currency": info.get('currency', 'USD'),
+            "country": info.get('country', 'USA'),
+            "sector": info.get('sector', 'Unknown'),
+        })
+        if info.get('type') == 'Long':
+            long_exposure += info.get('weight', 0)
+        else:
+            short_exposure += info.get('weight', 0)
+
+    return {
+        "positions": positions,
+        "leverage": {
+            "longExposure": round(long_exposure, 4),
+            "shortExposure": round(short_exposure, 4),
+            "grossExposure": round(long_exposure + short_exposure, 4),
+            "netExposure": round(long_exposure - short_exposure, 4),
+        },
+        "benchmark": benchmark,
+        "positionCount": len(positions),
+    }
+
+
+@app.get("/api/portfolio/allocation")
+async def get_portfolio_allocation():
+    """Return portfolio allocation breakdowns by sector, country, currency, and direction."""
+    if not risk:
+        return {"error": "Risk module not loaded"}
+
+    portfolio_config = getattr(risk, 'PORTFOLIO_CONFIG', {})
+
+    by_sector = {}
+    by_country = {}
+    by_currency = {}
+    by_direction = {"Long": 0.0, "Short": 0.0}
+
+    for ticker, info in portfolio_config.items():
+        weight = info.get('weight', 0)
+        sector = info.get('sector', 'Unknown')
+        country = info.get('country', 'USA')
+        currency = info.get('currency', 'USD')
+        direction = info.get('type', 'Long')
+
+        by_sector[sector] = round(by_sector.get(sector, 0) + weight, 4)
+        by_country[country] = round(by_country.get(country, 0) + weight, 4)
+        by_currency[currency] = round(by_currency.get(currency, 0) + weight, 4)
+        by_direction[direction] = round(by_direction.get(direction, 0) + weight, 4)
+
+    return {
+        "bySector": dict(sorted(by_sector.items(), key=lambda x: x[1], reverse=True)),
+        "byCountry": dict(sorted(by_country.items(), key=lambda x: x[1], reverse=True)),
+        "byCurrency": dict(sorted(by_currency.items(), key=lambda x: x[1], reverse=True)),
+        "byDirection": by_direction,
+    }
+
+
 # ... existing imports ...
 from pydantic import BaseModel
 try:
