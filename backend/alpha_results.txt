@@ -1,0 +1,36 @@
+JENSEN'S ALPHA VERIFICATION
+===========================
+
+--- INPUT VALUES ---
+  Portfolio YTD Return (Rp):   +2.5858%
+  Benchmark YTD Return (Rm):   -1.2465%
+  YTD Beta:                    1.2852
+  Annual Risk-Free Rate:       4.2060%
+  YTD Risk-Free (scaled):      0.8846%
+  Trading Days YTD:            53
+
+--- RAW YTD ALPHA (displayed as 'Raw YTD') ---
+  Formula: alpha = Rp - [Rf_ytd + beta * (Rm - Rf_ytd)]
+  Step 1: Expected = Rf_ytd + beta * (Rm - Rf_ytd)
+         = 0.8846% + 1.2852 * (-1.2465% - 0.8846%)
+         = 0.8846% + 1.2852 * -2.1311%
+         = -1.8543%
+  Step 2: alpha = Rp - Expected
+         = 2.5858% - (-1.8543%)
+         = 4.4401%
+
+--- ANNUALIZED ALPHA ---
+  Annualized Portfolio Ret:    +16.0740%
+  Annualized Benchmark Ret:    -5.2708%
+  Expected = Rf + beta * (Rm_ann - Rf)
+           = 4.2060% + 1.2852 * (-5.2708% - 4.2060%)
+           = -7.9739%
+  Alpha_ann = 16.0740% - (-7.9739%) = 24.0479%
+
+--- INTUITION CHECK ---
+  Simple excess = Rp - Rm = 2.5858% - (-1.2465%) = 3.8323%
+  But Jensen's alpha is HIGHER because beta > 1:
+    With beta=1.29, portfolio was EXPECTED to lose
+    MORE than the market (-1.8543% vs -1.2465%).
+    Instead it GAINED 2.5858%.
+    The outperformance vs expectation = 4.4401%
