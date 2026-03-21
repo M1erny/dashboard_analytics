@@ -7,7 +7,7 @@ interface ReturnsHeatmapProps {
     periodicReturns: PeriodicReturn[];
 }
 
-type SortKey = 'ticker' | 'sector' | 'ytd' | 'ytdContribution' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator';
+type SortKey = 'ticker' | 'sector' | 'ytd' | 'ytdContribution' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight';
 type SortDir = 'asc' | 'desc';
 
 const getReturnColor = (val: number | null): string => {
@@ -93,6 +93,7 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
             case 'lastPrice': return row.lastPrice ?? null;
             case 'volatility': return row.volatility ?? null;
             case 'volumeIndicator': return row.volumeIndicator ?? null;
+            case 'currentWeight': return row.currentWeight ?? null;
             default: return null;
         }
     };
@@ -120,6 +121,7 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
         { key: 'ticker', label: 'Ticker' },
         { key: 'sector', label: 'Sector' },
         { key: 'lastPrice', label: 'Price', tooltip: 'Last fetched price (USD)' },
+        { key: 'currentWeight', label: 'Weight', tooltip: 'Current Drifted Weight (vs Initial/Target)' },
         { key: 'ytdContribution', label: 'YTD Contrib', tooltip: 'Weight × Return × Direction' },
         { key: 'ytd', label: 'YTD' },
         { key: 'r7d', label: '7D', tooltip: '7-day return' },
@@ -185,6 +187,20 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
                                 {/* Price */}
                                 <td className="px-4 py-3 text-center font-mono text-sm text-gray-200 bg-white/[0.02]">
                                     {formatPrice(row.lastPrice, row.currency)}
+                                </td>
+
+                                {/* Current Weight */}
+                                <td className="px-4 py-3 text-center transition-all bg-white/[0.01]">
+                                    <div className="flex flex-col items-center">
+                                        <span className="font-mono text-sm text-gray-200 font-semibold" title={row.currentWeight ? `Current weight: ${(row.currentWeight * 100).toFixed(2)}%` : undefined}>
+                                            {row.currentWeight !== null && row.currentWeight !== undefined ? (row.currentWeight * 100).toFixed(1) + '%' : '—'}
+                                        </span>
+                                        {row.weight !== null && row.weight !== undefined && (
+                                            <span className="text-[10px] text-gray-500 font-mono" title={`Initial target weight: ${(row.weight * 100).toFixed(2)}%`}>
+                                                was {(row.weight * 100).toFixed(1)}%
+                                            </span>
+                                        )}
+                                    </div>
                                 </td>
 
                                 {/* YTD Contribution */}

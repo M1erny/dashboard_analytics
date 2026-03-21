@@ -48,9 +48,9 @@ WATCHLIST_FX = ['USDPLN=X', 'EURPLN=X', 'EURUSD=X', 'DKKEUR=X', 'JPYUSD=X'] # Pa
 BASE_CURRENCY = 'USD'
 LOOKBACK_YEARS = 6
 
-# Cost of Carry Assumptions
-MARGIN_RATE = 0.055 # 5.5% on borrowed cash
-BORROW_FEE = 0.01   # 1.0% hard-to-borrow fee estimate
+# Cost of Carry Assumptions (Retail Broker Estimate)
+MARGIN_RATE = 0.12  # 12.0% typical retail margin rate (e.g., Schwab/Fidelity)
+BORROW_FEE = 0.025  # 2.5% estimated retail hard-to-borrow blended fee
 
 
 
@@ -148,7 +148,7 @@ def normalize_to_base_currency(stock_df, fx_df):
 # ==========================================
 # 3. RISK CALCULATOR (ADVANCED)
 # ==========================================
-def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
+def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MARGIN_RATE, borrow_fee=BORROW_FEE):
     print("--- 3. Calculating Advanced Risk Metrics ---")
     
     if price_df.empty or len(price_df) < 2:
@@ -169,21 +169,32 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
 
     benchmark_ret = returns_df[BENCHMARK]
     
-    # --- 0.5. DYNAMIC RISK FREE RATE (^TNX) ---
+    # --- 0.5. DYNAMIC RISK FREE RATE (^IRX & ^TNX) ---
     try:
+        # Short-term Risk-Free Rate for Sharpe/Sortino (13-week T-Bill)
+        irx = yf.Ticker("^IRX")
+        irx_hist = irx.history(period="5d")
+        if not irx_hist.empty:
+            rf_rate = irx_hist['Close'].iloc[-1] / 100.0
+            print(f"DEBUG: Using ^IRX (Short Rf): {rf_rate:.4%}")
+        else:
+            rf_rate = 0.04
+            print("Warning: ^IRX data unavailable. Defaulting Rf to 4%.")
+            
+        # Long-term Risk-Free Rate for CAPM Expected Return (10-Year T-Note)
         tnx = yf.Ticker("^TNX")
         tnx_hist = tnx.history(period="5d")
         if not tnx_hist.empty:
-            # TNX is yield (e.g., 4.25), convert to decimal (0.0425)
-            latest_yield = tnx_hist['Close'].iloc[-1]
-            rf_rate = latest_yield / 100.0
-            print(f"DEBUG: Using Dynamic Risk-Free Rate (^TNX): {rf_rate:.4%}")
+            rf_rate_long = tnx_hist['Close'].iloc[-1] / 100.0
+            print(f"DEBUG: Using ^TNX (Long Rf): {rf_rate_long:.4%}")
         else:
-            rf_rate = 0.04
-            print("Warning: ^TNX data unavailable. Defaulting Rf to 4%.")
+            rf_rate_long = 0.04
+            print("Warning: ^TNX data unavailable. Defaulting Long Rf to 4%.")
+            
     except Exception as e:
-        print(f"Error fetching ^TNX: {e}. Defaulting Rf to 4%.")
+        print(f"Error fetching ^IRX/^TNX: {e}. Defaulting Rf's to 4%.")
         rf_rate = 0.04
+        rf_rate_long = 0.04
     
     # --- 1. PREPARE PORTFOLIO RETURNS ---
     # Construct a weighted portfolio return series
@@ -217,12 +228,14 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
     # Net Debit = Max(0, Long Exposure - 1.0) -> Assuming 1.0 is our Equity
     
     net_debit = max(0, total_long_weight - 1.0)
-    daily_margin_cost = (net_debit * MARGIN_RATE) / 360
-    daily_borrow_cost = (total_short_weight * BORROW_FEE) / 360
+    daily_margin_cost = (net_debit * margin_rate) / 360
+    daily_borrow_cost = (total_short_weight * borrow_fee) / 360
     total_daily_drag = daily_margin_cost + daily_borrow_cost
     
     # Net Returns (After Cost)
-    portfolio_net_ret = portfolio_daily_ret - total_daily_drag
+    portfolio_gross_ret = portfolio_daily_ret.copy()
+    portfolio_daily_ret = portfolio_gross_ret - total_daily_drag
+    portfolio_net_ret = portfolio_daily_ret
 
     # --- 2. CORE METRICS ---
     # Annualize factor
@@ -329,12 +342,12 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
     bench_rolling_1m_vol = bench_rolling_vol_series.iloc[-1] * np.sqrt(ANNUAL_FACTOR) if not bench_rolling_vol_series.empty else 0
 
     # --- 4.5 CAPM Metrics (Jensen's Alpha) ---
-    # Alpha = Rp - (Rf + Beta * (Rm - Rf))
+    # Alpha = Rp - (Rf_long + Beta * (Rm - Rf_long))
     # We need annualized benchmark return for this
     avg_bench_ret = np.mean(benchmark_ret)
     annual_bench_ret = avg_bench_ret * ANNUAL_FACTOR
     
-    expected_return = rf_rate + portfolio_beta * (annual_bench_ret - rf_rate)
+    expected_return = rf_rate_long + portfolio_beta * (annual_bench_ret - rf_rate_long)
     jensens_alpha = annual_ret - expected_return
     
     # Metadata for transparency
@@ -437,14 +450,22 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
                     else:
                         ytd_shorts_contrib += final_contrib
 
-        # Add initial base (1.0)
-        portfolio_val_series += 1.0
+        # Add initial base (1.0) to raw gross curve
+        portfolio_val_series_gross = portfolio_val_series + 1.0
+        
+        ytd_trading_days = max(0, len(portfolio_val_series_gross) - 1)
+        ytd_financing_cost = ytd_trading_days * total_daily_drag
+        
+        # Create exact Net Portfolio Curve by subtracting cumulative daily drag
+        drag_array = np.arange(len(portfolio_val_series_gross)) * total_daily_drag
+        portfolio_val_series = portfolio_val_series_gross - drag_array
         
         # YTD Return (B&H)
+        ytd_return_gross = portfolio_val_series_gross.iloc[-1] - 1
         ytd_return = portfolio_val_series.iloc[-1] - 1
         benchmark_ytd = (1 + ytd_benchmark).prod() - 1
 
-        # Derive Daily Returns for Vol/Beta/Sharpe consistency
+        # Derive Daily Returns for Vol/Beta/Sharpe consistency directly from the true Net curve
         ytd_portfolio_daily_ret = portfolio_val_series.pct_change().dropna()
         
         # Align benchmark
@@ -471,13 +492,14 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
         ytd_trading_days = len(ytd_portfolio_daily_ret)
         ytd_rf_rate = rf_rate * (ytd_trading_days / ANNUAL_FACTOR)  # Scale annual RF to YTD period
         
-        # YTD Jensen's Alpha (Annualized) - uses full annual rf_rate since returns are annualized
-        ytd_expected_return = rf_rate + ytd_beta * (bench_ytd_ann_ret - rf_rate)
+        # YTD Jensen's Alpha (Annualized) - uses full annual rf_rate_long since returns are annualized
+        ytd_expected_return = rf_rate_long + ytd_beta * (bench_ytd_ann_ret - rf_rate_long)
         ytd_alpha = ytd_ann_ret - ytd_expected_return
         
-        # YTD Jensen's Alpha (Raw, non-annualized) - uses scaled YTD rf_rate
-        # Formula: α = Rp - [Rf + β × (Rm - Rf)]
-        ytd_alpha_raw = ytd_return - (ytd_rf_rate + ytd_beta * (benchmark_ytd - ytd_rf_rate))
+        # YTD Jensen's Alpha (Raw, non-annualized) - uses scaled YTD rf_rate_long
+        # Formula: α = Rp - [Rf_long + β × (Rm - Rf_long)]
+        ytd_rf_rate_long = rf_rate_long * (ytd_trading_days / ANNUAL_FACTOR)
+        ytd_alpha_raw = ytd_return - (ytd_rf_rate_long + ytd_beta * (benchmark_ytd - ytd_rf_rate_long))
 
         # Benchmark Historical Sharpe
         bench_ann_vol = np.std(benchmark_ret) * np.sqrt(ANNUAL_FACTOR)
@@ -596,8 +618,10 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
         
     else:
         ytd_return = 0.0
+        ytd_return_gross = 0.0
         benchmark_ytd = 0.0
         ytd_beta = 0.0
+        ytd_financing_cost = 0.0
         ytd_sharpe = 0.0
         bench_ytd_sharpe = 0.0
         bench_hist_sharpe = 0.0
@@ -776,6 +800,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None):
         'YTD_Alpha_Raw': ytd_alpha_raw,
         'YTD_Max_Drawdown': ytd_max_drawdown,
         'Benchmark_YTD_Max_Drawdown': ytd_bench_max_drawdown,
+        'YTD_Financing_Cost': ytd_financing_cost,
+        'YTD_Return_Gross': ytd_return_gross if 'ytd_return_gross' in locals() else ytd_return,
+        'Annual_Financing_Cost': total_daily_drag * 360,
         'Returns_Stream': portfolio_daily_ret,
         'Net_Stream': portfolio_net_ret, 
         'Benchmark_Stream': benchmark_ret, 

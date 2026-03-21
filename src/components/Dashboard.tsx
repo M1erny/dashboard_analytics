@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { fetchDashboardData } from '../utils/finance';
-import type { FullRiskReport } from '../utils/finance';
+import type { FullRiskReport, CostTier } from '../utils/finance';
 import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { CorrelationMatrixTable } from './dashboard/CorrelationMatrixTable';
@@ -13,11 +13,16 @@ import { cn } from '../lib/utils';
 export const Dashboard: React.FC = () => {
     const [data, setData] = useState<FullRiskReport | null>(null);
     const [loading, setLoading] = useState(true);
+    const [isSwitchingTier, setIsSwitchingTier] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [costTier, setCostTier] = useState<CostTier>('retail');
 
     useEffect(() => {
-        // Force refresh on initial load (true as 3rd arg) to avoid stale cache
-        fetchDashboardData(5, 3000, true).then(res => {
+        const isInitialLoad = !data;
+        if (isInitialLoad) setLoading(true);
+        else setIsSwitchingTier(true);
+
+        fetchDashboardData(5, 3000, isInitialLoad, costTier).then(res => {
             if (res) {
                 if (res.error) {
                     setError(res.error);
@@ -31,8 +36,9 @@ export const Dashboard: React.FC = () => {
             setError(err instanceof Error ? err.message : String(err));
         }).finally(() => {
             setLoading(false);
+            setIsSwitchingTier(false);
         });
-    }, []);
+    }, [costTier]);
 
     const formatPercent = (val: number | undefined) => typeof val === 'number' ? `${(val * 100).toFixed(2)}%` : 'N/A';
 
@@ -103,13 +109,39 @@ export const Dashboard: React.FC = () => {
                             <p className="font-mono text-rose-400 font-black text-lg leading-none">{formatPercent(leverage.Short_Exp)}</p>
                         </div>
 
+                        {/* Cost Tier Toggle */}
+                        <div className="flex bg-white/5 rounded-lg border border-white/10 p-1 relative">
+                            {isSwitchingTier && (
+                                <div className="absolute -top-1 -right-1 flex h-3 w-3">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                                </div>
+                            )}
+                            {(['institutional', 'retail', 'none'] as const).map(tier => (
+                                <button
+                                    key={tier}
+                                    onClick={() => setCostTier(tier)}
+                                    disabled={isSwitchingTier}
+                                    className={cn(
+                                        "px-3 py-1.5 text-[10px] md:text-xs font-semibold uppercase tracking-wider rounded-md transition-all",
+                                        costTier === tier 
+                                            ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30" 
+                                            : "text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent",
+                                        isSwitchingTier ? "opacity-50 cursor-not-allowed" : ""
+                                    )}
+                                >
+                                    {tier === 'none' ? 'No Drag' : tier}
+                                </button>
+                            ))}
+                        </div>
+
                         {/* Refresh Button - Fixed Alignment */}
                         <button
                             onClick={() => {
-                                setLoading(true);
-                                fetchDashboardData(5, 1000, true).then(res => { // force=true
+                                setIsSwitchingTier(true);
+                                fetchDashboardData(5, 1000, true, costTier).then(res => { // force=true
                                     if (res) setData(res);
-                                }).finally(() => setLoading(false));
+                                }).finally(() => setIsSwitchingTier(false));
                             }}
                             className="bg-white/5 hover:bg-white/10 px-4 rounded-lg border border-white/10 transition-colors flex items-center justify-center"
                             title="Force Refresh Data"
@@ -119,8 +151,8 @@ export const Dashboard: React.FC = () => {
                     </div>
                 </div>
 
-                {/* NEW: Executive Summary (YTD Returns, Alpha, Benchmarks) */}
-                <ExecutiveSummary vitals={vitals} />
+                {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing) */}
+                <ExecutiveSummary vitals={vitals} leverage={leverage} costTier={costTier} />
 
                 {/* ROW 2: Returns Heatmap & Portfolio Contribution (Full Width) */}
                 <ReturnsHeatmap periodicReturns={periodicReturns} />

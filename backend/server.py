@@ -27,8 +27,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Response cache (5 minute TTL)
-_cache = {"data": None, "timestamp": 0}
+# Response cache (mapped by costTier, 5 minute TTL)
+_cache = {}
 CACHE_TTL = 300  # seconds
 
 @app.get("/api/status")
@@ -39,23 +39,46 @@ async def get_status():
         return {"state": "error", "message": "Risk module failed to load"}
 
 @app.get("/api/metrics")
-async def get_metrics(force: bool = False):
+async def get_metrics(force: bool = False, costTier: str = 'retail'):
     global _cache
     
     if not risk:
         return {"error": "risk.py not found or failed to import"}
+        
+    if costTier not in _cache:
+        _cache[costTier] = {"data": None, "timestamp": 0}
+        
+    tier_cache = _cache[costTier]
     
     # Return cached response if fresh (unless force=True)
-    if not force and _cache["data"] and (time.time() - _cache["timestamp"]) < CACHE_TTL:
-        print(f"Returning cached response (age: {int(time.time() - _cache['timestamp'])}s)")
-        return _cache["data"]
+    if not force and tier_cache["data"] and (time.time() - tier_cache["timestamp"]) < CACHE_TTL:
+        print(f"Returning cached response for {costTier} (age: {int(time.time() - tier_cache['timestamp'])}s)")
+        return tier_cache["data"]
 
     try:
-        print("Fetching fresh data...")
+        print(f"Fetching fresh data for tier: {costTier}...")
+        
+        # Determine rates based on costTier
+        if costTier == 'institutional':
+            margin_rate = 0.055
+            borrow_fee = 0.010
+        elif costTier == 'none':
+            margin_rate = 0.0
+            borrow_fee = 0.0
+        else: # retail
+            margin_rate = 0.120
+            borrow_fee = 0.025
+            
         # 1. Fetch and Calculate Base Metrics
         raw_prices, fx_rates, volume_data = risk.fetch_data()
         usd_prices = risk.normalize_to_base_currency(raw_prices, fx_rates)
-        metrics = risk.calculate_risk_metrics(usd_prices, volume_data, fx_rates)
+        metrics = risk.calculate_risk_metrics(
+            usd_prices, 
+            volume_data, 
+            fx_rates,
+            margin_rate=margin_rate,
+            borrow_fee=borrow_fee
+        )
         
         if metrics is None:
              print("Error: Metrics calculation returned None (insufficient data).")
@@ -112,6 +135,9 @@ async def get_metrics(force: bool = False):
                 "ytdBeta": to_float(metrics.get('YTD_Beta')),
                 "ytdMaxDrawdown": to_float(metrics.get('YTD_Max_Drawdown')),
                 "benchmarkYtdMaxDrawdown": to_float(metrics.get('Benchmark_YTD_Max_Drawdown')),
+                "ytdReturnGross": to_float(metrics.get('YTD_Return_Gross')),
+                "ytdFinancingCost": to_float(metrics.get('YTD_Financing_Cost')),
+                "annualFinancingCost": to_float(metrics.get('Annual_Financing_Cost')),
                 
                 # Standardized Sharpe Metrics
                 "ytdSharpe": to_float(metrics.get('YTD_Sharpe')),           # Previously riskEfficiencyVol
@@ -230,8 +256,7 @@ async def get_metrics(force: bool = False):
         # Format Periodic Returns
         # Periodic returns is a DataFrame: index=ticker, columns=['YTD', '1Y', '3Y', '5Y']
         # We need to add 1M returns and YTD contribution
-        
-
+        portfolio_ytd = to_float(metrics.get('YTD_Return')) or 0.0
         
         for ticker, row in periodic_rets.iterrows():
             # Get portfolio info for this ticker
@@ -243,6 +268,10 @@ async def get_metrics(force: bool = False):
             ytd_ret = row['YTD'] if 'YTD' in row and not pd.isna(row['YTD']) else 0
             dir_multiplier = 1 if direction == 'Long' else (-1 if direction == 'Short' else 0)
             ytd_contribution = weight * ytd_ret * dir_multiplier if weight and ytd_ret else None
+            
+            # Calculate current drifted weight
+            # W_current = W_initial * (1 + R_ytd_asset) / (1 + R_ytd_portfolio)
+            current_weight = float(weight * (1 + ytd_ret) / (1 + portfolio_ytd)) if weight else None
             
             # Calculate 1M return from the returns data
             r1m = None
@@ -304,6 +333,7 @@ async def get_metrics(force: bool = False):
                 "r1y": row['1Y'] if not pd.isna(row['1Y']) else None,
                 "ytdContribution": to_float(ytd_contribution),
                 "weight": to_float(weight) if weight else None,
+                "currentWeight": to_float(current_weight),
                 "direction": direction,
                 "lastPrice": last_price,
                 "currency": currency,
@@ -392,9 +422,9 @@ async def get_metrics(force: bool = False):
             ra["mctr"] = to_float(ra["mctr"])
 
         # Store in cache
-        _cache["data"] = response
-        _cache["timestamp"] = time.time()
-        print(f"Response cached at {_cache['timestamp']}")
+        tier_cache["data"] = response
+        tier_cache["timestamp"] = time.time()
+        print(f"Response cached at {tier_cache['timestamp']}")
 
         return response
 

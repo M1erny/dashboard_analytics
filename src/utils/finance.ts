@@ -38,6 +38,9 @@ export interface Vitals {
     ytdAlphaRaw: number;
     ytdMaxDrawdown: number;
     benchmarkYtdMaxDrawdown: number;
+    ytdReturnGross: number;
+    ytdFinancingCost: number;
+    annualFinancingCost: number;
     currencyExposure: Record<string, number>;
     fxWatchlist: Record<string, number>;
     periodInfo: PeriodInfo;
@@ -72,6 +75,7 @@ export interface PeriodicReturn {
     ytd: number;
     ytdContribution: number | null;  // weight * return * direction
     weight: number | null;
+    currentWeight: number | null;
     direction: 'Long' | 'Short' | null;
     lastPrice: number | null;  // Last fetched price (original currency)
     currency: string;  // Original currency (USD, EUR, etc.)
@@ -112,13 +116,15 @@ export interface FullRiskReport {
     error?: string;
 }
 
-export const fetchDashboardData = async (retries = 5, delay = 3000, force = false): Promise<FullRiskReport | null> => {
+export type CostTier = 'institutional' | 'retail' | 'none';
+
+export const fetchDashboardData = async (retries = 5, delay = 3000, force = false, costTier: CostTier = 'retail'): Promise<FullRiskReport | null> => {
     for (let i = 0; i < retries; i++) {
         try {
             // Use relative path - Vite proxy will handle forwarding to backend
             const url = force
-                ? `/api/metrics?force=true&t=${new Date().getTime()}`
-                : `/api/metrics`;
+                ? `/api/metrics?force=true&costTier=${costTier}&t=${new Date().getTime()}`
+                : `/api/metrics?costTier=${costTier}`;
 
             // Add 90 second timeout for slow backend (insider data fetching)
             const controller = new AbortController();
