@@ -26,7 +26,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals }) =>
         accentColor?: string;
     }) => (
         <div className={cn(
-            "relative overflow-hidden rounded-xl p-5",
+            "relative overflow-hidden rounded-xl p-5 flex flex-col",
             "bg-gradient-to-br", gradient,
             "border", accentColor,
             "backdrop-blur-xl shadow-lg",
@@ -36,16 +36,20 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals }) =>
             {/* Subtle glow effect */}
             <div className="absolute inset-0 bg-gradient-to-br from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
 
-            <div className="flex items-center gap-2 mb-3">
-                <Icon className="h-4 w-4 text-gray-400" />
-                <span className="text-xs text-gray-400 uppercase tracking-wider font-semibold">{title}</span>
+            {/* Fixed height title area ensures every card's content starts at EXACTLY the same Y position */}
+            <div className="flex items-start gap-2 h-9 mb-1">
+                <Icon className="h-4 w-4 text-gray-400 shrink-0 mt-0.5" />
+                <span className="text-[11px] text-gray-400 uppercase tracking-wider font-bold leading-tight line-clamp-2">{title}</span>
             </div>
-            {children}
+            
+            <div>
+                {children}
+            </div>
         </div>
     );
 
     return (
-        <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+        <div className="mb-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7 gap-5">
 
             {/* Market Conditions */}
             <MetricCard
@@ -54,20 +58,21 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals }) =>
                 gradient="from-slate-800/60 to-slate-900/80"
                 accentColor="border-blue-500/20"
             >
-                <div className="space-y-3">
-                    <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-400">YTD Beta</span>
-                        <span className="font-mono text-2xl font-bold text-white">{formatNumber(vitals.ytdBeta)}</span>
+                <div className="flex flex-col gap-3">
+                    <div className="flex items-baseline gap-2">
+                        <span className="font-mono text-3xl font-black text-white tracking-tight">{formatNumber(vitals.ytdBeta)}</span>
                     </div>
-                    <div className="flex justify-between items-center">
-                        <span className="text-sm text-gray-400">Regime</span>
+                    
+                    <div className="flex justify-between items-center bg-white/5 rounded-lg px-3 py-2 border border-white/5 mt-1">
+                        <span className="text-xs uppercase tracking-wider text-gray-400 font-semibold">Regime</span>
                         <span className={cn(
-                            "font-mono text-xs font-bold px-3 py-1 rounded-full",
+                            "font-mono text-[11px] font-bold px-2 py-1 rounded inline-flex items-center gap-1.5 uppercase tracking-wider",
                             vitals.ytdBeta > 1
-                                ? "bg-gradient-to-r from-amber-500/30 to-orange-500/30 text-amber-400 border border-amber-500/30"
-                                : "bg-gradient-to-r from-blue-500/30 to-cyan-500/30 text-blue-400 border border-blue-500/30"
+                                ? "bg-amber-500/10 text-amber-500 border border-amber-500/20 shadow-lg shadow-amber-500/10"
+                                : "bg-blue-500/10 text-blue-500 border border-blue-500/20 shadow-lg shadow-blue-500/10"
                         )}>
-                            {vitals.ytdBeta > 1 ? "⚡ Aggressive" : "🛡️ Defensive"}
+                            {vitals.ytdBeta > 1 ? <Zap className="w-3 h-3" /> : <Shield className="w-3 h-3" />}
+                            {vitals.ytdBeta > 1 ? "Aggressive" : "Defensive"}
                         </span>
                     </div>
                 </div>
@@ -89,12 +94,48 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals }) =>
                             {vitals.ytdReturn > 0 ? "+" : ""}{formatPercent(vitals.ytdReturn)}
                         </span>
                     </div>
-                    <div className="flex flex-wrap gap-2 text-xs">
-                        <span className="px-2 py-1 rounded-md bg-white/5 text-gray-400">
-                            SPY <span className="text-white font-medium">{formatPercent(vitals.benchmarkYtd)}</span>
+                    <div className="flex flex-wrap gap-2 text-xs mt-3">
+                        <div className="flex-1 min-w-[70px] flex justify-between items-center bg-white/5 rounded-lg px-2.5 py-1.5 border border-white/5">
+                            <span className="text-gray-400 font-semibold tracking-wider uppercase text-[10px]">SPY</span>
+                            <span className="text-white font-mono font-bold text-sm tracking-tight">{formatPercent(vitals.benchmarkYtd)}</span>
+                        </div>
+                        <div className="flex-1 min-w-[70px] flex justify-between items-center bg-white/5 rounded-lg px-2.5 py-1.5 border border-white/5">
+                            <span className="text-gray-400 font-semibold tracking-wider uppercase text-[10px]">MSCI</span>
+                            <span className="text-white font-mono font-bold text-sm tracking-tight">{formatPercent(vitals.msciYtd)}</span>
+                        </div>
+                    </div>
+                </div>
+            </MetricCard>
+
+            {/* L/S Contribution */}
+            <MetricCard
+                title="L/S Contribution"
+                icon={BarChart3}
+                gradient="from-slate-800/40 to-slate-900/80"
+                accentColor="border-blue-500/20"
+            >
+                <div className="flex flex-col gap-3">
+                    <div className="flex justify-between items-center bg-white/5 rounded-lg px-3 py-2 border border-white/5">
+                        <span className="text-[11px] uppercase tracking-wider text-gray-400 font-bold flex items-center gap-1.5">
+                            <TrendingUp className="w-3 h-3 text-blue-400" /> Longs
                         </span>
-                        <span className="px-2 py-1 rounded-md bg-white/5 text-gray-400">
-                            🌍 MSCI <span className="text-white font-medium">{formatPercent(vitals.msciYtd)}</span>
+                        <span className={cn(
+                            "font-mono text-lg font-black tracking-tight",
+                            vitals.ytdLongsContrib >= 0 ? "text-emerald-400" : "text-rose-400"
+                        )}>
+                            {vitals.ytdLongsContrib > 0 ? "+" : ""}{formatPercent(vitals.ytdLongsContrib)}
+                        </span>
+                    </div>
+                    
+                    <div className="flex justify-between items-center bg-white/5 rounded-lg px-3 py-2 border border-white/5 mt-0.5">
+                        <span className="text-[11px] uppercase tracking-wider text-gray-400 font-bold flex items-center gap-1.5">
+                            <TrendingDown className="w-3 h-3 text-purple-400" /> Shorts
+                        </span>
+                        <span className={cn(
+                            "font-mono text-lg font-black tracking-tight",
+                            vitals.ytdShortsContrib >= 0 ? "text-emerald-400" : "text-rose-400"
+                        )}>
+                            {vitals.ytdShortsContrib > 0 ? "+" : ""}{formatPercent(vitals.ytdShortsContrib)}
                         </span>
                     </div>
                 </div>
@@ -114,9 +155,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals }) =>
                     )}>
                         {vitals.ytdReturnPln > 0 ? "+" : ""}{formatPercent(vitals.ytdReturnPln)}
                     </span>
-                    <span className="inline-block text-xs text-gray-400 bg-white/10 px-2 py-1 rounded-md">
-                        incl. FX
-                    </span>
+
                 </div>
             </MetricCard>
 
@@ -136,7 +175,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals }) =>
                         )}>
                             {vitals.ytdAlphaRaw > 0 ? "+" : ""}{formatPercent(vitals.ytdAlphaRaw)}
                         </span>
-                        <span className="text-xs text-gray-500 bg-white/5 px-2 py-0.5 rounded">Raw YTD</span>
+
                     </div>
                     {/* Annualized Alpha */}
                     <div className="flex items-center gap-2 text-xs">

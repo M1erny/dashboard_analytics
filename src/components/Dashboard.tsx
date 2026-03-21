@@ -41,7 +41,7 @@ export const Dashboard: React.FC = () => {
             <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
                 <div className="flex flex-col items-center gap-4">
                     <div className="h-12 w-12 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-                    <p className="text-muted-foreground animate-pulse">Running Risk Engine...</p>
+                    <p className="text-muted-foreground animate-pulse">Investing Dashboard...</p>
                 </div>
             </div>
         )
@@ -82,26 +82,25 @@ export const Dashboard: React.FC = () => {
                 {/* Responsive Header */}
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                     <div>
-                        <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white flex items-center gap-2">
-                            <LayoutDashboard className="h-6 w-6 md:h-8 md:w-8 text-primary" />
-                            Portfolio
+                        <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white flex items-center gap-3">
+                            <div className="p-2 bg-primary/20 rounded-xl border border-primary/30">
+                                <LayoutDashboard className="h-6 w-6 md:h-8 md:w-8 text-primary animate-pulse" />
+                            </div>
+                            <span className="bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">Portfolio</span>
                         </h1>
-                        <p className="text-muted-foreground mt-1 text-sm md:text-base">
-                            Live quantitative analysis
-                        </p>
                     </div>
 
                     {/* Header Widgets: Exposures & FX */}
                     <div className="flex flex-wrap md:flex-nowrap gap-3 text-sm w-full md:w-auto">
                         <FxExposureWidget vitals={vitals} />
 
-                        <div className="flex-1 md:flex-none bg-white/5 px-4 py-2 rounded-lg border border-white/10 flex flex-col justify-center min-w-[120px]">
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">Long Exposure</p>
-                            <p className="font-mono text-emerald-400 font-bold text-base">{formatPercent(leverage.Long_Exp)}</p>
+                        <div className="flex-1 md:flex-none bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-4 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex flex-col justify-center min-w-[120px] shadow-lg shadow-emerald-500/5 transition-transform hover:scale-105">
+                            <p className="text-[10px] uppercase tracking-wider text-emerald-500/80 font-bold mb-0.5">Long Exposure</p>
+                            <p className="font-mono text-emerald-400 font-black text-lg leading-none">{formatPercent(leverage.Long_Exp)}</p>
                         </div>
-                        <div className="flex-1 md:flex-none bg-white/5 px-4 py-2 rounded-lg border border-white/10 flex flex-col justify-center min-w-[120px]">
-                            <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">Short Exposure</p>
-                            <p className="font-mono text-rose-400 font-bold text-base">{formatPercent(leverage.Short_Exp)}</p>
+                        <div className="flex-1 md:flex-none bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-4 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex flex-col justify-center min-w-[120px] shadow-lg shadow-rose-500/5 transition-transform hover:scale-105">
+                            <p className="text-[10px] uppercase tracking-wider text-rose-500/80 font-bold mb-0.5">Short Exposure</p>
+                            <p className="font-mono text-rose-400 font-black text-lg leading-none">{formatPercent(leverage.Short_Exp)}</p>
                         </div>
 
                         {/* Refresh Button - Fixed Alignment */}
