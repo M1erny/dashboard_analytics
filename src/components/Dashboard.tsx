@@ -97,57 +97,59 @@ export const Dashboard: React.FC = () => {
                     </div>
 
                     {/* Header Widgets: Exposures & FX */}
-                    <div className="flex flex-wrap md:flex-nowrap gap-3 text-sm w-full md:w-auto">
+                    <div className="flex flex-wrap md:flex-nowrap items-center gap-3 text-sm w-full md:w-auto">
                         <FxExposureWidget vitals={vitals} />
 
-                        <div className="flex-1 md:flex-none bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-4 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex flex-col justify-center min-w-[120px] shadow-lg shadow-emerald-500/5 transition-transform hover:scale-105">
-                            <p className="text-[10px] uppercase tracking-wider text-emerald-500/80 font-bold mb-0.5">Long Exposure</p>
+                        <div className="flex bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-4 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center min-w-[110px] shadow-lg shadow-emerald-500/5 transition-transform hover:scale-105">
+                            <p className="text-[10px] uppercase tracking-wider text-emerald-500/80 font-bold mb-0.5">Long Exp</p>
                             <p className="font-mono text-emerald-400 font-black text-lg leading-none">{formatPercent(leverage.Long_Exp)}</p>
                         </div>
-                        <div className="flex-1 md:flex-none bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-4 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex flex-col justify-center min-w-[120px] shadow-lg shadow-rose-500/5 transition-transform hover:scale-105">
-                            <p className="text-[10px] uppercase tracking-wider text-rose-500/80 font-bold mb-0.5">Short Exposure</p>
+                        <div className="flex bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-4 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center min-w-[110px] shadow-lg shadow-rose-500/5 transition-transform hover:scale-105">
+                            <p className="text-[10px] uppercase tracking-wider text-rose-500/80 font-bold mb-0.5">Short Exp</p>
                             <p className="font-mono text-rose-400 font-black text-lg leading-none">{formatPercent(leverage.Short_Exp)}</p>
                         </div>
 
-                        {/* Cost Tier Toggle */}
-                        <div className="flex bg-white/5 rounded-lg border border-white/10 p-1 relative">
-                            {isSwitchingTier && (
-                                <div className="absolute -top-1 -right-1 flex h-3 w-3">
-                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                    <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-                                </div>
-                            )}
-                            {(['institutional', 'retail', 'none'] as const).map(tier => (
-                                <button
-                                    key={tier}
-                                    onClick={() => setCostTier(tier)}
-                                    disabled={isSwitchingTier}
-                                    className={cn(
-                                        "px-3 py-1.5 text-[10px] md:text-xs font-semibold uppercase tracking-wider rounded-md transition-all",
-                                        costTier === tier 
-                                            ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30" 
-                                            : "text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent",
-                                        isSwitchingTier ? "opacity-50 cursor-not-allowed" : ""
-                                    )}
-                                >
-                                    {tier === 'none' ? 'No Drag' : tier}
-                                </button>
-                            ))}
-                        </div>
+                        {/* Cost Tier Toggle & Refresh Wrapper */}
+                        <div className="flex w-full md:w-auto items-center gap-3 mt-2 md:mt-0">
+                            <div className="flex-1 md:flex-none flex bg-white/5 rounded-lg border border-white/10 p-1 relative h-[38px]">
+                                {isSwitchingTier && (
+                                    <div className="absolute -top-1 -right-1 flex h-3 w-3">
+                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                        <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                                    </div>
+                                )}
+                                {(['institutional', 'retail', 'none'] as const).map(tier => (
+                                    <button
+                                        key={tier}
+                                        onClick={() => setCostTier(tier)}
+                                        disabled={isSwitchingTier}
+                                        className={cn(
+                                            "flex-1 md:flex-none px-2 sm:px-3 py-1 text-[10px] sm:text-xs font-semibold uppercase tracking-wider rounded-md transition-all whitespace-nowrap",
+                                            costTier === tier 
+                                                ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30" 
+                                                : "text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent",
+                                            isSwitchingTier ? "opacity-50 cursor-not-allowed" : ""
+                                        )}
+                                    >
+                                        {tier === 'none' ? 'No Drag' : tier}
+                                    </button>
+                                ))}
+                            </div>
 
-                        {/* Refresh Button - Fixed Alignment */}
-                        <button
-                            onClick={() => {
-                                setIsSwitchingTier(true);
-                                fetchDashboardData(5, 1000, true, costTier).then(res => { // force=true
-                                    if (res) setData(res);
-                                }).finally(() => setIsSwitchingTier(false));
-                            }}
-                            className="bg-white/5 hover:bg-white/10 px-4 rounded-lg border border-white/10 transition-colors flex items-center justify-center"
-                            title="Force Refresh Data"
-                        >
-                            <RefreshCw className={cn("h-5 w-5 text-emerald-400", loading ? "animate-spin" : "")} />
-                        </button>
+                            {/* Refresh Button */}
+                            <button
+                                onClick={() => {
+                                    setIsSwitchingTier(true);
+                                    fetchDashboardData(5, 1000, true, costTier).then(res => { // force=true
+                                        if (res) setData(res);
+                                    }).finally(() => setIsSwitchingTier(false));
+                                }}
+                                className="bg-white/5 hover:bg-white/10 w-[38px] h-[38px] rounded-lg border border-white/10 transition-colors flex items-center justify-center shrink-0"
+                                title="Force Refresh Data"
+                            >
+                                <RefreshCw className={cn("h-4 w-4 text-emerald-400", isSwitchingTier ? "animate-spin" : "")} />
+                            </button>
+                        </div>
                     </div>
                 </div>
 

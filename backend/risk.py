@@ -602,19 +602,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         else:
             msci_ytd = 0
             
-        # Longs/Shorts Contribution 
-        # Needs to align with the new base logic? 
-        # Since we use ytd_rel_prices logic above for total portfolio, this loop for granular contribution
-        # should ideally match.
-        # Note: Above we calculate "ytd_longs_contrib" and "ytd_shorts_contrib" in the main loop.
-        # The loop below was recalculating it differently. Let's just use the ones from the main loop!
-        # But wait, the main loop calculates portfolio *weighted* contribution.
-        # The variables `ytd_longs_contrib` were already accumulated there.
-        # So we can remove the redundant loop below or update it?
-        # The redundant loop calculates it slightly differently using product of returns.
-        # Let's stick effectively to the main loop's result as it matches the "YTD Return" number exactly by definition.
-        
-        # DO NOTHING here, we already calculated ytd_longs_contrib in the loop above.
+        # Longs/Shorts Contribution was already accumulated efficiently in the main YTD loop above.
         
     else:
         ytd_return = 0.0
