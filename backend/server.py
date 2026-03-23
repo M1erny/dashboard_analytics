@@ -273,7 +273,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             # W_current = W_initial * (1 + R_ytd_asset) / (1 + R_ytd_portfolio)
             current_weight = float(weight * (1 + ytd_ret) / (1 + portfolio_ytd)) if weight else None
             
-            # Calculate 1M return from the returns data
+            # Calculate Returns and Contributions
+            r1d = None
             r1m = None
             r7d = None
             last_price = None
@@ -306,6 +307,12 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             if ticker in usd_prices.columns:
                 series = usd_prices[ticker].dropna()
                 
+                # 1D return
+                if len(series) > 1:
+                    current = series.iloc[-1]
+                    past_1d = series.iloc[-2]
+                    r1d = (current - past_1d) / past_1d if past_1d != 0 else None
+
                 # 7D return
                 if len(series) > 5:  # ~1 week of trading days
                     current = series.iloc[-1]
@@ -324,14 +331,20 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
                     if len(daily_returns) > 0:
                         volatility = float(daily_returns.std() * np.sqrt(252))
             
+            r1d_contribution = weight * r1d * dir_multiplier if weight and r1d is not None else None
+            r7d_contribution = weight * r7d * dir_multiplier if weight and r7d is not None else None
+
             item = {
                 "ticker": ticker,
                 "sector": sector,
                 "ytd": row['YTD'] if 'YTD' in row and not pd.isna(row['YTD']) else None,
+                "r1d": to_float(r1d),
                 "r7d": to_float(r7d),
                 "r1m": to_float(r1m),
                 "r1y": row['1Y'] if not pd.isna(row['1Y']) else None,
                 "ytdContribution": to_float(ytd_contribution),
+                "r1dContribution": to_float(r1d_contribution),
+                "r7dContribution": to_float(r7d_contribution),
                 "weight": to_float(weight) if weight else None,
                 "currentWeight": to_float(current_weight),
                 "direction": direction,

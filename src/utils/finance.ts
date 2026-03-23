@@ -69,11 +69,14 @@ export interface StressTest {
 export interface PeriodicReturn {
     ticker: string;
     sector?: string;
+    r1d: number | null;  // 1 Day return
     r7d: number | null;  // 7 Day return
     r1m: number | null;  // 1 Month return
     r1y: number | null;
     ytd: number;
     ytdContribution: number | null;  // weight * return * direction
+    r1dContribution: number | null;
+    r7dContribution: number | null;
     weight: number | null;
     currentWeight: number | null;
     direction: 'Long' | 'Short' | null;
