@@ -852,3 +852,13 @@ DEBUG: YTD Return (Cum): 0.2770%
 DEBUG: YTD Return (Cum): 0.2710%
 DEBUG: YTD Return (Cum): 0.2704%
 DEBUG: YTD Return (Cum): 1.2183%
+DEBUG: YTD Return (Cum): 0.2769%
+DEBUG: YTD Return (Cum): 0.2714%
+DEBUG: YTD Return (Cum): 1.4865%
+DEBUG: YTD Return (Cum): 0.2936%
+DEBUG: YTD Return (Cum): 0.2895%
+DEBUG: YTD Return (Cum): 0.3182%
+DEBUG: YTD Return (Cum): 0.3123%
+DEBUG: YTD Return (Cum): 0.1588%
+DEBUG: YTD Return (Cum): 0.3131%
+DEBUG: YTD Return (Cum): 0.9751%

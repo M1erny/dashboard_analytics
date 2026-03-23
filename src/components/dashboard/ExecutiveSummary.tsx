@@ -2,7 +2,7 @@ import { cn } from '../../lib/utils';
 import type { Vitals, LeverageStats } from '../../utils/finance';
 import {
     TrendingUp, TrendingDown, Activity, Zap, Shield,
-    BarChart3, PieChart, ArrowUpRight, ArrowDownRight,
+    BarChart3, ArrowUpRight, ArrowDownRight,
     Gauge, Flame, DollarSign
 } from 'lucide-react';
 
@@ -31,16 +31,6 @@ const returnColor = (val: number | undefined) => {
     return val >= 0 ? 'text-emerald-400' : 'text-rose-400';
 };
 
-const returnBg = (val: number | undefined) => {
-    if (typeof val !== 'number') return 'bg-gray-500/10';
-    return val >= 0 ? 'bg-emerald-500/10' : 'bg-rose-500/10';
-};
-
-const returnBorder = (val: number | undefined) => {
-    if (typeof val !== 'number') return 'border-gray-500/20';
-    return val >= 0 ? 'border-emerald-500/20' : 'border-rose-500/20';
-};
-
 // ─── Mini stat row ───────────────────────────────────────────
 const StatRow = ({ label, value, tooltip, valueClassName }: {
     label: string; value: string; tooltip?: string; valueClassName?: string;
@@ -56,7 +46,6 @@ const StatRow = ({ label, value, tooltip, valueClassName }: {
 // ─── Main Component ──────────────────────────────────────────
 export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, leverage, costTier = 'retail' }) => {
     const ytdPositive = (vitals.ytdReturn ?? 0) >= 0;
-    const plnPositive = (vitals.ytdReturnPln ?? 0) >= 0;
 
     return (
         <div className="space-y-4">

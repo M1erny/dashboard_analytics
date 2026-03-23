@@ -46,10 +46,11 @@ def ensure_ssh_key():
             return False
     return True
 
-def is_server_running(url="http://localhost:5173"):
+def is_server_running(url="http://127.0.0.1:5173"):
     try:
-        with urllib.request.urlopen(url, timeout=1) as response:
-            return response.status == 200
+        import socket
+        with socket.create_connection(("127.0.0.1", 5173), timeout=1):
+            return True
     except:
         return False
 
@@ -62,8 +63,8 @@ def start_dev_server():
             "npm run dev", 
             shell=True,
             cwd=os.path.dirname(os.path.abspath(__file__)),
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.DEVNULL 
         )
         # Wait a bit for it to come up
         for _ in range(30):
