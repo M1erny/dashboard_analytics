@@ -29,6 +29,7 @@ app.add_middleware(
 
 # Response cache (mapped by costTier, 5 minute TTL)
 _cache = {}
+_data_cache = {"data": None, "timestamp": 0}  # Shared raw market data cache
 CACHE_TTL = 300  # seconds
 
 @app.get("/api/status")
@@ -37,6 +38,21 @@ async def get_status():
         return {"state": "ready", "message": "Ready"}
     else:
         return {"state": "error", "message": "Risk module failed to load"}
+
+def _get_cached_market_data(force: bool = False):
+    """Fetch and cache raw market data. All tiers share this cache so gross returns are identical."""
+    global _data_cache
+    now = time.time()
+    if not force and _data_cache["data"] and (now - _data_cache["timestamp"]) < CACHE_TTL:
+        print(f"Using cached market data (age: {int(now - _data_cache['timestamp'])}s)")
+        return _data_cache["data"]
+    
+    print("Fetching fresh market data from yfinance...")
+    raw_prices, fx_rates, volume_data = risk.fetch_data()
+    usd_prices = risk.normalize_to_base_currency(raw_prices, fx_rates)
+    _data_cache["data"] = (usd_prices, fx_rates, volume_data)
+    _data_cache["timestamp"] = now
+    return _data_cache["data"]
 
 @app.get("/api/metrics")
 async def get_metrics(force: bool = False, costTier: str = 'retail'):
@@ -51,12 +67,16 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
     tier_cache = _cache[costTier]
     
     # Return cached response if fresh (unless force=True)
-    if not force and tier_cache["data"] and (time.time() - tier_cache["timestamp"]) < CACHE_TTL:
+    if force:
+        # Invalidate all tier caches since underlying data may change
+        for k in _cache:
+            _cache[k] = {"data": None, "timestamp": 0}
+    elif tier_cache["data"] and (time.time() - tier_cache["timestamp"]) < CACHE_TTL:
         print(f"Returning cached response for {costTier} (age: {int(time.time() - tier_cache['timestamp'])}s)")
         return tier_cache["data"]
 
     try:
-        print(f"Fetching fresh data for tier: {costTier}...")
+        print(f"Calculating metrics for tier: {costTier}...")
         
         # Determine rates based on costTier
         if costTier == 'institutional':
@@ -69,9 +89,10 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             margin_rate = 0.120
             borrow_fee = 0.025
             
-        # 1. Fetch and Calculate Base Metrics
-        raw_prices, fx_rates, volume_data = risk.fetch_data()
-        usd_prices = risk.normalize_to_base_currency(raw_prices, fx_rates)
+        # 1. Fetch market data (shared cache — same data for all tiers)
+        usd_prices, fx_rates, volume_data = _get_cached_market_data(force)
+        
+        # 2. Calculate risk metrics with tier-specific rates
         metrics = risk.calculate_risk_metrics(
             usd_prices, 
             volume_data, 

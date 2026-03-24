@@ -151,6 +151,9 @@ def normalize_to_base_currency(stock_df, fx_df):
 def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MARGIN_RATE, borrow_fee=BORROW_FEE):
     print("--- 3. Calculating Advanced Risk Metrics ---")
     
+    # Defensive copy to avoid mutating shared cached data
+    price_df = price_df.copy()
+    
     if price_df.empty or len(price_df) < 2:
         print("Error: Insufficient price data.")
         return None
@@ -237,14 +240,12 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     portfolio_daily_ret = portfolio_gross_ret - total_daily_drag
     portfolio_net_ret = portfolio_daily_ret
 
-    # --- 2. CORE METRICS ---
-    # Annualize factor
+    # --- 2. CORE METRICS (use GROSS returns so historical metrics don't vary by cost tier) ---
     ANNUAL_FACTOR = 252
     
-    # Beta
-    # Beta (Robust Calculation)
-    valid_mask = ~(np.isnan(portfolio_daily_ret) | np.isnan(benchmark_ret))
-    clean_port = portfolio_daily_ret[valid_mask]
+    # Beta (Robust Calculation) — uses gross returns
+    valid_mask = ~(np.isnan(portfolio_gross_ret) | np.isnan(benchmark_ret))
+    clean_port = portfolio_gross_ret[valid_mask]
     clean_bench = benchmark_ret[valid_mask]
     
     if len(clean_bench) > 1:
@@ -254,20 +255,20 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     else:
         portfolio_beta = 0
     
-    # Volatility (Annualized)
-    daily_vol = np.std(portfolio_daily_ret)
+    # Volatility (Annualized) — uses gross returns, sample std
+    daily_vol = np.std(portfolio_gross_ret, ddof=1)
     annual_vol = daily_vol * np.sqrt(ANNUAL_FACTOR)
     
-    # Returns (Annualized)
-    avg_daily_ret = np.mean(portfolio_daily_ret)
+    # Returns (Annualized) — uses gross returns
+    avg_daily_ret = np.mean(portfolio_gross_ret)
     annual_ret = avg_daily_ret * ANNUAL_FACTOR
     
     # Sharpe Ratio (Dynamic Rf)
     sharpe_ratio = (annual_ret - rf_rate) / annual_vol if annual_vol > 0 else 0
     
-    # Sortino Ratio (Downside Risk only)
-    downside_returns = portfolio_daily_ret[portfolio_daily_ret < 0]
-    downside_std = np.std(downside_returns) * np.sqrt(ANNUAL_FACTOR)
+    # Sortino Ratio (Downside Risk only) — uses gross returns, sample std
+    downside_returns = portfolio_gross_ret[portfolio_gross_ret < 0]
+    downside_std = np.std(downside_returns, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(downside_returns) > 1 else 0
     sortino_ratio = (annual_ret - rf_rate) / downside_std if downside_std > 0 else 0
     
     # --- 3. TAIL RISK ---
@@ -452,18 +453,33 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
 
         # Add initial base (1.0) to raw gross curve
         portfolio_val_series_gross = portfolio_val_series + 1.0
-        
         ytd_trading_days = max(0, len(portfolio_val_series_gross) - 1)
-        ytd_financing_cost = ytd_trading_days * total_daily_drag
-        
-        # Create exact Net Portfolio Curve by subtracting cumulative daily drag
-        drag_array = np.arange(len(portfolio_val_series_gross)) * total_daily_drag
-        portfolio_val_series = portfolio_val_series_gross - drag_array
-        
-        # YTD Return (B&H)
-        ytd_return_gross = portfolio_val_series_gross.iloc[-1] - 1
-        ytd_return = portfolio_val_series.iloc[-1] - 1
-        benchmark_ytd = (1 + ytd_benchmark).prod() - 1
+        ytd_return_gross = portfolio_val_series_gross.iloc[-1] - 1.0 if not portfolio_val_series_gross.empty else 0.0
+
+        if total_daily_drag != 0:
+            ytd_financing_cost = ytd_trading_days * total_daily_drag
+            annual_financing_cost = total_daily_drag * 360
+            
+            # Derive gross daily returns from the Buy & Hold curve
+            ytd_portfolio_daily_ret_gross = portfolio_val_series_gross.pct_change().fillna(0)
+            
+            # Create exact Net Portfolio Curve by subtracting daily drag and compounding
+            ytd_portfolio_daily_ret_net = ytd_portfolio_daily_ret_gross - total_daily_drag
+            
+            # Override to start at 1.0
+            ytd_portfolio_daily_ret_net.iloc[0] = 0.0
+            
+            portfolio_val_series = (1 + ytd_portfolio_daily_ret_net).cumprod()
+            ytd_return = portfolio_val_series.iloc[-1] - 1.0
+            
+        else:
+            # NO DRAG SCENARIO
+            ytd_financing_cost = 0.0
+            annual_financing_cost = 0.0
+            portfolio_val_series = portfolio_val_series_gross
+            ytd_return = ytd_return_gross
+
+        benchmark_ytd = (1 + ytd_benchmark).prod() - 1.0
 
         # Derive Daily Returns for Vol/Beta/Sharpe consistency directly from the true Net curve
         ytd_portfolio_daily_ret = portfolio_val_series.pct_change().dropna()
@@ -478,13 +494,13 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         else:
             ytd_beta = 0
             
-        # Risk Efficiency -> YTD Sharpe
-        ytd_vol = np.std(ytd_portfolio_daily_ret) * np.sqrt(ANNUAL_FACTOR)
+        # Risk Efficiency -> YTD Sharpe (sample std)
+        ytd_vol = np.std(ytd_portfolio_daily_ret, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(ytd_portfolio_daily_ret) > 1 else 0
         ytd_ann_ret = np.mean(ytd_portfolio_daily_ret) * ANNUAL_FACTOR
         ytd_sharpe = (ytd_ann_ret - rf_rate) / ytd_vol if ytd_vol > 0 else 0
         
-        # Benchmark YTD Sharpe
-        bench_ytd_vol = np.std(ytd_benchmark) * np.sqrt(ANNUAL_FACTOR)
+        # Benchmark YTD Sharpe (sample std)
+        bench_ytd_vol = np.std(ytd_benchmark, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(ytd_benchmark) > 1 else 0
         bench_ytd_ann_ret = np.mean(ytd_benchmark) * ANNUAL_FACTOR
         bench_ytd_sharpe = (bench_ytd_ann_ret - rf_rate) / bench_ytd_vol if bench_ytd_vol > 0 else 0
         
@@ -501,8 +517,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_rf_rate_long = rf_rate_long * (ytd_trading_days / ANNUAL_FACTOR)
         ytd_alpha_raw = ytd_return - (ytd_rf_rate_long + ytd_beta * (benchmark_ytd - ytd_rf_rate_long))
 
-        # Benchmark Historical Sharpe
-        bench_ann_vol = np.std(benchmark_ret) * np.sqrt(ANNUAL_FACTOR)
+        # Benchmark Historical Sharpe (sample std)
+        bench_ann_vol = np.std(benchmark_ret, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(benchmark_ret) > 1 else 0
         bench_hist_sharpe = (annual_bench_ret - rf_rate) / bench_ann_vol if bench_ann_vol > 0 else 0
         
         # YTD Max Drawdown (Portfolio)
@@ -610,6 +626,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         benchmark_ytd = 0.0
         ytd_beta = 0.0
         ytd_financing_cost = 0.0
+        annual_financing_cost = 0.0
         ytd_sharpe = 0.0
         bench_ytd_sharpe = 0.0
         bench_hist_sharpe = 0.0
@@ -620,6 +637,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_shorts_contrib = 0.0
         ytd_max_drawdown = 0.0
         ytd_bench_max_drawdown = 0.0
+        ytd_alpha = 0.0
+        ytd_alpha_raw = 0.0
 
     # --- 6. VOLUME WEIGHTED CORRELATION (Past 1 Year) ---
     vol_weighted_corr = pd.DataFrame()
@@ -717,8 +736,6 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         except Exception as e:
             print(f"Error calculating FX metrics: {e}")
 
-            print(f"Error calculating FX metrics: {e}")
-
     # --- 10. TALEB METRICS (Kurtosis, Skew, Fat Tail) ---
     try:
         # Fisher Kurtosis (Normal = 0 via scipy default? No, scipy pearson is 3, fisher is 0. 
@@ -789,8 +806,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Max_Drawdown': ytd_max_drawdown,
         'Benchmark_YTD_Max_Drawdown': ytd_bench_max_drawdown,
         'YTD_Financing_Cost': ytd_financing_cost,
-        'YTD_Return_Gross': ytd_return_gross if 'ytd_return_gross' in locals() else ytd_return,
-        'Annual_Financing_Cost': total_daily_drag * 360,
+        'YTD_Return_Gross': ytd_return_gross,
+        'Annual_Financing_Cost': annual_financing_cost,
         'Returns_Stream': portfolio_daily_ret,
         'Net_Stream': portfolio_net_ret, 
         'Benchmark_Stream': benchmark_ret, 

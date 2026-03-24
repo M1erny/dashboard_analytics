@@ -46,10 +46,13 @@ def ensure_ssh_key():
             return False
     return True
 
-def is_server_running(url="http://127.0.0.1:5173"):
+# Port must match vite.config.ts server.port
+DASHBOARD_PORT = 2137
+
+def is_server_running():
     try:
         import socket
-        with socket.create_connection(("127.0.0.1", 5173), timeout=1):
+        with socket.create_connection(("127.0.0.1", DASHBOARD_PORT), timeout=1):
             return True
     except:
         return False
@@ -106,8 +109,8 @@ def start_tunnel():
     cmd = [
         "cloudflared.exe", 
         "tunnel", 
-        "--url", "http://127.0.0.1:5173",
-        "--metrics", "localhost:49589" # Bind metrics to random port to avoid conflicts? or just let it default
+        "--url", f"http://127.0.0.1:{DASHBOARD_PORT}",
+        "--metrics", "localhost:49589"
     ]
     
     process = subprocess.Popen(
