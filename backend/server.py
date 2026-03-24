@@ -50,7 +50,7 @@ def _get_cached_market_data(force: bool = False):
     print("Fetching fresh market data from yfinance...")
     raw_prices, fx_rates, volume_data = risk.fetch_data()
     usd_prices = risk.normalize_to_base_currency(raw_prices, fx_rates)
-    _data_cache["data"] = (usd_prices, fx_rates, volume_data)
+    _data_cache["data"] = (usd_prices, fx_rates, volume_data, raw_prices)
     _data_cache["timestamp"] = now
     return _data_cache["data"]
 
@@ -90,7 +90,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             borrow_fee = 0.025
             
         # 1. Fetch market data (shared cache — same data for all tiers)
-        usd_prices, fx_rates, volume_data = _get_cached_market_data(force)
+        usd_prices, fx_rates, volume_data, raw_prices = _get_cached_market_data(force)
         
         # 2. Calculate risk metrics with tier-specific rates
         metrics = risk.calculate_risk_metrics(
