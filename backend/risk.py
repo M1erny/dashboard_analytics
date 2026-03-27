@@ -202,6 +202,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     # --- 1. PREPARE PORTFOLIO RETURNS ---
     # Construct a weighted portfolio return series
     portfolio_daily_ret = pd.Series(0.0, index=returns_df.index)
+    long_only_ret = pd.Series(0.0, index=returns_df.index)
+    short_only_ret = pd.Series(0.0, index=returns_df.index)
     
     # Track Gross Exposure for Leverage Calc
     total_long_weight = 0
@@ -223,7 +225,15 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             # If ticker didn't exist yet (return is 0), it contributes 0.
             # This implicitly assumes "Cash" was held instead.
             # Use fillna(0) to ensure missing returns (incomplete data) don't poison the whole portfolio series
-            portfolio_daily_ret += returns_df[ticker].fillna(0.0) * weight * direction
+            ticker_contrib = returns_df[ticker].fillna(0.0) * weight * direction
+            portfolio_daily_ret += ticker_contrib
+            
+            # Accumulate into long/short sub-portfolios
+            if direction == 1:
+                long_only_ret += returns_df[ticker].fillna(0.0) * weight
+            else:
+                short_only_ret += returns_df[ticker].fillna(0.0) * weight * (-1)  # Short P&L
+            
             active_tickers.append(ticker)
 
     # --- 1.5 LEVERAGE COST (DRAG) ---
@@ -254,6 +264,22 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         portfolio_beta = covariance / market_variance if market_variance > 0 else 0
     else:
         portfolio_beta = 0
+    
+    # --- 2.1 Sub-portfolio Betas (Long-only and Short-only vs benchmark) ---
+    long_only_beta = 0
+    short_only_beta = 0
+    
+    if len(clean_bench) > 1 and market_variance > 0:
+        # Long-only beta: how much market risk does the long book carry?
+        clean_long = long_only_ret[valid_mask]
+        long_only_beta = np.cov(clean_long, clean_bench)[0][1] / market_variance
+        
+        # Short-only beta: how much market risk does the short book carry?
+        # Note: short_only_ret is already the P&L (negative of stock return × weight),
+        # so a positive beta here means the short book moves WITH the market 
+        # (i.e., the shorts are correlated, providing a hedge when they go down).
+        clean_short = short_only_ret[valid_mask]
+        short_only_beta = np.cov(clean_short, clean_bench)[0][1] / market_variance
     
     # Volatility (Annualized) — uses gross returns, sample std
     daily_vol = np.std(portfolio_gross_ret, ddof=1)
@@ -493,6 +519,17 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             ytd_beta = np.cov(ytd_portfolio_daily_ret, ytd_benchmark_aligned)[0][1] / np.var(ytd_benchmark_aligned, ddof=1)
         else:
             ytd_beta = 0
+            
+        # YTD Sub-portfolio Betas
+        ytd_long_only_beta = 0
+        ytd_short_only_beta = 0
+        
+        if not ytd_benchmark_aligned.empty and np.var(ytd_benchmark_aligned, ddof=1) > 0:
+            ytd_long_aligned = long_only_ret.reindex(ytd_benchmark_aligned.index).fillna(0)
+            ytd_long_only_beta = np.cov(ytd_long_aligned, ytd_benchmark_aligned)[0][1] / np.var(ytd_benchmark_aligned, ddof=1)
+            
+            ytd_short_aligned = short_only_ret.reindex(ytd_benchmark_aligned.index).fillna(0)
+            ytd_short_only_beta = np.cov(ytd_short_aligned, ytd_benchmark_aligned)[0][1] / np.var(ytd_benchmark_aligned, ddof=1)
             
         # Risk Efficiency -> YTD Sharpe (sample std)
         ytd_vol = np.std(ytd_portfolio_daily_ret, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(ytd_portfolio_daily_ret) > 1 else 0
@@ -778,6 +815,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         },
         # 'Insider_Data': {}, 
         'Beta': portfolio_beta,
+        'Long_Only_Beta': long_only_beta,
+        'Short_Only_Beta': short_only_beta,
         'Annual_Return': annual_ret,
         'Annual_Vol': annual_vol,
         'Sharpe': sharpe_ratio,
@@ -796,6 +835,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Return': ytd_return,
         'Benchmark_YTD': benchmark_ytd,
         'YTD_Beta': ytd_beta,
+        'YTD_Long_Only_Beta': ytd_long_only_beta if 'ytd_long_only_beta' in locals() else 0,
+        'YTD_Short_Only_Beta': ytd_short_only_beta if 'ytd_short_only_beta' in locals() else 0,
         'YTD_Sharpe': ytd_sharpe,
         'Benchmark_YTD_Sharpe': bench_ytd_sharpe,
         'Benchmark_Hist_Sharpe': bench_hist_sharpe,

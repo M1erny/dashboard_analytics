@@ -208,7 +208,12 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, leve
                                 <span className="flex items-center justify-center w-5 h-5 rounded bg-emerald-500/15">
                                     <ArrowUpRight className="h-3 w-3 text-emerald-400" />
                                 </span>
-                                <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Longs</span>
+                                <div className="flex flex-col">
+                                    <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Longs</span>
+                                    <span className="text-[9px] text-gray-600 font-mono" title="Beta of long-only sub-portfolio vs SPY">
+                                        β {fmtNum(vitals.longOnlyBeta)}
+                                    </span>
+                                </div>
                             </div>
                             <span className={cn("font-mono text-lg font-black tracking-tight", returnColor(vitals.ytdLongsContrib))}>
                                 {fmtSigned(vitals.ytdLongsContrib)}
@@ -219,7 +224,12 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, leve
                                 <span className="flex items-center justify-center w-5 h-5 rounded bg-rose-500/15">
                                     <ArrowDownRight className="h-3 w-3 text-rose-400" />
                                 </span>
-                                <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Shorts</span>
+                                <div className="flex flex-col">
+                                    <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Shorts</span>
+                                    <span className="text-[9px] text-gray-600 font-mono" title="Beta of short-only sub-portfolio vs SPY (as P&L)">
+                                        β {fmtNum(vitals.shortOnlyBeta)}
+                                    </span>
+                                </div>
                             </div>
                             <span className={cn("font-mono text-lg font-black tracking-tight", returnColor(vitals.ytdShortsContrib))}>
                                 {fmtSigned(vitals.ytdShortsContrib)}

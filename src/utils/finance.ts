@@ -12,6 +12,8 @@ export interface TalebMetrics {
 
 export interface Vitals {
     beta: number;
+    longOnlyBeta?: number;
+    shortOnlyBeta?: number;
     annualReturn: number;
     annualVol: number;
     sharpe: number;

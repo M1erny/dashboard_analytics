@@ -137,6 +137,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
         response = {
             "vitals": {
                 "beta": to_float(metrics['Beta']),
+                "longOnlyBeta": to_float(metrics.get('YTD_Long_Only_Beta')),
+                "shortOnlyBeta": to_float(metrics.get('YTD_Short_Only_Beta')),
                 "annualReturn": to_float(metrics['Annual_Return']),
                 "annualVol": to_float(metrics['Annual_Vol']),
                 "sharpe": to_float(metrics['Sharpe']),
