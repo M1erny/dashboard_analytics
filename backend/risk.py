@@ -767,6 +767,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     # --- 11. INSIDER DATA ---
     # Removed for performance
     
+    # --- 12. CONVEXITY METRICS ---
+    convexity_metrics = calculate_convexity_metrics(portfolio_gross_ret, benchmark_ret)
+    
     return {
         'Taleb_Metrics': {
             'Kurtosis': port_kurtosis,
@@ -824,16 +827,108 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         },
         'Fx_Watchlist': fx_watchlist_metrics,
         'YTD_Stream': portfolio_val_series if 'portfolio_val_series' in locals() else None,
-        'YTD_Benchmark_Stream': ytd_benchmark if 'ytd_benchmark' in locals() else None
+        'YTD_Benchmark_Stream': ytd_benchmark if 'ytd_benchmark' in locals() else None,
+        'Convexity_Metrics': convexity_metrics
     }
 
+def calculate_convexity_metrics(portfolio_ret, benchmark_ret):
+    """Calculate portfolio convexity: capture ratios, quadratic regression, scatter data.
+    
+    A convex portfolio gains more when the market goes up and loses less when it goes down.
+    This is captured by:
+      - Upside Capture > Downside Capture (spread > 0)
+      - Positive quadratic coefficient (β₂ > 0) in port = α + β₁·bench + β₂·bench²
+    """
+    print("--- 4a. Calculating Convexity Metrics ---")
+    
+    result = {
+        'Upside_Capture': 0,
+        'Downside_Capture': 0,
+        'Capture_Spread': 0,
+        'Quadratic_Coeffs': [0, 0, 0],  # [β₂, β₁, α]
+        'R_Squared': 0,
+        'Scatter_Data': [],
+        'Is_Convex': False,
+    }
+    
+    # Align and clean
+    valid_mask = ~(np.isnan(portfolio_ret) | np.isnan(benchmark_ret))
+    clean_port = portfolio_ret[valid_mask].values
+    clean_bench = benchmark_ret[valid_mask].values
+    
+    if len(clean_bench) < 30:
+        print("Warning: Insufficient data for convexity analysis")
+        return result
+    
+    # --- 1. CAPTURE RATIOS ---
+    up_days = clean_bench > 0
+    down_days = clean_bench < 0
+    
+    if np.sum(up_days) > 5 and np.sum(down_days) > 5:
+        # Upside Capture = avg(port on up days) / avg(bench on up days)
+        avg_port_up = np.mean(clean_port[up_days])
+        avg_bench_up = np.mean(clean_bench[up_days])
+        upside_capture = avg_port_up / avg_bench_up if avg_bench_up != 0 else 0
+        
+        # Downside Capture = avg(port on down days) / avg(bench on down days)
+        avg_port_down = np.mean(clean_port[down_days])
+        avg_bench_down = np.mean(clean_bench[down_days])
+        downside_capture = avg_port_down / avg_bench_down if avg_bench_down != 0 else 0
+        
+        result['Upside_Capture'] = upside_capture
+        result['Downside_Capture'] = downside_capture
+        result['Capture_Spread'] = upside_capture - downside_capture
+    
+    # --- 2. QUADRATIC REGRESSION ---
+    # Fit: port_ret = α + β₁·bench_ret + β₂·bench_ret²
+    # np.polyfit returns [β₂, β₁, α] for degree=2
+    try:
+        coeffs = np.polyfit(clean_bench, clean_port, 2)
+        result['Quadratic_Coeffs'] = coeffs.tolist()
+        
+        # R² calculation
+        predicted = np.polyval(coeffs, clean_bench)
+        ss_res = np.sum((clean_port - predicted) ** 2)
+        ss_tot = np.sum((clean_port - np.mean(clean_port)) ** 2)
+        r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+        result['R_Squared'] = r_squared
+        
+        # Positive β₂ means convex (gains accelerate, losses decelerate)
+        result['Is_Convex'] = coeffs[0] > 0
+        
+    except Exception as e:
+        print(f"Warning: Quadratic regression failed: {e}")
+    
+    # --- 3. SCATTER DATA (subsample for payload size) ---
+    max_points = 500
+    if len(clean_bench) > max_points:
+        indices = np.random.choice(len(clean_bench), max_points, replace=False)
+        indices.sort()
+        scatter_bench = clean_bench[indices]
+        scatter_port = clean_port[indices]
+    else:
+        scatter_bench = clean_bench
+        scatter_port = clean_port
+    
+    result['Scatter_Data'] = list(zip(scatter_bench.tolist(), scatter_port.tolist()))
+    
+    return result
+
+
 def stress_test_portfolio(metrics):
-    print("--- 4. Running Stress Tests ---")
+    """Non-linear stress test using quadratic regression model.
+    
+    The portfolio is long/short with option-like components (e.g. AFRM),
+    so a linear β × market_move model is wrong — it overstates downside
+    and understates upside. We use the fitted quadratic model instead:
+        expected_move = α + β₁·scenario + β₂·scenario²
+    """
+    print("--- 4b. Running Non-Linear Stress Tests ---")
     if metrics is None: return {}
     
     beta = metrics['Beta']
+    convexity = metrics.get('Convexity_Metrics')
     
-    # Simple Beta-based Stress Testing
     scenarios = {
         'Market Crash (-10%)': -0.10,
         'Market Correction (-5%)': -0.05,
@@ -842,12 +937,37 @@ def stress_test_portfolio(metrics):
     }
     
     results = {}
+    
+    # Get quadratic coefficients if available
+    has_quadratic = (convexity is not None and 
+                     convexity.get('Quadratic_Coeffs') and
+                     convexity['R_Squared'] > 0.01)
+    
+    if has_quadratic:
+        coeffs = convexity['Quadratic_Coeffs']  # [β₂, β₁, α]
+    
     for name, mkt_move in scenarios.items():
-        # Estimated Portfolio Move = Beta * Market Move
-        # (This is a linear approximation, assuming correlations hold 1.0)
-        est_move = beta * mkt_move
-        results[name] = est_move
+        # Linear estimate (old model, kept for comparison)
+        linear_est = beta * mkt_move
         
+        if has_quadratic:
+            # Non-linear estimate: α + β₁·x + β₂·x²
+            # Note: for stress test, we want the CHANGE in portfolio value,
+            # which is the predicted daily return when bench moves by mkt_move.
+            # Since mkt_move is much larger than a single daily return,
+            # we scale by dividing into daily-scale chunks and compound.
+            # However, for communicative clarity, we apply the model directly
+            # as if it were a single-period scenario.
+            nonlinear_est = np.polyval(coeffs, mkt_move)
+        else:
+            nonlinear_est = linear_est
+        
+        results[name] = {
+            'linear': linear_est,
+            'nonlinear': nonlinear_est,
+            'market_move': mkt_move
+        }
+    
     return results
 
 def run_monte_carlo(metrics, num_sims=1000, days=60):

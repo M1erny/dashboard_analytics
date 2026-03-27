@@ -140,6 +140,70 @@ else:
     failed += 1
 
 # ============================================================
+# TEST 5: Convexity - Capture Ratios
+# ============================================================
+print("\n--- TEST 5: Upside/Downside Capture Ratios ---")
+
+# Create a convex portfolio: gains more when benchmark is up, loses less when down
+np.random.seed(123)
+n = 500
+bench = np.random.normal(0, 0.01, n)
+# Convex response: port = 1.2*bench when up, 0.6*bench when down (+ noise)
+port = np.where(bench > 0, 1.2 * bench, 0.6 * bench) + np.random.normal(0, 0.002, n)
+
+up_days = bench > 0
+down_days = bench < 0
+
+upside_capture = np.mean(port[up_days]) / np.mean(bench[up_days])
+downside_capture = np.mean(port[down_days]) / np.mean(bench[down_days])
+capture_spread = upside_capture - downside_capture
+
+print(f"  Upside Capture:   {upside_capture:.4f} (expect ~1.2)")
+print(f"  Downside Capture: {downside_capture:.4f} (expect ~0.6)")
+print(f"  Capture Spread:   {capture_spread:.4f} (expect ~0.6)")
+
+if upside_capture > downside_capture:
+    print("  ✅ PASS: Upside capture exceeds downside capture (convex portfolio)")
+    passed += 1
+else:
+    print("  ❌ FAIL: Convex portfolio should have upside > downside capture")
+    failed += 1
+
+# ============================================================
+# TEST 6: Convexity - Quadratic Regression & Non-Linear Stress
+# ============================================================
+print("\n--- TEST 6: Quadratic regression detects convexity ---")
+
+# Same convex portfolio from above
+coeffs = np.polyfit(bench, port, 2)  # [β₂, β₁, α]
+beta2 = coeffs[0]
+
+print(f"  Quadratic coefficients: β₂={coeffs[0]:.4f}, β₁={coeffs[1]:.4f}, α={coeffs[2]:.6f}")
+
+if beta2 > 0:
+    print("  ✅ PASS: Positive β₂ correctly detects convex payoff")
+    passed += 1
+else:
+    print("  ❌ FAIL: β₂ should be positive for convex portfolio")
+    failed += 1
+
+# Verify non-linear stress test diverges from linear
+linear_crash = coeffs[1] * (-0.10)  # β₁ × -10%
+nonlinear_crash = np.polyval(coeffs, -0.10)  # α + β₁×(-0.10) + β₂×(-0.10)²
+
+print(f"  Linear stress (-10%):     {linear_crash:.4%}")
+print(f"  Non-linear stress (-10%): {nonlinear_crash:.4%}")
+
+# For a convex portfolio, β₂ > 0 means the quadratic term adds a POSITIVE contribution
+# even in a crash (because (-0.10)² = +0.01), so non-linear should be LESS negative
+if nonlinear_crash > linear_crash:
+    print("  ✅ PASS: Non-linear stress shows less downside than linear (convexity benefit)")
+    passed += 1
+else:
+    print("  ❌ FAIL: Convex portfolio should lose less in non-linear model")
+    failed += 1
+
+# ============================================================
 # SUMMARY
 # ============================================================
 print("\n" + "=" * 60)

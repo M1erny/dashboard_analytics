@@ -7,6 +7,7 @@ import { CorrelationMatrixTable } from './dashboard/CorrelationMatrixTable';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { CountryMapWidget } from './dashboard/CountryMapWidget';
 import { DexterWidget } from './dashboard/DexterWidget';
+import { ConvexityWidget } from './dashboard/ConvexityWidget';
 import { LayoutDashboard, ShieldCheck, RefreshCw } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -79,7 +80,7 @@ export const Dashboard: React.FC = () => {
         )
     }
 
-    const { vitals, leverage, periodicReturns, volumeWeightedCorrelation, countryAllocation } = data;
+    const { vitals, leverage, periodicReturns, volumeWeightedCorrelation, countryAllocation, stressTests, convexity } = data;
 
     return (
         <div className="min-h-screen bg-background text-foreground p-4 md:p-8">
@@ -155,6 +156,9 @@ export const Dashboard: React.FC = () => {
 
                 {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing) */}
                 <ExecutiveSummary vitals={vitals} leverage={leverage} costTier={costTier} />
+
+                {/* ROW 1.5: Convexity Analysis */}
+                <ConvexityWidget convexity={convexity} stressTests={stressTests} />
 
                 {/* ROW 2: Returns Heatmap & Portfolio Contribution (Full Width) */}
                 <ReturnsHeatmap periodicReturns={periodicReturns} />

@@ -64,6 +64,18 @@ export interface RiskAttribution {
 export interface StressTest {
     scenario: string;
     impact: number;
+    linearImpact?: number;
+    marketMove?: number;
+}
+
+export interface ConvexityMetrics {
+    upsideCapture: number;
+    downsideCapture: number;
+    captureSpread: number;
+    quadraticCoeffs: [number, number, number]; // [β₂, β₁, α]
+    rSquared: number;
+    isConvex: boolean;
+    scatterData: [number, number][]; // [benchRet, portRet][]
 }
 
 export interface PeriodicReturn {
@@ -116,6 +128,7 @@ export interface FullRiskReport {
     volumeWeightedCorrelation?: CorrelationMatrix;
     talebMetrics?: TalebMetrics;
     countryAllocation?: Record<string, CountryAllocation>;
+    convexity?: ConvexityMetrics | null;
     error?: string;
 }
 
@@ -169,6 +182,7 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     volumeWeightedCorrelation: data.volumeWeightedCorrelation || undefined,
                     talebMetrics: data.talebMetrics,
                     countryAllocation: data.countryAllocation,
+                    convexity: data.convexity || null,
                     error: data.error
                 };
             }

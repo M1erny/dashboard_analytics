@@ -180,6 +180,21 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             "history": []
         }
 
+        # Format Convexity Metrics
+        convexity = metrics.get('Convexity_Metrics')
+        if convexity:
+            response["convexity"] = {
+                "upsideCapture": to_float(convexity.get('Upside_Capture')),
+                "downsideCapture": to_float(convexity.get('Downside_Capture')),
+                "captureSpread": to_float(convexity.get('Capture_Spread')),
+                "quadraticCoeffs": [to_float(c) for c in convexity.get('Quadratic_Coeffs', [0,0,0])],
+                "rSquared": to_float(convexity.get('R_Squared')),
+                "isConvex": bool(convexity.get('Is_Convex', False)),
+                "scatterData": convexity.get('Scatter_Data', []),
+            }
+        else:
+            response["convexity"] = None
+
         # Format Risk Attribution
         for ticker, stats in metrics['Risk_Attribution'].items():
             response["riskAttribution"].append({
@@ -190,13 +205,23 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             })
         response["riskAttribution"].sort(key=lambda x: x["pctRisk"], reverse=True)
 
-        # Format Stress Tests
-        for scenario, impact in stress_results.items():
-            response["stressTests"].append({
-                "scenario": scenario,
-                "impact": impact
-            })
-        
+        # Format Stress Tests (non-linear)
+        for scenario, result in stress_results.items():
+            if isinstance(result, dict):
+                response["stressTests"].append({
+                    "scenario": scenario,
+                    "impact": to_float(result.get('nonlinear', 0)),
+                    "linearImpact": to_float(result.get('linear', 0)),
+                    "marketMove": to_float(result.get('market_move', 0)),
+                })
+            else:
+                # Fallback for old format
+                response["stressTests"].append({
+                    "scenario": scenario,
+                    "impact": to_float(result),
+                    "linearImpact": to_float(result),
+                    "marketMove": None,
+                })
         # Format Volume Weighted Correlation Matrix
         vw_corr = metrics.get('Volume_Weighted_Correlation')
         vw_corr_data = { "tickers": [], "matrix": [] }
