@@ -247,7 +247,12 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     
     # Net Returns (After Cost)
     portfolio_gross_ret = portfolio_daily_ret.copy()
-    portfolio_daily_ret = portfolio_gross_ret - total_daily_drag
+    
+    # Account for weekends and holidays using calendar days between trading days
+    days_elapsed = portfolio_daily_ret.index.to_series().diff().dt.days.fillna(1).clip(lower=1)
+    daily_drag_series = total_daily_drag * days_elapsed
+    
+    portfolio_daily_ret = portfolio_gross_ret - daily_drag_series
     portfolio_net_ret = portfolio_daily_ret
 
     # --- 2. CORE METRICS (use GROSS returns so historical metrics don't vary by cost tier) ---
@@ -483,16 +488,24 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_return_gross = portfolio_val_series_gross.iloc[-1] - 1.0 if not portfolio_val_series_gross.empty else 0.0
 
         if total_daily_drag != 0:
-            ytd_financing_cost = ytd_trading_days * total_daily_drag
+            # Calculate calendar days elapsed
+            if len(portfolio_val_series_gross) > 1:
+                ytd_calendar_days = (portfolio_val_series_gross.index[-1] - portfolio_val_series_gross.index[0]).days
+            else:
+                ytd_calendar_days = ytd_trading_days
+
+            ytd_financing_cost = ytd_calendar_days * total_daily_drag
             annual_financing_cost = total_daily_drag * 360
             
             # Derive gross daily returns from the Buy & Hold curve
             ytd_portfolio_daily_ret_gross = portfolio_val_series_gross.pct_change().fillna(0)
             
-            # Create exact Net Portfolio Curve by subtracting daily drag and compounding
-            ytd_portfolio_daily_ret_net = ytd_portfolio_daily_ret_gross - total_daily_drag
+            # Create exact Net Portfolio Curve by subtracting daily drag (calendar adjusted) and compounding
+            ytd_days_elapsed = ytd_portfolio_daily_ret_gross.index.to_series().diff().dt.days.fillna(1).clip(lower=1)
+            ytd_daily_drag_series = total_daily_drag * ytd_days_elapsed
+            ytd_portfolio_daily_ret_net = ytd_portfolio_daily_ret_gross - ytd_daily_drag_series
             
-            # Override to start at 1.0
+            # Override to start at 0.0 (returns series padding)
             ytd_portfolio_daily_ret_net.iloc[0] = 0.0
             
             portfolio_val_series = (1 + ytd_portfolio_daily_ret_net).cumprod()
@@ -804,8 +817,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     # --- 11. INSIDER DATA ---
     # Removed for performance
     
-    # --- 12. CONVEXITY METRICS ---
-    convexity_metrics = calculate_convexity_metrics(portfolio_gross_ret, benchmark_ret)
+    # --- 12. CONVEXITY METRICS (YTD Only) ---
+    ytd_portfolio_gross_aligned = portfolio_val_series_gross.pct_change().dropna().reindex(ytd_benchmark_aligned.index).fillna(0)
+    convexity_metrics = calculate_convexity_metrics(ytd_portfolio_gross_aligned, ytd_benchmark_aligned)
     
     return {
         'Taleb_Metrics': {
@@ -920,25 +934,30 @@ def calculate_convexity_metrics(portfolio_ret, benchmark_ret):
         result['Downside_Capture'] = downside_capture
         result['Capture_Spread'] = upside_capture - downside_capture
     
-    # --- 2. QUADRATIC REGRESSION ---
-    # Fit: port_ret = α + β₁·bench_ret + β₂·bench_ret²
+    # --- 2. REGRESSIONS (Quadratic & Linear) ---
+    # Fit Quadratic: port_ret = α + β₁·bench_ret + β₂·bench_ret²
     # np.polyfit returns [β₂, β₁, α] for degree=2
+    # Fit Linear: port_ret = α + β₁·bench_ret
+    # np.polyfit returns [β₁, α] for degree=1
     try:
-        coeffs = np.polyfit(clean_bench, clean_port, 2)
-        result['Quadratic_Coeffs'] = coeffs.tolist()
+        quad_coeffs = np.polyfit(clean_bench, clean_port, 2)
+        lin_coeffs = np.polyfit(clean_bench, clean_port, 1)
         
-        # R² calculation
-        predicted = np.polyval(coeffs, clean_bench)
+        result['Quadratic_Coeffs'] = quad_coeffs.tolist()
+        result['Linear_Coeffs'] = lin_coeffs.tolist()
+        
+        # R² calculation for quadratic
+        predicted = np.polyval(quad_coeffs, clean_bench)
         ss_res = np.sum((clean_port - predicted) ** 2)
         ss_tot = np.sum((clean_port - np.mean(clean_port)) ** 2)
         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
         result['R_Squared'] = r_squared
         
         # Positive β₂ means convex (gains accelerate, losses decelerate)
-        result['Is_Convex'] = coeffs[0] > 0
+        result['Is_Convex'] = quad_coeffs[0] > 0
         
     except Exception as e:
-        print(f"Warning: Quadratic regression failed: {e}")
+        print(f"Warning: Regressions failed: {e}")
     
     # --- 3. SCATTER DATA (subsample for payload size) ---
     max_points = 500
@@ -967,7 +986,8 @@ def stress_test_portfolio(metrics):
     print("--- 4b. Running Non-Linear Stress Tests ---")
     if metrics is None: return {}
     
-    beta = metrics['Beta']
+    # Use YTD Beta for linear estimate to match the YTD quadratic model
+    beta = metrics.get('YTD_Beta', metrics['Beta'])
     convexity = metrics.get('Convexity_Metrics')
     
     scenarios = {

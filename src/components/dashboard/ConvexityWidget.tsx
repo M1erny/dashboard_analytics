@@ -22,7 +22,7 @@ const fmtNum = (val: number | undefined, decimals = 2) =>
     typeof val === 'number' ? val.toFixed(decimals) : 'N/A';
 
 // ─── Scatter Plot (Canvas) ───────────────────────────────────
-const ScatterPlot: React.FC<{ data: [number, number][]; coeffs: [number, number, number]; rSquared: number }> = ({ data, coeffs, rSquared }) => {
+const ScatterPlot: React.FC<{ data: [number, number][]; coeffs: [number, number, number]; linearCoeffs?: [number, number]; rSquared: number }> = ({ data, coeffs, linearCoeffs, rSquared }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
 
     useEffect(() => {
@@ -98,6 +98,25 @@ const ScatterPlot: React.FC<{ data: [number, number][]; coeffs: [number, number,
             ctx.fill();
         }
 
+        // Linear regression line
+        if (linearCoeffs) {
+            const [linB, linA] = linearCoeffs;
+            ctx.strokeStyle = 'rgba(148, 163, 184, 0.4)'; // slate-400 with opacity
+            ctx.lineWidth = 1;
+            ctx.setLineDash([4, 4]); // dashed line
+            ctx.beginPath();
+            
+            const startX = -maxAbsX;
+            const startY = linA + linB * startX;
+            ctx.moveTo(scaleX(startX), scaleY(startY));
+            
+            const endX = maxAbsX;
+            const endY = linA + linB * endX;
+            ctx.lineTo(scaleX(endX), scaleY(endY));
+            ctx.stroke();
+            ctx.setLineDash([]); // reset to solid for quadratic
+        }
+
         // Quadratic regression curve
         const [b2, b1, a] = coeffs;
         ctx.strokeStyle = '#fbbf24'; // amber
@@ -134,7 +153,7 @@ const ScatterPlot: React.FC<{ data: [number, number][]; coeffs: [number, number,
         // β₂ (convexity coefficient) annotation
         ctx.fillText(`β₂ = ${b2.toFixed(4)}`, w - padding.right - 4, padding.top + 28);
 
-    }, [data, coeffs, rSquared]);
+    }, [data, coeffs, linearCoeffs, rSquared]);
 
     return (
         <canvas
@@ -272,6 +291,7 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, str
                         <ScatterPlot
                             data={scatterData}
                             coeffs={quadraticCoeffs}
+                            linearCoeffs={convexity.linearCoeffs}
                             rSquared={rSquared}
                         />
                     ) : (
@@ -282,6 +302,7 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, str
 
                     <p className="text-[10px] text-gray-600 mt-2 leading-relaxed">
                         <span className="text-amber-400/70">━</span> Quadratic fit &nbsp;·&nbsp;
+                        <span className="text-slate-400/70">┄┄</span> Linear fit &nbsp;·&nbsp;
                         <span className="text-gray-500/40">┄┄</span> β=1 reference &nbsp;·&nbsp;
                         <span className="text-emerald-400/60">●</span> Favorable &nbsp;
                         <span className="text-rose-400/60">●</span> Unfavorable

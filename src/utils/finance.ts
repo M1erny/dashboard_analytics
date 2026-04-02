@@ -75,6 +75,7 @@ export interface ConvexityMetrics {
     downsideCapture: number;
     captureSpread: number;
     quadraticCoeffs: [number, number, number]; // [β₂, β₁, α]
+    linearCoeffs?: [number, number]; // [β, α]
     rSquared: number;
     isConvex: boolean;
     scatterData: [number, number][]; // [benchRet, portRet][]

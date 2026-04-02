@@ -190,6 +190,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
                 "downsideCapture": to_float(convexity.get('Downside_Capture')),
                 "captureSpread": to_float(convexity.get('Capture_Spread')),
                 "quadraticCoeffs": [to_float(c) for c in convexity.get('Quadratic_Coeffs', [0,0,0])],
+                "linearCoeffs": [to_float(c) for c in convexity.get('Linear_Coeffs', [0,0])],
                 "rSquared": to_float(convexity.get('R_Squared')),
                 "isConvex": bool(convexity.get('Is_Convex', False)),
                 "scatterData": convexity.get('Scatter_Data', []),
