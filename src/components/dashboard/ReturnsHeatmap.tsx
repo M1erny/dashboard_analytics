@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import { cn } from '../../lib/utils';
 import type { PeriodicReturn } from '../../utils/finance';
-import { TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap } from 'lucide-react';
+import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap } from 'lucide-react';
 
 type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight';
 type SortDir = 'asc' | 'desc';
