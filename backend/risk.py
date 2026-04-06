@@ -530,8 +530,20 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         # YTD Beta
         if not ytd_benchmark_aligned.empty and np.var(ytd_benchmark_aligned, ddof=1) > 0:
             ytd_beta = np.cov(ytd_portfolio_daily_ret, ytd_benchmark_aligned)[0][1] / np.var(ytd_benchmark_aligned, ddof=1)
+            
+            # YTD Beta History (Expanding Window)
+            ytd_beta_history = pd.Series(index=ytd_benchmark_aligned.index, dtype=float)
+            for i in range(2, len(ytd_benchmark_aligned) + 1):
+                if i >= 14: # Minimum sample size filter to avoid massive math anomalies early in the year
+                    port_slice = ytd_portfolio_daily_ret.iloc[:i]
+                    bench_slice = ytd_benchmark_aligned.iloc[:i]
+                    bench_var = np.var(bench_slice, ddof=1)
+                    ytd_beta_history.iloc[i-1] = np.cov(port_slice, bench_slice)[0][1] / bench_var if bench_var > 0 else 0.0
+                else:
+                    ytd_beta_history.iloc[i-1] = np.nan
         else:
             ytd_beta = 0
+            ytd_beta_history = pd.Series()
             
         # YTD Sub-portfolio Betas
         ytd_long_only_beta = 0
@@ -883,6 +895,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'Fx_Watchlist': fx_watchlist_metrics,
         'YTD_Stream': portfolio_val_series if 'portfolio_val_series' in locals() else None,
         'YTD_Benchmark_Stream': ytd_benchmark if 'ytd_benchmark' in locals() else None,
+        'YTD_Beta_History': ytd_beta_history if 'ytd_beta_history' in locals() else None,
         'Convexity_Metrics': convexity_metrics
     }
 

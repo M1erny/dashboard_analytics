@@ -80,7 +80,7 @@ export const Dashboard: React.FC = () => {
         )
     }
 
-    const { vitals, leverage, periodicReturns, volumeWeightedCorrelation, countryAllocation, stressTests, convexity } = data;
+    const { vitals, leverage, periodicReturns, volumeWeightedCorrelation, countryAllocation, stressTests, convexity, ytdHistory } = data;
 
     return (
         <div className="min-h-screen bg-background text-foreground p-4 md:p-8">
@@ -155,7 +155,7 @@ export const Dashboard: React.FC = () => {
                 </div>
 
                 {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing) */}
-                <ExecutiveSummary vitals={vitals} leverage={leverage} costTier={costTier} />
+                <ExecutiveSummary vitals={vitals} leverage={leverage} costTier={costTier} ytdHistory={ytdHistory} />
 
                 {/* ROW 1.5: Convexity Analysis */}
                 <ConvexityWidget convexity={convexity} stressTests={stressTests} />

@@ -1,5 +1,6 @@
 import { cn } from '../../lib/utils';
-import type { Vitals, LeverageStats } from '../../utils/finance';
+import type { Vitals, LeverageStats, HistoryPoint } from '../../utils/finance';
+import { ResponsiveContainer, LineChart, Line, Tooltip } from 'recharts';
 import {
     TrendingUp, TrendingDown, Activity, Zap, Shield,
     BarChart3, ArrowUpRight, ArrowDownRight,
@@ -10,6 +11,7 @@ interface ExecutiveSummaryProps {
     vitals: Vitals;
     leverage?: LeverageStats;
     costTier?: string;
+    ytdHistory?: HistoryPoint[];
 }
 
 // ─── Formatters ──────────────────────────────────────────────
@@ -44,7 +46,7 @@ const StatRow = ({ label, value, tooltip, valueClassName }: {
 );
 
 // ─── Main Component ──────────────────────────────────────────
-export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, leverage, costTier = 'retail' }) => {
+export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, leverage, costTier = 'retail', ytdHistory }) => {
     const ytdPositive = (vitals.ytdReturn ?? 0) >= 0;
 
     return (
@@ -132,9 +134,35 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, leve
                             <Activity className="h-3.5 w-3.5 text-blue-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Beta</span>
                         </div>
-                        <span className="text-2xl sm:text-3xl font-black tracking-tight text-white">
-                            {fmtNum(vitals.ytdBeta)}
-                        </span>
+                        <div className="flex items-end justify-between gap-3 w-full">
+                            <span className="text-2xl sm:text-3xl font-black tracking-tight text-white leading-none shrink-0">
+                                {fmtNum(vitals.ytdBeta)}
+                            </span>
+                            {ytdHistory && ytdHistory.length > 0 && (
+                                <div className="h-[36px] flex-1 opacity-80">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <LineChart data={ytdHistory}>
+                                            <Tooltip 
+                                                cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
+                                                content={({ active, payload }) => {
+                                                    if (active && payload && payload.length) {
+                                                        const data = payload[0].payload;
+                                                        return (
+                                                            <div className="bg-slate-900 border border-slate-700/50 p-2 rounded-lg shadow-xl text-xs backdrop-blur-md">
+                                                                <p className="text-gray-400 mb-0.5">{data.date}</p>
+                                                                <p className="text-blue-400 font-mono font-bold">β: {data.beta?.toFixed(3)}</p>
+                                                            </div>
+                                                        );
+                                                    }
+                                                    return null;
+                                                }}
+                                            />
+                                            <Line type="monotone" dataKey="beta" stroke="#60a5fa" strokeWidth={2} dot={false} isAnimationActive={false} />
+                                        </LineChart>
+                                    </ResponsiveContainer>
+                                </div>
+                            )}
+                        </div>
                         <div className="mt-2 pt-2 border-t border-white/[0.06]">
                             <div className="flex justify-between items-center">
                                 <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Regime</span>

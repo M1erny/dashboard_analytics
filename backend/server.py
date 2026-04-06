@@ -432,33 +432,24 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             if ytd_port is not None and not ytd_port.empty:
                  # Benchmark might be returns series, need convert to price index starting 1.0
                 if ytd_bench_ret is not None and not ytd_bench_ret.empty:
-                    ytd_bench_idx = (1 + ytd_bench_ret).cumprod()
-                    # Align start to 1.0 (it starts at 1+r, so we need to prepend 1.0 or just rebase)
-                    # Easier: ytd_bench_idx / ytd_bench_idx.iloc[0] * (1 + first_ret)? 
-                    # Actually standard way: Price_t = Price_{t-1} * (1+r_t). Start at 100k.
-                    # ytd_bench_ret is daily returns.
                     ytd_bench_vals = (1 + ytd_bench_ret).cumprod()
-                    # Prepend starting value 1.0 if possible, or just normalize
-                    # Simplest: assume first return is from Day 1. Day 0 is 100k.
-                    # We will just plot the available series scaled to 100k.
-                    pass
+
+                ytd_beta_hist = metrics.get('YTD_Beta_History')
                 
                 # Align dates
                 for date in ytd_port.index:
                     date_str = date.strftime('%Y-%m-%d')
-                    
                     port_val = ytd_port.loc[date] * 100000
                     
-                    bench_val = None
-                    if ytd_bench_ret is not None and date in ytd_bench_ret.index:
-                         # This is approximate as we need full series for accurate index
-                         # Let's do it properly outside loop
-                         pass
+                    beta_val = None
+                    if ytd_beta_hist is not None and date in ytd_beta_hist.index:
+                        beta_val = ytd_beta_hist.loc[date]
                     
                     response["ytdHistory"].append({
                         "date": date_str,
                         "portfolio": to_float(port_val),
-                        "benchmark": None # calculated below
+                        "benchmark": None, # calculated below
+                        "beta": to_float(beta_val)
                     })
 
                 # Proper Benchmark Index Calculation

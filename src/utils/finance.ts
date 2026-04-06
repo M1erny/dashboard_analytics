@@ -106,6 +106,7 @@ export interface HistoryPoint {
     portfolio: number;
     benchmark: number;
     drawdown: number;
+    beta?: number;
 }
 
 export interface CorrelationMatrix {
