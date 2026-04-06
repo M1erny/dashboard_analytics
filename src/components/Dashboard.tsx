@@ -8,6 +8,7 @@ import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { CountryMapWidget } from './dashboard/CountryMapWidget';
 import { DexterWidget } from './dashboard/DexterWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
+import { StockLookup } from './dashboard/StockLookup';
 import { LayoutDashboard, ShieldCheck, RefreshCw } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -168,6 +169,9 @@ export const Dashboard: React.FC = () => {
 
                 {/* ROW 4: Correlation Matrix (Full Width, at bottom) */}
                 <CorrelationMatrixTable data={volumeWeightedCorrelation} />
+
+                {/* ROW 5: Stock Lookup */}
+                <StockLookup />
 
                 <DexterWidget />
             </div>

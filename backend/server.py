@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import numpy as np
 import time
+import yfinance as yf
 from datetime import datetime
 
 # Import risk.py (Now local)
@@ -627,6 +628,164 @@ async def remove_position(ticker: str):
         return {"status": "success", "message": f"Removed {ticker}"}
     except Exception as e:
         return {"error": str(e)}
+
+# ==========================================
+# Stock Autocomplete API
+# ==========================================
+
+@app.get("/api/lookup/suggest")
+async def suggest_tickers(query: str):
+    """
+    Returns autocomplete suggestions using Yahoo Finance's search endpoint.
+    """
+    import httpx
+    if not query or len(query.strip()) < 1:
+        return []
+    try:
+        url = "https://query1.finance.yahoo.com/v1/finance/search"
+        params = {
+            "q": query,
+            "quotesCount": 7,
+            "newsCount": 0,
+            "listsCount": 0,
+        }
+        headers = {"User-Agent": "Mozilla/5.0"}
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, params=params, headers=headers)
+            data = resp.json()
+        quotes = data.get("quotes", [])
+        return [
+            {
+                "symbol":   q.get("symbol", ""),
+                "name":     q.get("longname") or q.get("shortname", ""),
+                "exchange": q.get("exchange", ""),
+                "type":     q.get("quoteType", ""),
+            }
+            for q in quotes
+            if q.get("symbol") and q.get("quoteType") in ("EQUITY", "ETF")
+        ]
+    except Exception as e:
+        return []
+
+
+# ==========================================
+# Stock Lookup API
+# ==========================================
+
+@app.get("/api/lookup")
+async def lookup_stock(query: str):
+    """
+    Fetch price returns and valuation metrics for any ticker via yfinance.
+    Returns: 1D, 7D, 1M, YTD, 1Y returns + TTM P/E + (FCF-SBC)/EV yield.
+    """
+    import math
+
+    def safe_float(val):
+        try:
+            f = float(val)
+            return None if (math.isnan(f) or math.isinf(f)) else f
+        except:
+            return None
+
+    try:
+        ticker_str = query.strip().upper()
+        t = yf.Ticker(ticker_str)
+
+        # --- Fetch price history for returns ---
+        hist = t.history(period="2y", auto_adjust=True)
+        if hist.empty or len(hist) < 2:
+            return {"error": f"No price data found for '{query}'. Please check the ticker symbol."}
+
+        close = hist["Close"].dropna()
+        now = close.index[-1]
+        current_price = float(close.iloc[-1])
+
+        def period_return(days=None, ytd=False):
+            if ytd:
+                year_start = pd.Timestamp(f"{now.year}-01-01", tz=close.index.tz)
+                sub = close[close.index >= year_start]
+                if len(sub) < 1:
+                    return None
+                # Find prev year close
+                prev = close[close.index < year_start]
+                base = float(prev.iloc[-1]) if not prev.empty else float(sub.iloc[0])
+                return (float(sub.iloc[-1]) - base) / base if base != 0 else None
+            else:
+                # Find approx trading days back
+                if len(close) <= days:
+                    return None
+                base = float(close.iloc[-days - 1])
+                return (current_price - base) / base if base != 0 else None
+
+        r1d  = period_return(days=1)
+        r7d  = period_return(days=5)    # ~1 trading week
+        r1m  = period_return(days=21)   # ~1 trading month
+        r1y  = period_return(days=252)
+        r_ytd = period_return(ytd=True)
+
+        # --- Fetch info dict for valuation ---
+        info = {}
+        try:
+            info = t.info or {}
+        except Exception:
+            pass
+
+        name     = info.get("longName") or info.get("shortName") or ticker_str
+        currency = info.get("currency", "USD")
+
+        # TTM P/E
+        pe = safe_float(info.get("trailingPE"))
+
+        # (FCF - SBC) / EV
+        fcf = safe_float(info.get("freeCashflow"))
+        ev  = safe_float(info.get("enterpriseValue"))
+
+        # Try to get SBC from cashflow statement
+        sbc = None
+        sbc_estimated = False
+        try:
+            cf = t.cashflow  # columns = years, index = line items
+            if cf is not None and not cf.empty:
+                # yfinance labels vary — try a few
+                for label in ["Stock Based Compensation", "StockBasedCompensation", "Share Based Compensation Expense"]:
+                    if label in cf.index:
+                        sbc_val = safe_float(cf.loc[label].iloc[0])  # most recent year
+                        if sbc_val is not None:
+                            sbc = abs(sbc_val)  # cashflow statements show SBC as positive outflow
+                            break
+        except Exception:
+            pass
+
+        if sbc is None:
+            sbc = 0.0
+            sbc_estimated = True
+
+        # Compute (FCF - SBC) / EV yield
+        fcf_sbc_yield = None
+        if fcf is not None and ev is not None and ev != 0:
+            fcf_sbc_yield = (fcf - sbc) / ev  # expressed as decimal, rendered as % on frontend
+
+        return {
+            "ticker":        ticker_str,
+            "name":          name,
+            "currency":      currency,
+            "currentPrice":  current_price,
+            "r1d":           safe_float(r1d),
+            "r7d":           safe_float(r7d),
+            "r1m":           safe_float(r1m),
+            "rYtd":          safe_float(r_ytd),
+            "r1y":           safe_float(r1y),
+            "pe":            pe,
+            "fcfSbcYield":   safe_float(fcf_sbc_yield),
+            "sbc_estimated": sbc_estimated,
+            "error":         None,
+        }
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
+
 
 if __name__ == "__main__":
     import uvicorn
