@@ -320,7 +320,12 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             ytd_contribution = weight * ytd_ret * dir_multiplier if weight and ytd_ret else None
             
             # Calculate current drifted weight
-            # W_current = W_initial * (1 + R_ytd_asset) / (1 + R_ytd_portfolio)
+            # W_current = W_initial * (1 + R_stock) / (1 + R_portfolio)
+            # This is correct for BOTH longs and shorts:
+            #   Long:  stock up → exposure grows → weight grows ✓
+            #   Short: stock up → exposure ($ owed) grows AND NAV shrinks → weight grows ✓
+            #   Short: stock down → exposure shrinks AND NAV grows → weight shrinks ✓
+            # The raw stock return (NOT direction-adjusted) drives exposure size.
             current_weight = float(weight * (1 + ytd_ret) / (1 + portfolio_ytd)) if weight else None
             
             # Calculate Returns and Contributions
