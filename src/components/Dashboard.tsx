@@ -6,7 +6,6 @@ import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { CorrelationMatrixTable } from './dashboard/CorrelationMatrixTable';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { CountryMapWidget } from './dashboard/CountryMapWidget';
-import { DexterWidget } from './dashboard/DexterWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
 import { StockLookup } from './dashboard/StockLookup';
 import { LayoutDashboard, ShieldCheck, RefreshCw } from 'lucide-react';
@@ -172,8 +171,6 @@ export const Dashboard: React.FC = () => {
 
                 {/* ROW 5: Stock Lookup */}
                 <StockLookup />
-
-                <DexterWidget />
             </div>
         </div>
     );
