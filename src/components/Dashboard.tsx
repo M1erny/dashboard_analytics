@@ -16,7 +16,7 @@ export const Dashboard: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [isSwitchingTier, setIsSwitchingTier] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [costTier, setCostTier] = useState<CostTier>('retail');
+    const [costTier, setCostTier] = useState<CostTier>('none');
 
     useEffect(() => {
         const isInitialLoad = !data;
