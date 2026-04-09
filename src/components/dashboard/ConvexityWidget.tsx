@@ -1,11 +1,10 @@
 import React, { useRef, useEffect } from 'react';
-import type { ConvexityMetrics, ScatterDataPoint, StressTest } from '../../utils/finance';
+import type { ConvexityMetrics, ScatterDataPoint } from '../../utils/finance';
 import { cn } from '../../lib/utils';
-import { ArrowUpRight, ArrowDownRight, TrendingUp, Zap, Activity } from 'lucide-react';
+import { ArrowUpRight, ArrowDownRight, TrendingUp, Activity } from 'lucide-react';
 
 interface ConvexityWidgetProps {
     convexity?: ConvexityMetrics | null;
-    stressTests?: StressTest[];
 }
 
 // ─── Formatters ──────────────────────────────────────────────
@@ -268,7 +267,7 @@ const ScatterPlot: React.FC<{
 
 
 // ─── Main Component ──────────────────────────────────────────
-export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, stressTests }) => {
+export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity }) => {
     if (!convexity) return null;
 
     const { upsideCapture, downsideCapture, captureSpread, quadraticCoeffs, rSquared, isConvex, scatterData } = convexity;
@@ -372,7 +371,7 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, str
                 </div>
 
                 {/* ── CENTER: Scatter Plot ── */}
-                <div className="lg:col-span-5 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl">
+                <div className="lg:col-span-8 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl">
                     <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
                             <TrendingUp className="h-4 w-4 text-amber-400" />
@@ -412,63 +411,6 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, str
                     </p>
                 </div>
 
-                {/* ── RIGHT: Non-Linear Stress Tests ── */}
-                <div className="lg:col-span-3 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl">
-                    <div className="flex items-center gap-2 mb-3">
-                        <Zap className="h-4 w-4 text-violet-400" />
-                        <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">
-                            Stress Tests
-                        </span>
-                    </div>
-                    <div className="text-[9px] text-gray-600 font-mono mb-3 px-2 py-1 rounded bg-white/[0.03] border border-white/[0.05]">
-                        Quadratic model (non-linear)
-                    </div>
-
-                    <div className="space-y-2">
-                        {stressTests?.map(st => {
-                            const isDownside = (st.marketMove ?? st.impact) < 0;
-                            const diff = (st.linearImpact != null) ? st.impact - st.linearImpact : 0;
-                            const convexBenefit = isDownside ? diff > 0 : diff > 0; // positive diff = better than linear
-
-                            return (
-                                <div key={st.scenario}
-                                    className="rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]"
-                                >
-                                    <div className="flex justify-between items-center">
-                                        <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider truncate mr-2">
-                                            {st.scenario.replace(/\(.*?\)/, '').trim()}
-                                        </span>
-                                        <span className={cn(
-                                            "font-mono text-sm font-black tracking-tight whitespace-nowrap",
-                                            st.impact >= 0 ? "text-emerald-400" : "text-rose-400"
-                                        )}>
-                                            {fmtSignedPct(st.impact)}
-                                        </span>
-                                    </div>
-
-                                    {/* Linear comparison */}
-                                    {st.linearImpact != null && Math.abs(diff) > 0.0001 && (
-                                        <div className="flex justify-between items-center mt-1">
-                                            <span className="text-[9px] text-gray-600">
-                                                vs linear
-                                            </span>
-                                            <span className={cn(
-                                                "font-mono text-[10px] font-semibold",
-                                                convexBenefit ? "text-emerald-500/70" : "text-rose-500/70"
-                                            )}>
-                                                {fmtSignedPct(st.linearImpact)} ({convexBenefit ? '▲' : '▼'}{Math.abs(diff * 100).toFixed(2)}pp)
-                                            </span>
-                                        </div>
-                                    )}
-                                </div>
-                            );
-                        })}
-                    </div>
-
-                    <p className="text-[10px] text-gray-600 mt-3 leading-relaxed">
-                        Long/short + AFRM creates non-linear payoff. Linear β model overstates downside.
-                    </p>
-                </div>
             </div>
         </div>
     );

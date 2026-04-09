@@ -1,17 +1,17 @@
 import { cn } from '../../lib/utils';
-import type { Vitals, LeverageStats, HistoryPoint } from '../../utils/finance';
+import type { Vitals, HistoryPoint, StressTest } from '../../utils/finance';
 import { ResponsiveContainer, LineChart, Line, Tooltip } from 'recharts';
 import {
     TrendingUp, TrendingDown, Activity, Zap, Shield,
     BarChart3, ArrowUpRight, ArrowDownRight,
-    Gauge, Flame, DollarSign
+    Gauge, DollarSign
 } from 'lucide-react';
 
 interface ExecutiveSummaryProps {
     vitals: Vitals;
-    leverage?: LeverageStats;
     costTier?: string;
     ytdHistory?: HistoryPoint[];
+    stressTests?: StressTest[];
 }
 
 // ─── Formatters ──────────────────────────────────────────────
@@ -46,7 +46,7 @@ const StatRow = ({ label, value, tooltip, valueClassName }: {
 );
 
 // ─── Main Component ──────────────────────────────────────────
-export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, leverage, costTier = 'retail', ytdHistory }) => {
+export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, costTier = 'retail', ytdHistory, stressTests }) => {
     const ytdPositive = (vitals.ytdReturn ?? 0) >= 0;
 
     return (
@@ -307,44 +307,51 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, leve
                     </div>
                 </div>
 
-                {/* Leverage / Exposure */}
-                <div className="rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl">
-                    <div className="flex items-center gap-2 mb-3">
-                        <Flame className="h-4 w-4 text-orange-400" />
-                        <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Exposure</span>
+                {/* Non-Linear Stress Tests (moved from Convexity) */}
+                <div className="rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col h-full">
+                    <div className="flex items-center gap-2 mb-3 shrink-0">
+                        <Zap className="h-4 w-4 text-violet-400" />
+                        <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">
+                            Stress Tests
+                        </span>
                     </div>
-                    {leverage ? (
-                        <div className="space-y-1.5">
-                            <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
-                                <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Gross</span>
-                                <span className="font-mono text-lg font-black tracking-tight text-indigo-400">
-                                    {(leverage.Gross_Exp * 100).toFixed(0)}%
-                                </span>
-                            </div>
-                            <div className="grid grid-cols-2 gap-1.5">
-                                <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-2.5 py-2 border border-white/[0.05]">
-                                    <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">Long</span>
-                                    <span className="font-mono text-sm font-bold text-emerald-400">
-                                        {(leverage.Long_Exp * 100).toFixed(0)}%
-                                    </span>
+
+                    <div className="space-y-2 flex-grow">
+                        {stressTests?.map(st => {
+                            const isDownside = (st.marketMove ?? st.impact) < 0;
+                            const diff = (st.linearImpact != null) ? st.impact - st.linearImpact : 0;
+                            const convexBenefit = isDownside ? diff > 0 : diff > 0;
+
+                            return (
+                                <div key={st.scenario}
+                                    className="rounded-lg bg-white/[0.03] px-3 py-2 border border-white/[0.05]"
+                                >
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider truncate mr-2">
+                                            {st.scenario.replace(/\(.*?\)/, '').trim()}
+                                        </span>
+                                        <span className={cn(
+                                            "font-mono text-sm font-black tracking-tight whitespace-nowrap",
+                                            st.impact >= 0 ? "text-emerald-400" : "text-rose-400"
+                                        )}>
+                                            {fmtSigned(st.impact)}
+                                        </span>
+                                    </div>
+                                    {st.linearImpact != null && Math.abs(diff) > 0.0001 && (
+                                        <div className="flex justify-between items-center mt-1">
+                                            <span className="text-[9px] text-gray-600">vs linear</span>
+                                            <span className={cn(
+                                                "font-mono text-[9px] font-semibold",
+                                                convexBenefit ? "text-emerald-500/70" : "text-rose-500/70"
+                                            )}>
+                                                {fmtSigned(st.linearImpact)} ({convexBenefit ? '▲' : '▼'}{Math.abs(diff * 100).toFixed(2)}pp)
+                                            </span>
+                                        </div>
+                                    )}
                                 </div>
-                                <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-2.5 py-2 border border-white/[0.05]">
-                                    <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">Short</span>
-                                    <span className="font-mono text-sm font-bold text-rose-400">
-                                        {(leverage.Short_Exp * 100).toFixed(0)}%
-                                    </span>
-                                </div>
-                            </div>
-                            <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2 border border-white/[0.05]">
-                                <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Net</span>
-                                <span className="font-mono text-sm font-bold text-gray-200">
-                                    {(leverage.Net_Exp * 100).toFixed(0)}%
-                                </span>
-                            </div>
-                        </div>
-                    ) : (
-                        <span className="text-gray-600 text-sm">No leverage data</span>
-                    )}
+                            );
+                        })}
+                    </div>
                 </div>
             </div>
         </div>

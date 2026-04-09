@@ -154,11 +154,11 @@ export const Dashboard: React.FC = () => {
                     </div>
                 </div>
 
-                {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing) */}
-                <ExecutiveSummary vitals={vitals} leverage={leverage} costTier={costTier} ytdHistory={ytdHistory} />
+                {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing, Stress Tests) */}
+                <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} />
 
                 {/* ROW 1.5: Convexity Analysis */}
-                <ConvexityWidget convexity={convexity} stressTests={stressTests} />
+                <ConvexityWidget convexity={convexity} />
 
                 {/* ROW 2: Returns Heatmap & Portfolio Contribution (Full Width) */}
                 <ReturnsHeatmap periodicReturns={periodicReturns} />
