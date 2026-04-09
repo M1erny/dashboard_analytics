@@ -832,6 +832,47 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     # --- 12. CONVEXITY METRICS (YTD Only) ---
     ytd_portfolio_gross_aligned = portfolio_val_series_gross.pct_change().dropna().reindex(ytd_benchmark_aligned.index).fillna(0)
     convexity_metrics = calculate_convexity_metrics(ytd_portfolio_gross_aligned, ytd_benchmark_aligned)
+
+    # --- 12b. ENRICH SCATTER DATA WITH PER-DAY CONTRIBUTORS ---
+    # For every scatter point add top-3 positive and top-3 negative ticker contributions
+    # so the frontend tooltip can display "who drove the move that day".
+    if convexity_metrics and convexity_metrics.get('Scatter_Data'):
+        # pre-build a tz-naive index lookup from returns_df for fast .at[] access
+        ret_idx_set = set(returns_df.index)
+        enriched = []
+        for point in convexity_metrics['Scatter_Data']:
+            date_str, bench_r, port_r = point[0], point[1], point[2]
+            top3, bot3 = [], []
+            try:
+                date_ts = pd.Timestamp(date_str)
+                if date_ts in ret_idx_set:
+                    contrib_list = []
+                    for tkr, cfg in PORTFOLIO_CONFIG.items():
+                        if tkr not in returns_df.columns:
+                            continue
+                        w = cfg.get('weight', 0)
+                        if not w:
+                            continue
+                        d = 1 if cfg.get('type', 'Long') == 'Long' else -1
+                        r = returns_df.at[date_ts, tkr]
+                        if pd.isna(r):
+                            continue
+                        c = w * d * float(r)
+                        contrib_list.append({
+                            't': tkr,
+                            'c': round(c, 5),    # contribution to portfolio (decimal)
+                            'r': round(float(r), 5)  # raw stock price move (decimal)
+                        })
+                    contrib_list.sort(key=lambda x: x['c'], reverse=True)
+                    top3 = contrib_list[:3]
+                    bot3 = sorted(
+                        [x for x in contrib_list if x['c'] < 0],
+                        key=lambda x: x['c']
+                    )[:3]
+            except Exception as ex:
+                print(f"Warning: could not enrich scatter point {date_str}: {ex}")
+            enriched.append({'d': date_str, 'b': bench_r, 'p': port_r, 'top': top3, 'bot': bot3})
+        convexity_metrics['Scatter_Data'] = enriched
     
     return {
         'Taleb_Metrics': {

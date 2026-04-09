@@ -70,6 +70,20 @@ export interface StressTest {
     marketMove?: number;
 }
 
+export interface ScatterContributor {
+    t: string;   // ticker
+    c: number;   // contribution to portfolio return that day (decimal)
+    r: number;   // raw stock price move that day (decimal)
+}
+
+export interface ScatterDataPoint {
+    d: string;   // date
+    b: number;   // benchmark (SPY) return
+    p: number;   // portfolio return
+    top: ScatterContributor[];  // top 3 positive contributors
+    bot: ScatterContributor[];  // top 3 negative contributors
+}
+
 export interface ConvexityMetrics {
     upsideCapture: number;
     downsideCapture: number;
@@ -78,7 +92,7 @@ export interface ConvexityMetrics {
     linearCoeffs?: [number, number]; // [β, α]
     rSquared: number;
     isConvex: boolean;
-    scatterData: [string, number, number][]; // [date, benchRet, portRet][]
+    scatterData: ScatterDataPoint[];
 }
 
 export interface PeriodicReturn {
