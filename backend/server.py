@@ -128,7 +128,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
         # 2. Run Advanced Models
         stress_results = risk.stress_test_portfolio(metrics)
             
-        periodic_rets = risk.calculate_periodic_returns(usd_prices)
+        periodic_rets = risk.calculate_periodic_returns(usd_prices, portfolio_name=portfolio)
 
         # 3. Format Response
         import math

@@ -161,7 +161,7 @@ export const Dashboard: React.FC = () => {
                             <button
                                 onClick={() => {
                                     setIsSwitchingTier(true);
-                                    fetchDashboardData(5, 1000, true, costTier).then(res => { // force=true
+                                    fetchDashboardData(5, 1000, true, costTier, portfolioName).then(res => { // force=true
                                         if (res) setData(res);
                                     }).finally(() => setIsSwitchingTier(false));
                                 }}
