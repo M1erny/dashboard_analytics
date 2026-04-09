@@ -225,11 +225,184 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                 </div>
             </div>
 
-            {/* ═══════ ROW 2: Layout: L/S+Financing (5) | Momentum (4) | Stress Tests (3) ═══════ */}
+            {/* ═══════ ROW 2: L/S+Financing | Momentum | Stress Tests ═══════ */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
 
-                {/* ── L/S Contribution & Financing ── */}
-                <div className="lg:col-span-5 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col justify-between">
+                {/* ── L/S Contribution & Financing ── compact 3-col */}
+                <div className="lg:col-span-3 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col gap-3">
+                    {/* Header */}
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <BarChart3 className="h-4 w-4 text-blue-400" />
+                            <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">L/S & Financing</span>
+                        </div>
+                        <span className="text-[9px] text-gray-500 uppercase tracking-widest bg-white/[0.03] px-2 py-0.5 rounded border border-white/[0.05]">
+                            {costTier}
+                        </span>
+                    </div>
+
+                    {/* Long */}
+                    <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
+                        <div className="flex items-center gap-2">
+                            <span className="flex items-center justify-center w-5 h-5 rounded bg-emerald-500/15">
+                                <ArrowUpRight className="h-3 w-3 text-emerald-400" />
+                            </span>
+                            <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Longs</span>
+                        </div>
+                        <span className={cn("font-mono text-base font-black tracking-tight", returnColor(vitals.ytdLongsContrib))}>
+                            {fmtSigned(vitals.ytdLongsContrib)}
+                        </span>
+                    </div>
+
+                    {/* Short */}
+                    <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
+                        <div className="flex items-center gap-2">
+                            <span className="flex items-center justify-center w-5 h-5 rounded bg-rose-500/15">
+                                <ArrowDownRight className="h-3 w-3 text-rose-400" />
+                            </span>
+                            <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Shorts</span>
+                        </div>
+                        <span className={cn("font-mono text-base font-black tracking-tight", returnColor(vitals.ytdShortsContrib))}>
+                            {fmtSigned(vitals.ytdShortsContrib)}
+                        </span>
+                    </div>
+
+                    {/* Visual bar */}
+                    <div className="flex items-center gap-1 px-1">
+                        <div className="flex-1 h-1.5 rounded-l bg-emerald-500/20 overflow-hidden">
+                            <div className="h-full bg-emerald-500/60 transition-all duration-700" style={{ width: `${Math.min(Math.abs((vitals.ytdLongsContrib ?? 0)) * 500, 100)}%` }} />
+                        </div>
+                        <div className="w-px h-2 bg-white/20" />
+                        <div className="flex-1 h-1.5 rounded-r bg-rose-500/20 overflow-hidden flex justify-end">
+                            <div className="h-full bg-rose-500/60 transition-all duration-700" style={{ width: `${Math.min(Math.abs((vitals.ytdShortsContrib ?? 0)) * 500, 100)}%` }} />
+                        </div>
+                    </div>
+
+                    {/* Divider */}
+                    <div className="border-t border-white/[0.05]" />
+
+                    {/* Financing */}
+                    <div className="flex justify-between items-center">
+                        <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">YTD Drag</span>
+                        <span className="font-mono text-sm font-black tracking-tight text-rose-400">
+                            {vitals.ytdFinancingCost !== undefined ? fmt(-vitals.ytdFinancingCost) : '—'}
+                        </span>
+                    </div>
+                    <div className="flex justify-between items-center -mt-1">
+                        <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">Ann. Est</span>
+                        <span className="font-mono text-sm font-black tracking-tight text-amber-400">
+                            {vitals.annualFinancingCost !== undefined ? fmt(-vitals.annualFinancingCost) : '—'}
+                        </span>
+                    </div>
+                </div>
+
+                {/* ── Momentum & Correlations ── wider 5-col */}
+                <div className="lg:col-span-5 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col gap-3">
+                    <div className="flex items-center gap-2">
+                        <Flame className="h-4 w-4 text-orange-400" />
+                        <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Momentum (1M vs Benchmark)</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 flex-grow">
+                        {/* Relative Strength */}
+                        <div className="flex flex-col gap-1.5">
+                            <div className="flex justify-between text-[9px] text-gray-500 uppercase tracking-widest pb-1 border-b border-white/[0.05]">
+                                <span>Ticker</span>
+                                <span>vs Bmk</span>
+                            </div>
+                            {/* Top performers */}
+                            {momentum?.top_rs?.slice(0, 3).map((rs, i) => (
+                                <div key={`top-${i}`} className="flex justify-between items-center">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="w-1 h-1 rounded-full bg-emerald-400 shrink-0" />
+                                        <span className="text-[11px] text-gray-200 font-semibold font-mono">{rs.ticker.split('.')[0]}</span>
+                                    </div>
+                                    <span className="text-[11px] text-emerald-400 font-mono font-bold">+{fmtPct(rs.rs)}</span>
+                                </div>
+                            ))}
+                            {/* Divider between top/bottom */}
+                            <div className="border-t border-white/[0.04] my-0.5" />
+                            {/* Bottom performers */}
+                            {momentum?.bot_rs?.slice(0, 3).map((rs, i) => (
+                                <div key={`bot-${i}`} className="flex justify-between items-center">
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="w-1 h-1 rounded-full bg-rose-400 shrink-0" />
+                                        <span className="text-[11px] text-gray-400 font-semibold font-mono">{rs.ticker.split('.')[0]}</span>
+                                    </div>
+                                    <span className="text-[11px] text-rose-400 font-mono font-bold">{fmtPct(rs.rs)}</span>
+                                </div>
+                            ))}
+                            {(!momentum?.top_rs || momentum.top_rs.length === 0) && (
+                                <span className="text-xs text-gray-600 italic">No data</span>
+                            )}
+                        </div>
+
+                        {/* Correlation Surges */}
+                        <div className="flex flex-col gap-1.5 border-l border-white/[0.05] pl-4">
+                            <div className="flex justify-between text-[9px] text-gray-500 uppercase tracking-widest pb-1 border-b border-white/[0.05]">
+                                <span>Pair</span>
+                                <span title="1M corr − 1Y corr">Δ Corr</span>
+                            </div>
+                            {momentum?.corr_surges?.slice(0, 5).map((surge, i) => (
+                                <div key={i} className="flex justify-between items-center gap-2">
+                                    <span className="text-[10px] text-gray-400 font-mono truncate">
+                                        {surge.t1.split('.')[0]} <span className="text-gray-600">·</span> {surge.t2.split('.')[0]}
+                                    </span>
+                                    <div className="flex items-center gap-1 shrink-0">
+                                        <span className="text-[10px] text-sky-400 font-mono font-bold">+{surge.delta.toFixed(2)}</span>
+                                    </div>
+                                </div>
+                            ))}
+                            {(!momentum?.corr_surges || momentum.corr_surges.length === 0) && (
+                                <span className="text-xs text-gray-600 italic">No data</span>
+                            )}
+                        </div>
+                    </div>
+                </div>
+
+                {/* Non-Linear Stress Tests */}
+                <div className="lg:col-span-4 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col gap-2">
+                    <div className="flex items-center gap-2 mb-1">
+                        <Zap className="h-4 w-4 text-violet-400" />
+                        <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Stress Tests</span>
+                    </div>
+
+                    {stressTests?.map(st => {
+                        const diff = (st.linearImpact != null) ? st.impact - st.linearImpact : 0;
+                        const convexBenefit = diff > 0;
+
+                        return (
+                            <div key={st.scenario} className="rounded-lg bg-white/[0.03] px-3 py-2 border border-white/[0.05]">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider truncate mr-2">
+                                        {st.scenario.replace(/\(.*?\)/, '').trim()}
+                                    </span>
+                                    <span className={cn(
+                                        "font-mono text-sm font-black tracking-tight whitespace-nowrap",
+                                        st.impact >= 0 ? "text-emerald-400" : "text-rose-400"
+                                    )}>
+                                        {fmtSigned(st.impact)}
+                                    </span>
+                                </div>
+                                {st.linearImpact != null && Math.abs(diff) > 0.0001 && (
+                                    <div className="flex justify-between items-center mt-0.5">
+                                        <span className="text-[9px] text-gray-600">vs linear</span>
+                                        <span className={cn(
+                                            "font-mono text-[9px] font-semibold",
+                                            convexBenefit ? "text-emerald-500/70" : "text-rose-500/70"
+                                        )}>
+                                            {fmtSigned(st.linearImpact)} ({convexBenefit ? '▲' : '▼'}{Math.abs(diff * 100).toFixed(2)}pp)
+                                        </span>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        </div>
+    );
+};
                     <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
                             <BarChart3 className="h-4 w-4 text-blue-400" />
