@@ -205,7 +205,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     # We need to normalize weights to 100% of invested capital for some metrics,
     # but for risk attribution, we use the actual exposure weights.
     
-    for ticker, info in PORTFOLIO_CONFIG.items():
+    for ticker, info in portfolio_config.items():
         if ticker in returns_df.columns:
             weight = info['weight']
             direction = 1 if info['type'] == 'Long' else -1
@@ -838,7 +838,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
                 date_ts = pd.Timestamp(date_str)
                 if date_ts in ret_idx_set:
                     contrib_list = []
-                    for tkr, cfg in PORTFOLIO_CONFIG.items():
+                    portfolio_config = load_portfolio_config(portfolio_name)
+                    for tkr, cfg in portfolio_config.items():
                         if tkr not in returns_df.columns:
                             continue
                         w = cfg.get('weight', 0)
