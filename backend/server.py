@@ -30,7 +30,29 @@ app.add_middleware(
 
 # Response cache (mapped by costTier, 5 minute TTL)
 _cache = {}
-_data_cache = {"data": None, "timestamp": 0}  # Shared raw market data cache
+_data_cache = {}  # Shared raw market data cache keyed by portfolio
+
+def _get_cached_market_data(force: bool = False, portfolio_name: str = "main"):
+    """Fetch and cache raw market data for a portfolio."""
+    global _data_cache
+    now = time.time()
+    
+    if portfolio_name not in _data_cache:
+        _data_cache[portfolio_name] = {"data": None, "timestamp": 0}
+        
+    cache_entry = _data_cache[portfolio_name]
+    
+    if not force and cache_entry["data"] and (now - cache_entry["timestamp"]) < CACHE_TTL:
+        print(f"Using cached market data for {portfolio_name} (age: {int(now - cache_entry['timestamp'])}s)")
+        return cache_entry["data"]
+    
+    print(f"Fetching fresh market data for {portfolio_name}...")
+    raw_prices, fx_rates, volume_data = risk.fetch_data(portfolio_name)
+    usd_prices = risk.normalize_to_base_currency(raw_prices, fx_rates, portfolio_name)
+    cache_entry["data"] = (usd_prices, fx_rates, volume_data, raw_prices)
+    cache_entry["timestamp"] = now
+    return cache_entry["data"]
+
 CACHE_TTL = 300  # seconds
 
 @app.get("/api/status")
@@ -40,40 +62,26 @@ async def get_status():
     else:
         return {"state": "error", "message": "Risk module failed to load"}
 
-def _get_cached_market_data(force: bool = False):
-    """Fetch and cache raw market data. All tiers share this cache so gross returns are identical."""
-    global _data_cache
-    now = time.time()
-    if not force and _data_cache["data"] and (now - _data_cache["timestamp"]) < CACHE_TTL:
-        print(f"Using cached market data (age: {int(now - _data_cache['timestamp'])}s)")
-        return _data_cache["data"]
-    
-    print("Fetching fresh market data from yfinance...")
-    raw_prices, fx_rates, volume_data = risk.fetch_data()
-    usd_prices = risk.normalize_to_base_currency(raw_prices, fx_rates)
-    _data_cache["data"] = (usd_prices, fx_rates, volume_data, raw_prices)
-    _data_cache["timestamp"] = now
-    return _data_cache["data"]
-
 @app.get("/api/metrics")
-async def get_metrics(force: bool = False, costTier: str = 'retail'):
+async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: str = 'main'):
     global _cache
     
     if not risk:
         return {"error": "risk.py not found or failed to import"}
         
-    if costTier not in _cache:
-        _cache[costTier] = {"data": None, "timestamp": 0}
+    cache_key = f"{portfolio}_{costTier}"
+    if cache_key not in _cache:
+        _cache[cache_key] = {"data": None, "timestamp": 0}
         
-    tier_cache = _cache[costTier]
+    tier_cache = _cache[cache_key]
     
     # Return cached response if fresh (unless force=True)
     if force:
-        # Invalidate all tier caches since underlying data may change
+        # Invalidate all tier caches
         for k in _cache:
             _cache[k] = {"data": None, "timestamp": 0}
     elif tier_cache["data"] and (time.time() - tier_cache["timestamp"]) < CACHE_TTL:
-        print(f"Returning cached response for {costTier} (age: {int(time.time() - tier_cache['timestamp'])}s)")
+        print(f"Returning cached response for {cache_key} (age: {int(time.time() - tier_cache['timestamp'])}s)")
         return tier_cache["data"]
 
     try:
@@ -91,7 +99,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             borrow_fee = 0.025
             
         # 1. Fetch market data (shared cache — same data for all tiers)
-        usd_prices, fx_rates, volume_data, raw_prices = _get_cached_market_data(force)
+        usd_prices, fx_rates, volume_data, raw_prices = _get_cached_market_data(force, portfolio_name=portfolio)
         
         # 2. Calculate risk metrics with tier-specific rates
         metrics = risk.calculate_risk_metrics(
@@ -99,7 +107,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             volume_data, 
             fx_rates,
             margin_rate=margin_rate,
-            borrow_fee=borrow_fee
+            borrow_fee=borrow_fee,
+            portfolio_name=portfolio
         )
         
         if metrics is None:
@@ -237,27 +246,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
                     "linearImpact": to_float(result),
                     "marketMove": None,
                 })
-        # Format Volume Weighted Correlation Matrix
-        vw_corr = metrics.get('Volume_Weighted_Correlation')
-        vw_corr_data = { "tickers": [], "matrix": [] }
-        if vw_corr is not None and not vw_corr.empty:
-            try:
-                vw_corr_data["tickers"] = vw_corr.columns.tolist()
-                # Handle NaN/Inf in matrix: replace with None
-                mat = vw_corr.values
-                # We need to iterate or use a masked replacement because simple tolist() keeps NaNs which are invalid JSON
-                clean_mat = []
-                for row in mat:
-                    clean_row = [to_float(x) for x in row]
-                    clean_mat.append(clean_row)
-                vw_corr_data["matrix"] = clean_mat
-            except Exception as e:
-                print(f"Error formatting correlation matrix: {e}")
-                
-        response["volumeWeightedCorrelation"] = vw_corr_data
-
         # Get portfolio config for weights and direction (Used for Currency & Periodic Returns)
-        portfolio_config = getattr(risk, 'PORTFOLIO_CONFIG', {})
+        portfolio_config = risk.load_portfolio_config(portfolio)
 
         # Calculate Currency Exposure using portfolio_config
         # Share of Gross Exposure
@@ -415,6 +405,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
                 "currentWeight": to_float(current_weight),
                 "direction": direction,
                 "lastPrice": last_price,
+                "entryPrice": ticker_config.get('entry_price', None) if ticker_config else None,
                 "currency": currency,
                 "volatility": volatility,
                 "volumeIndicator": to_float(volume_indicator),
@@ -508,12 +499,12 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
 # ==========================================
 
 @app.get("/api/portfolio")
-async def get_portfolio():
-    """Return the full portfolio composition from PORTFOLIO_CONFIG."""
+async def get_portfolio(portfolio: str = 'main'):
+    """Return the full portfolio composition from config."""
     if not risk:
         return {"error": "Risk module not loaded"}
 
-    portfolio_config = getattr(risk, 'PORTFOLIO_CONFIG', {})
+    portfolio_config = risk.load_portfolio_config(portfolio)
     benchmark = getattr(risk, 'BENCHMARK', 'SPY')
 
     positions = []
@@ -521,14 +512,18 @@ async def get_portfolio():
     short_exposure = 0.0
 
     for ticker, info in portfolio_config.items():
-        positions.append({
+        position = {
             "ticker": ticker,
             "weight": info.get('weight', 0),
             "type": info.get('type', 'Long'),
             "currency": info.get('currency', 'USD'),
             "country": info.get('country', 'USA'),
             "sector": info.get('sector', 'Unknown'),
-        })
+        }
+        if 'entry_price' in info:
+            position['entry_price'] = info['entry_price']
+            
+        positions.append(position)
         if info.get('type') == 'Long':
             long_exposure += info.get('weight', 0)
         else:
@@ -548,12 +543,12 @@ async def get_portfolio():
 
 
 @app.get("/api/portfolio/allocation")
-async def get_portfolio_allocation():
+async def get_portfolio_allocation(portfolio: str = 'main'):
     """Return portfolio allocation breakdowns by sector, country, currency, and direction."""
     if not risk:
         return {"error": "Risk module not loaded"}
 
-    portfolio_config = getattr(risk, 'PORTFOLIO_CONFIG', {})
+    portfolio_config = risk.load_portfolio_config(portfolio)
 
     by_sector = {}
     by_country = {}

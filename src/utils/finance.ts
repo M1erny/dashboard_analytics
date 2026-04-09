@@ -110,6 +110,7 @@ export interface PeriodicReturn {
     currentWeight: number | null;
     direction: 'Long' | 'Short' | null;
     lastPrice: number | null;  // Last fetched price (original currency)
+    entryPrice?: number | null;
     currency: string;  // Original currency (USD, EUR, etc.)
     volatility: number | null;  // Annualized volatility (std dev)
     volumeIndicator: number | null;  // 7d avg volume / YTD avg volume
@@ -123,10 +124,6 @@ export interface HistoryPoint {
     beta?: number;
 }
 
-export interface CorrelationMatrix {
-    tickers: string[];
-    matrix: (number | null)[][];
-}
 
 export interface CountryAllocation {
     long: number;
@@ -170,7 +167,6 @@ export interface FullRiskReport {
     history: HistoryPoint[];
     ytdHistory: HistoryPoint[];
     periodicReturns: PeriodicReturn[];
-    volumeWeightedCorrelation?: CorrelationMatrix;
     talebMetrics?: TalebMetrics;
     countryAllocation?: Record<string, CountryAllocation>;
     convexity: ConvexityMetrics | null;
@@ -181,14 +177,14 @@ export interface FullRiskReport {
 
 export type CostTier = 'institutional' | 'retail' | 'none';
 
-export const fetchDashboardData = async (retries = 5, delay = 3000, force = false, costTier: CostTier = 'retail'): Promise<FullRiskReport | null> => {
+export const fetchDashboardData = async (retries = 5, delay = 3000, force = false, costTier: CostTier = 'retail', portfolioName: string = 'main'): Promise<FullRiskReport | null> => {
     for (let i = 0; i < retries; i++) {
         try {
             // Use relative path - Vite proxy will handle forwarding to backend
             const BASE_URL = import.meta.env.VITE_API_URL || '';
             const url = force
-                ? `${BASE_URL}/api/metrics?force=true&costTier=${costTier}&t=${new Date().getTime()}`
-                : `${BASE_URL}/api/metrics?costTier=${costTier}`;
+                ? `${BASE_URL}/api/metrics?force=true&costTier=${costTier}&portfolio=${portfolioName}&t=${new Date().getTime()}`
+                : `${BASE_URL}/api/metrics?costTier=${costTier}&portfolio=${portfolioName}`;
 
             // Add 90 second timeout for slow backend (insider data fetching)
             const controller = new AbortController();
@@ -227,7 +223,6 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     activeRisks: data.riskAttribution || [], // Rename data.riskAttribution -> activeRisks
                     stressTests: data.stressTests || [],
                     ytdHistory: data.ytdHistory || [],
-                    volumeWeightedCorrelation: data.volumeWeightedCorrelation || undefined,
                     talebMetrics: data.talebMetrics,
                     countryAllocation: data.countryAllocation,
                     convexity: data.convexity || null,

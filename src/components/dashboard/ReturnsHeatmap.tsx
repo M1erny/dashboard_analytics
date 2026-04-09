@@ -3,7 +3,7 @@ import { cn } from '../../lib/utils';
 import type { PeriodicReturn } from '../../utils/finance';
 import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap } from 'lucide-react';
 
-type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight';
+type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry';
 type SortDir = 'asc' | 'desc';
 
 // ─── Color System ────────────────────────────────────────────
@@ -140,13 +140,15 @@ interface ColumnDef {
     key: SortKey;
     label: string;
     tooltip?: string;
-    group: 'position' | 'contribution' | 'returns' | 'risk';
+    group: 'position' | 'entry' | 'contribution' | 'returns' | 'risk';
 }
 
 const columns: ColumnDef[] = [
     { key: 'ticker',           label: 'Ticker',     group: 'position' },
     { key: 'lastPrice',        label: 'Price',      group: 'position', tooltip: 'Last fetched price' },
     { key: 'currentWeight',    label: 'Weight',     group: 'position', tooltip: 'Current drifted weight' },
+    { key: 'entryPrice',       label: 'Entry',      group: 'entry', tooltip: 'Original entry price' },
+    { key: 'rSinceEntry',      label: 'Ret. Entry', group: 'entry', tooltip: 'Return since entry' },
     { key: 'ytdContribution',  label: 'YTD',        group: 'contribution', tooltip: 'YTD portfolio contribution' },
     { key: 'r7dContribution',  label: '7D',         group: 'contribution', tooltip: '7-day portfolio contribution' },
     { key: 'r1dContribution',  label: '1D',         group: 'contribution', tooltip: '1-day portfolio contribution' },
@@ -160,6 +162,7 @@ const columns: ColumnDef[] = [
 
 const groupMeta: Record<string, { label: string; icon: React.ReactNode; colSpan: number; borderClass: string }> = {
     position:     { label: 'Position',      icon: <BarChart3 className="h-3 w-3" />, colSpan: 3, borderClass: 'border-l-0' },
+    entry:        { label: 'Entry Details', icon: <TrendingUp className="h-3 w-3" />,colSpan: 2, borderClass: 'border-l border-white/10' },
     contribution: { label: 'Contribution',  icon: <Zap className="h-3 w-3" />,       colSpan: 3, borderClass: 'border-l border-white/10' },
     returns:      { label: 'Returns',       icon: <TrendingUp className="h-3 w-3" />,colSpan: 4, borderClass: 'border-l border-white/10' },
     risk:         { label: 'Risk',          icon: <Flame className="h-3 w-3" />,     colSpan: 2, borderClass: 'border-l border-white/10' },
@@ -195,6 +198,8 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
             case 'volatility': return row.volatility ?? null;
             case 'volumeIndicator': return row.volumeIndicator ?? null;
             case 'currentWeight': return row.currentWeight ?? null;
+            case 'entryPrice': return row.entryPrice ?? null;
+            case 'rSinceEntry': return (row.lastPrice && row.entryPrice) ? ((row.lastPrice - row.entryPrice) / row.entryPrice) : null;
             default: return null;
         }
     };
@@ -264,11 +269,14 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
                     </td>
                 );
             case 'lastPrice':
+            case 'entryPrice': {
+                const val = col.key === 'lastPrice' ? row.lastPrice : row.entryPrice;
                 return (
-                    <td key={col.key} className={cn("px-3 py-2.5 text-right font-mono text-[13px] text-gray-300 whitespace-nowrap", groupBorder)}>
-                        {formatPrice(row.lastPrice, row.currency)}
+                    <td key={col.key} className={cn("px-3 py-2.5 text-right font-mono text-[13px] whitespace-nowrap", val ? "text-gray-300" : "text-gray-600", groupBorder)}>
+                        {formatPrice(val ?? null, row.currency)}
                     </td>
                 );
+            }
             case 'currentWeight':
                 return (
                     <td key={col.key} className={cn("px-3 py-2.5", groupBorder)}>
@@ -296,8 +304,11 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
             case 'r7d':
             case 'r1m':
             case 'r1y':
-            case 'r1d': {
-                const val = col.key === 'ytd' ? row.ytd : row[col.key as 'r7d' | 'r1m' | 'r1y' | 'r1d'];
+            case 'r1d':
+            case 'rSinceEntry': {
+                const val = col.key === 'ytd' ? row.ytd :
+                            col.key === 'rSinceEntry' ? ((row.lastPrice && row.entryPrice) ? (row.lastPrice - row.entryPrice) / row.entryPrice : null) :
+                            row[col.key as 'r7d' | 'r1m' | 'r1y' | 'r1d'];
                 return (
                     <td key={col.key} className={cn(
                         "px-3 py-2.5 text-center font-mono text-[13px] transition-all duration-200",

@@ -10,36 +10,24 @@ from scipy.stats import skew, kurtosis
 # ==========================================
 # 1. CONFIGURATION: Define Your Portfolio
 # ==========================================
-PORTFOLIO_CONFIG = {
-    # --- LONG POSITIONS (150% Target) ---
-    'AFRM':      {'weight': 0.20, 'type': 'Long', 'currency': 'USD', 'country': 'USA', 'sector': 'Financials'},
-    'INPST.AS':  {'weight': 0.15, 'type': 'Long', 'currency': 'EUR', 'country': 'NLD', 'sector': 'Industrials'},
-    'HARVIA.HE': {'weight': 0.15, 'type': 'Long', 'currency': 'EUR', 'country': 'FIN', 'sector': 'Cons. Cyclical'},
-    'BFT.WA':    {'weight': 0.15, 'type': 'Long', 'currency': 'PLN', 'country': 'POL', 'sector': 'Financials'},
-    'NBIS':      {'weight': 0.05, 'type': 'Long', 'currency': 'USD', 'country': 'USA', 'sector': 'Health Care'},
-    'CDR.WA':    {'weight': 0.10, 'type': 'Long', 'currency': 'PLN', 'country': 'POL', 'sector': 'Comm. Services'},
-    '3659.T':    {'weight': 0.05, 'type': 'Long', 'currency': 'JPY', 'country': 'JPN', 'sector': 'Comm. Services'},
-    'XTB.WA':    {'weight': 0.10, 'type': 'Long', 'currency': 'PLN', 'country': 'POL', 'sector': 'Financials'},
-    'BRK-B':     {'weight': 0.10, 'type': 'Long', 'currency': 'USD', 'country': 'USA', 'sector': 'Financials'},
-    'EQT':       {'weight': 0.10, 'type': 'Long', 'currency': 'USD', 'country': 'USA', 'sector': 'Energy'},
-    'META':      {'weight': 0.10, 'type': 'Long', 'currency': 'USD', 'country': 'USA', 'sector': 'Comm. Services'},
-    'PSKY':      {'weight': 0.05, 'type': 'Long', 'currency': 'USD', 'country': 'USA', 'sector': 'Technology'},
-    'SWM.WA':    {'weight': 0.05, 'type': 'Long', 'currency': 'PLN', 'country': 'POL', 'sector': 'Energy'},
-    'RBLX':      {'weight': 0.05, 'type': 'Long', 'currency': 'USD', 'country': 'USA', 'sector': 'Comm. Services'},
-    'SNAP':      {'weight': 0.05, 'type': 'Long', 'currency': 'USD', 'country': 'USA', 'sector': 'Comm. Services'},
-    'MU':        {'weight': 0.02, 'type': 'Long', 'currency': 'USD', 'country': 'USA', 'sector': 'Technology'},
-    '000660.KS': {'weight': 0.02, 'type': 'Long', 'currency': 'KRW', 'country': 'KOR', 'sector': 'Technology'},
+import json
+import os
 
-    # --- SHORT POSITIONS (70% Target) ---
-    'MSFT':      {'weight': 0.20, 'type': 'Short', 'currency': 'USD', 'country': 'USA', 'sector': 'Technology'},
-    '7974.T':    {'weight': 0.10, 'type': 'Short', 'currency': 'JPY', 'country': 'JPN', 'sector': 'Comm. Services'},
-    'JMT.LS':    {'weight': 0.075, 'type': 'Short', 'currency': 'EUR', 'country': 'PRT', 'sector': 'Cons. Defensive'},
-    'CARL-B.CO': {'weight': 0.075, 'type': 'Short', 'currency': 'DKK', 'country': 'DNK', 'sector': 'Cons. Defensive'},
-    'F':         {'weight': 0.075, 'type': 'Short', 'currency': 'USD', 'country': 'USA', 'sector': 'Cons. Cyclical'},
-    'ABI.BR':    {'weight': 0.075, 'type': 'Short', 'currency': 'EUR', 'country': 'BEL', 'sector': 'Cons. Defensive'},
-    'BDX.WA':    {'weight': 0.05, 'type': 'Short', 'currency': 'PLN', 'country': 'POL', 'sector': 'Financials'},
-    'STLA':      {'weight': 0.05, 'type': 'Short', 'currency': 'USD', 'country': 'USA', 'sector': 'Cons. Cyclical'},
-}
+def load_portfolio_config(name="main"):
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    config_path = os.path.join(base_dir, "portfolios", f"{name}.json")
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print(f"Warning: Portfolio config {name}.json not found. Falling back to main.json")
+        default_path = os.path.join(base_dir, "portfolios", "main.json")
+        with open(default_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
+PORTFOLIO_CONFIG = load_portfolio_config("main")
+
+# Global constants for the engine
 
 BENCHMARK = 'SPY'
 BENCHMARK_WIG = 'ETFBW20TR.WA'  # Beta ETF WIG20TR PCIF-Investment Certificates
@@ -59,7 +47,8 @@ BORROW_FEE = 0.025  # 2.5% estimated retail hard-to-borrow blended fee
 # ==========================================
 # 2. DATA ENGINE: Fetch & Normalize
 # ==========================================
-def fetch_data():
+def fetch_data(portfolio_name="main"):
+    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
     print("--- 1. Initializing Data Download ---")
     
     tickers = list(PORTFOLIO_CONFIG.keys())
@@ -119,7 +108,8 @@ def fetch_data():
 
     return stock_data, fx_data, volume_data
 
-def normalize_to_base_currency(stock_df, fx_df):
+def normalize_to_base_currency(stock_df, fx_df, portfolio_name="main"):
+    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
     print("--- 2. Normalizing Currencies to USD ---")
     normalized_df = stock_df.copy()
     
@@ -148,7 +138,8 @@ def normalize_to_base_currency(stock_df, fx_df):
 # ==========================================
 # 3. RISK CALCULATOR (ADVANCED)
 # ==========================================
-def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MARGIN_RATE, borrow_fee=BORROW_FEE):
+def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MARGIN_RATE, borrow_fee=BORROW_FEE, portfolio_name="main"):
+    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
     print("--- 3. Calculating Advanced Risk Metrics ---")
     
     # Defensive copy to avoid mutating shared cached data
@@ -874,7 +865,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             enriched.append({'d': date_str, 'b': bench_r, 'p': port_r, 'top': top3, 'bot': bot3})
         convexity_metrics['Scatter_Data'] = enriched
         
-    momentum_metrics = calculate_momentum_metrics(returns_df)
+    momentum_metrics = calculate_momentum_metrics(returns_df, portfolio_name=portfolio_name)
     
     return {
         'Taleb_Metrics': {
@@ -943,8 +934,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'Momentum_Metrics': momentum_metrics
     }
 
-def calculate_momentum_metrics(returns_df):
+def calculate_momentum_metrics(returns_df, portfolio_name="main"):
     """Calculate Relative Strength vs regional benchmarks and 1-month vs 1-year Correlation surges."""
+    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
     try:
         # Timeframes
         recent_21d = returns_df.iloc[-21:] if len(returns_df) >= 21 else returns_df
@@ -1206,7 +1198,8 @@ def run_monte_carlo(metrics, num_sims=1000, days=60):
         
     return price_paths
 
-def calculate_periodic_returns(data):
+def calculate_periodic_returns(data, portfolio_name="main"):
+    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
     print("--- 6. Calculating Periodic Returns (YTD, 1Y, 3Y, 5Y) ---")
     periods = {
         '1Y': 252,
@@ -1270,7 +1263,8 @@ def calculate_periodic_returns(data):
 # ==========================================
 # 4. VISUALIZATION & REPORTING
 # ==========================================
-def generate_report(metrics, data):
+def generate_report(metrics, data, portfolio_name="main"):
+    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
     if metrics is None: return
 
     print("\n" + "="*50)
@@ -1278,7 +1272,7 @@ def generate_report(metrics, data):
     print("="*50)
     
     # --- 0. PERIODIC RETURNS (Print First) ---
-    periodic_rets = calculate_periodic_returns(data)
+    periodic_rets = calculate_periodic_returns(data, portfolio_name=portfolio_name)
     
     print(f"\n[INDIVIDUAL TICKER PERFORMANCE]")
     print(f"  {'TICKER':<10} | {'1 YEAR':<10} | {'3 YEARS':<10} | {'5 YEARS':<10}")

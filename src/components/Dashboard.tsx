@@ -3,7 +3,6 @@ import { fetchDashboardData } from '../utils/finance';
 import type { FullRiskReport, CostTier } from '../utils/finance';
 import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
-import { CorrelationMatrixTable } from './dashboard/CorrelationMatrixTable';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { CountryMapWidget } from './dashboard/CountryMapWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
@@ -17,13 +16,14 @@ export const Dashboard: React.FC = () => {
     const [isSwitchingTier, setIsSwitchingTier] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [costTier, setCostTier] = useState<CostTier>('none');
+    const [portfolioName, setPortfolioName] = useState<string>('main');
 
     useEffect(() => {
         const isInitialLoad = !data;
         if (isInitialLoad) setLoading(true);
         else setIsSwitchingTier(true);
 
-        fetchDashboardData(5, 3000, isInitialLoad, costTier).then(res => {
+        fetchDashboardData(5, 3000, isInitialLoad, costTier, portfolioName).then(res => {
             if (res) {
                 if (res.error) {
                     setError(res.error);
@@ -39,7 +39,7 @@ export const Dashboard: React.FC = () => {
             setLoading(false);
             setIsSwitchingTier(false);
         });
-    }, [costTier]);
+    }, [costTier, portfolioName]);
 
     const formatPercent = (val: number | undefined) => typeof val === 'number' ? `${(val * 100).toFixed(2)}%` : 'N/A';
 
@@ -80,7 +80,7 @@ export const Dashboard: React.FC = () => {
         )
     }
 
-    const { vitals, leverage, periodicReturns, volumeWeightedCorrelation, countryAllocation, stressTests, convexity, ytdHistory } = data;
+    const { vitals, leverage, periodicReturns, countryAllocation, stressTests, convexity, ytdHistory } = data;
 
     return (
         <div className="min-h-screen bg-background text-foreground p-4 md:p-8">
@@ -108,6 +108,26 @@ export const Dashboard: React.FC = () => {
                         <div className="flex bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-4 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center min-w-[110px] shadow-lg shadow-rose-500/5 transition-transform hover:scale-105">
                             <p className="text-[10px] uppercase tracking-wider text-rose-500/80 font-bold mb-0.5">Short Exp</p>
                             <p className="font-mono text-rose-400 font-black text-lg leading-none">{formatPercent(leverage.Short_Exp)}</p>
+                        </div>
+
+                        {/* Portfolio Switcher */}
+                        <div className="flex bg-white/5 rounded-lg border border-white/10 p-1 relative h-[38px] mr-2">
+                            {(['main', 'szymon'] as const).map(portfolio => (
+                                <button
+                                    key={portfolio}
+                                    onClick={() => setPortfolioName(portfolio)}
+                                    disabled={isSwitchingTier}
+                                    className={cn(
+                                        "px-3 py-1 text-[10px] sm:text-xs font-semibold uppercase tracking-wider rounded-md transition-all whitespace-nowrap",
+                                        portfolioName === portfolio 
+                                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" 
+                                            : "text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent",
+                                        isSwitchingTier ? "opacity-50 cursor-not-allowed" : ""
+                                    )}
+                                >
+                                    {portfolio === 'main' ? 'My Portfolio' : 'Szymon Portfolio'}
+                                </button>
+                            ))}
                         </div>
 
                         {/* Cost Tier Toggle & Refresh Wrapper */}
@@ -165,9 +185,6 @@ export const Dashboard: React.FC = () => {
 
                 {/* ROW 3: World Map (Full Width) */}
                 <CountryMapWidget countryAllocation={countryAllocation} />
-
-                {/* ROW 4: Correlation Matrix (Full Width, at bottom) */}
-                <CorrelationMatrixTable data={volumeWeightedCorrelation} />
 
                 {/* ROW 5: Stock Lookup */}
                 <StockLookup />
