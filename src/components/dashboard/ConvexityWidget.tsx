@@ -31,7 +31,7 @@ const ScatterPlot: React.FC<{
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const wrapperRef = useRef<HTMLDivElement>(null);
     const [tooltip, setTooltip] = React.useState<{
-        x: number; y: number; point: ScatterDataPoint;
+        x: number; y: number; point: ScatterDataPoint; flipX: boolean; flipY: boolean;
     } | null>(null);
 
     const hitRef = useRef<{ sx: number; sy: number; pt: ScatterDataPoint }[]>([]);
@@ -135,17 +135,19 @@ const ScatterPlot: React.FC<{
             const d = Math.sqrt((h.sx - mx) ** 2 + (h.sy - my) ** 2);
             if (d < bestD) { bestD = d; best = h; }
         }
-        if (best && bestD < 22) setTooltip({ x: best.sx, y: best.sy, point: best.pt });
+        if (best && bestD < 22) {
+            setTooltip({ 
+                x: best.sx, y: best.sy, point: best.pt, 
+                flipX: best.sx > rect.width * 0.6, 
+                flipY: best.sy > rect.height * 0.6 
+            });
+        }
         else setTooltip(null);
     }, []);
 
     const handleMouseLeave = React.useCallback(() => setTooltip(null), []);
 
     const sp  = (v: number, d = 2) => `${v > 0 ? '+' : ''}${(v * 100).toFixed(d)}%`;
-
-    // Tooltip positioning: flip left if near right edge, flip up if near bottom
-    const tipLeft  = tooltip ? (tooltip.x > 200 ? tooltip.x - 230 : tooltip.x + 14) : 0;
-    const tipTop   = tooltip ? (tooltip.y > 150 ? tooltip.y - 260 : tooltip.y + 10)  : 0;
 
     return (
         <div
@@ -172,8 +174,13 @@ const ScatterPlot: React.FC<{
             {/* ── Tooltip ── */}
             {tooltip && (
                 <div
-                    className="pointer-events-none absolute z-30"
-                    style={{ left: tipLeft, top: tipTop }}
+                    className="pointer-events-none absolute z-[100]"
+                    style={{ 
+                        left: tooltip.x, 
+                        top: tooltip.y,
+                        transform: `translate(${tooltip.flipX ? 'calc(-100% - 14px)' : '14px'}, ${tooltip.flipY ? 'calc(-100% - 14px)' : '14px'})`,
+                        transition: 'transform 0.1s ease-out'
+                    }}
                 >
                     <div
                         className="rounded-2xl border border-white/[0.09] shadow-2xl overflow-hidden"
@@ -275,7 +282,7 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity }) =
     const spreadPositive = (captureSpread ?? 0) > 0;
 
     return (
-        <div className="space-y-4">
+        <div className="space-y-4 relative z-20">
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
 
                 {/* ── LEFT: Capture Ratios Card ── */}
