@@ -78,7 +78,7 @@ export interface ConvexityMetrics {
     linearCoeffs?: [number, number]; // [β, α]
     rSquared: number;
     isConvex: boolean;
-    scatterData: [number, number][]; // [benchRet, portRet][]
+    scatterData: [string, number, number][]; // [date, benchRet, portRet][]
 }
 
 export interface PeriodicReturn {

@@ -21,9 +21,23 @@ const fmtSignedPct = (val: number | undefined, decimals = 2) => {
 const fmtNum = (val: number | undefined, decimals = 2) =>
     typeof val === 'number' ? val.toFixed(decimals) : 'N/A';
 
-// ─── Scatter Plot (Canvas) ───────────────────────────────────
-const ScatterPlot: React.FC<{ data: [number, number][]; coeffs: [number, number, number]; linearCoeffs?: [number, number]; rSquared: number }> = ({ data, coeffs, linearCoeffs, rSquared }) => {
+// ─── Scatter Plot (Canvas + SVG tooltip overlay) ─────────────
+interface ScatterPoint { date: string; bench: number; port: number; }
+
+const ScatterPlot: React.FC<{
+    data: [string, number, number][];
+    coeffs: [number, number, number];
+    linearCoeffs?: [number, number];
+    rSquared: number;
+}> = ({ data, coeffs, linearCoeffs, rSquared }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const wrapperRef = useRef<HTMLDivElement>(null);
+    const [tooltip, setTooltip] = React.useState<{ x: number; y: number; point: ScatterPoint } | null>(null);
+
+    // Store the scale functions and point screen coords for hit-testing
+    const hitRef = useRef<{
+        points: { sx: number; sy: number; d: ScatterPoint }[];
+    }>({ points: [] });
 
     useEffect(() => {
         const canvas = canvasRef.current;
@@ -44,14 +58,13 @@ const ScatterPlot: React.FC<{ data: [number, number][]; coeffs: [number, number,
         const plotW = w - padding.left - padding.right;
         const plotH = h - padding.top - padding.bottom;
 
-        // Find data range
-        const benchVals = data.map(d => d[0]);
-        const portVals = data.map(d => d[1]);
+        const benchVals = data.map(d => d[1]);
+        const portVals  = data.map(d => d[2]);
         const maxAbsX = Math.max(Math.abs(Math.min(...benchVals)), Math.abs(Math.max(...benchVals))) * 1.1;
-        const maxAbsY = Math.max(Math.abs(Math.min(...portVals)), Math.abs(Math.max(...portVals))) * 1.1;
+        const maxAbsY = Math.max(Math.abs(Math.min(...portVals)),  Math.abs(Math.max(...portVals)))  * 1.1;
 
         const scaleX = (v: number) => padding.left + (v + maxAbsX) / (2 * maxAbsX) * plotW;
-        const scaleY = (v: number) => padding.top + plotH - (v + maxAbsY) / (2 * maxAbsY) * plotH;
+        const scaleY = (v: number) => padding.top  + plotH - (v + maxAbsY) / (2 * maxAbsY) * plotH;
 
         // Background
         ctx.fillStyle = 'transparent';
@@ -62,7 +75,7 @@ const ScatterPlot: React.FC<{ data: [number, number][]; coeffs: [number, number,
         ctx.lineWidth = 1;
         for (let i = 0; i <= 4; i++) {
             const x = padding.left + (plotW / 4) * i;
-            const y = padding.top + (plotH / 4) * i;
+            const y = padding.top  + (plotH / 4) * i;
             ctx.beginPath(); ctx.moveTo(x, padding.top); ctx.lineTo(x, padding.top + plotH); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(padding.left, y); ctx.lineTo(padding.left + plotW, y); ctx.stroke();
         }
@@ -75,61 +88,56 @@ const ScatterPlot: React.FC<{ data: [number, number][]; coeffs: [number, number,
         ctx.beginPath(); ctx.moveTo(zeroX, padding.top); ctx.lineTo(zeroX, padding.top + plotH); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(padding.left, zeroY); ctx.lineTo(padding.left + plotW, zeroY); ctx.stroke();
 
-        // 45-degree reference line (linear β=1)
+        // 45-degree reference line (β=1)
         ctx.strokeStyle = 'rgba(255,255,255,0.08)';
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 4]);
         ctx.beginPath();
         ctx.moveTo(scaleX(-maxAbsX), scaleY(-maxAbsX));
-        ctx.lineTo(scaleX(maxAbsX), scaleY(maxAbsX));
+        ctx.lineTo(scaleX(maxAbsX),  scaleY(maxAbsX));
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Data points — color by quadrant
-        for (const [bx, py] of data) {
+        // Data points — store screen coords for hit-testing
+        const screenPoints: { sx: number; sy: number; d: ScatterPoint }[] = [];
+        for (const [date, bx, py] of data) {
             const sx = scaleX(bx);
             const sy = scaleY(py);
-
-            // Green if in "good" quadrants (up/up or down/less-down), else red
             const isGoodOutcome = (bx > 0 && py > 0) || (bx < 0 && py > bx);
-            ctx.fillStyle = isGoodOutcome ? 'rgba(52, 211, 153, 0.35)' : 'rgba(251, 113, 133, 0.35)';
+            ctx.fillStyle = isGoodOutcome ? 'rgba(52, 211, 153, 0.4)' : 'rgba(251, 113, 133, 0.4)';
             ctx.beginPath();
-            ctx.arc(sx, sy, 2.5, 0, Math.PI * 2);
+            ctx.arc(sx, sy, 3, 0, Math.PI * 2);
             ctx.fill();
+            screenPoints.push({ sx, sy, d: { date, bench: bx, port: py } });
         }
+        hitRef.current.points = screenPoints;
 
         // Linear regression line
         if (linearCoeffs) {
             const [linB, linA] = linearCoeffs;
-            ctx.strokeStyle = 'rgba(148, 163, 184, 0.4)'; // slate-400 with opacity
+            ctx.strokeStyle = 'rgba(148, 163, 184, 0.4)';
             ctx.lineWidth = 1;
-            ctx.setLineDash([4, 4]); // dashed line
+            ctx.setLineDash([4, 4]);
             ctx.beginPath();
-            
-            const startX = -maxAbsX;
-            const startY = linA + linB * startX;
-            ctx.moveTo(scaleX(startX), scaleY(startY));
-            
-            const endX = maxAbsX;
-            const endY = linA + linB * endX;
-            ctx.lineTo(scaleX(endX), scaleY(endY));
+            ctx.moveTo(scaleX(-maxAbsX), scaleY(linA + linB * -maxAbsX));
+            ctx.lineTo(scaleX(maxAbsX),  scaleY(linA + linB * maxAbsX));
             ctx.stroke();
-            ctx.setLineDash([]); // reset to solid for quadratic
+            ctx.setLineDash([]);
         }
 
         // Quadratic regression curve
         const [b2, b1, a] = coeffs;
-        ctx.strokeStyle = '#fbbf24'; // amber
+        ctx.strokeStyle = '#fbbf24';
         ctx.lineWidth = 2.5;
         ctx.beginPath();
         const steps = 100;
         for (let i = 0; i <= steps; i++) {
-            const x = -maxAbsX + (2 * maxAbsX * i) / steps;
-            const y = a + b1 * x + b2 * x * x;
+            const x  = -maxAbsX + (2 * maxAbsX * i) / steps;
+            const y  = a + b1 * x + b2 * x * x;
             const sx = scaleX(x);
             const sy = scaleY(y);
             if (i === 0) ctx.moveTo(sx, sy);
-            else ctx.lineTo(sx, sy);
+            else         ctx.lineTo(sx, sy);
         }
         ctx.stroke();
 
@@ -149,20 +157,107 @@ const ScatterPlot: React.FC<{ data: [number, number][]; coeffs: [number, number,
         ctx.font = 'bold 10px monospace';
         ctx.textAlign = 'right';
         ctx.fillText(`R² = ${rSquared.toFixed(3)}`, w - padding.right - 4, padding.top + 14);
-
-        // β₂ (convexity coefficient) annotation
-        ctx.fillText(`β₂ = ${b2.toFixed(4)}`, w - padding.right - 4, padding.top + 28);
+        ctx.fillText(`β₂ = ${b2.toFixed(4)}`,       w - padding.right - 4, padding.top + 28);
 
     }, [data, coeffs, linearCoeffs, rSquared]);
 
+    const handleMouseMove = React.useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+        const wrapper = wrapperRef.current;
+        if (!wrapper) return;
+        const rect = wrapper.getBoundingClientRect();
+        const mx = e.clientX - rect.left;
+        const my = e.clientY - rect.top;
+
+        const pts = hitRef.current.points;
+        let closest: typeof pts[0] | null = null;
+        let closestDist = Infinity;
+        for (const p of pts) {
+            const dist = Math.sqrt((p.sx - mx) ** 2 + (p.sy - my) ** 2);
+            if (dist < closestDist) { closestDist = dist; closest = p; }
+        }
+
+        if (closest && closestDist < 20) {
+            setTooltip({ x: closest.sx, y: closest.sy, point: closest.d });
+        } else {
+            setTooltip(null);
+        }
+    }, []);
+
+    const handleMouseLeave = React.useCallback(() => setTooltip(null), []);
+
+    const fmtTip = (v: number) => {
+        const sign = v > 0 ? '+' : '';
+        return `${sign}${(v * 100).toFixed(2)}%`;
+    };
+
     return (
-        <canvas
-            ref={canvasRef}
-            className="w-full rounded-lg"
+        <div
+            ref={wrapperRef}
+            className="relative w-full select-none"
             style={{ height: '240px' }}
-        />
+            onMouseMove={handleMouseMove}
+            onMouseLeave={handleMouseLeave}
+        >
+            <canvas ref={canvasRef} className="absolute inset-0 w-full h-full rounded-lg" />
+
+            {tooltip && (
+                <div
+                    className="pointer-events-none absolute z-20"
+                    style={{
+                        left: tooltip.x + (tooltip.x > 160 ? -148 : 12),
+                        top:  tooltip.y + (tooltip.y > 160 ? -100 : 8),
+                        transform: 'translateZ(0)',
+                    }}
+                >
+                    <div
+                        className="rounded-xl border border-white/10 px-3 py-2.5 text-xs font-mono shadow-xl"
+                        style={{
+                            background: 'rgba(15, 23, 42, 0.92)',
+                            backdropFilter: 'blur(12px)',
+                            minWidth: '136px',
+                        }}
+                    >
+                        <div className="text-gray-400 text-[10px] uppercase tracking-widest mb-1.5 font-semibold">
+                            {tooltip.point.date}
+                        </div>
+                        <div className="flex justify-between gap-4 items-center">
+                            <span className="text-gray-500 text-[10px]">Portfolio</span>
+                            <span className={`font-black text-sm ${tooltip.point.port >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                {fmtTip(tooltip.point.port)}
+                            </span>
+                        </div>
+                        <div className="flex justify-between gap-4 items-center mt-0.5">
+                            <span className="text-gray-500 text-[10px]">SPY</span>
+                            <span className={`font-black text-sm ${tooltip.point.bench >= 0 ? 'text-sky-400' : 'text-orange-400'}`}>
+                                {fmtTip(tooltip.point.bench)}
+                            </span>
+                        </div>
+                        <div className="mt-1.5 pt-1.5 border-t border-white/[0.07] flex justify-between items-center">
+                            <span className="text-gray-600 text-[9px]">Spread</span>
+                            <span className={`text-[10px] font-bold ${(tooltip.point.port - tooltip.point.bench) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                                {fmtTip(tooltip.point.port - tooltip.point.bench)}
+                            </span>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Crosshair dot on hovered point */}
+            {tooltip && (
+                <div
+                    className="pointer-events-none absolute z-10 rounded-full ring-2 ring-white/40"
+                    style={{
+                        width: 10, height: 10,
+                        left: tooltip.x - 5,
+                        top:  tooltip.y - 5,
+                        background: tooltip.point.port >= 0 ? 'rgba(52,211,153,0.9)' : 'rgba(251,113,133,0.9)',
+                    }}
+                />
+            )}
+        </div>
     );
 };
+
 
 // ─── Main Component ──────────────────────────────────────────
 export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, stressTests }) => {

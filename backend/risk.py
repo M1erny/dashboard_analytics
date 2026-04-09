@@ -923,6 +923,7 @@ def calculate_convexity_metrics(portfolio_ret, benchmark_ret):
     valid_mask = ~(np.isnan(portfolio_ret) | np.isnan(benchmark_ret))
     clean_port = portfolio_ret[valid_mask].values
     clean_bench = benchmark_ret[valid_mask].values
+    clean_dates = portfolio_ret[valid_mask].index  # keep dates aligned
     
     if len(clean_bench) < 30:
         print("Warning: Insufficient data for convexity analysis")
@@ -979,11 +980,14 @@ def calculate_convexity_metrics(portfolio_ret, benchmark_ret):
         indices.sort()
         scatter_bench = clean_bench[indices]
         scatter_port = clean_port[indices]
+        scatter_dates = [clean_dates[i].strftime('%Y-%m-%d') for i in indices]
     else:
         scatter_bench = clean_bench
         scatter_port = clean_port
+        scatter_dates = [d.strftime('%Y-%m-%d') for d in clean_dates]
     
-    result['Scatter_Data'] = list(zip(scatter_bench.tolist(), scatter_port.tolist()))
+    # Each point: [date, benchRet, portRet]
+    result['Scatter_Data'] = [[d, float(b), float(p)] for d, b, p in zip(scatter_dates, scatter_bench.tolist(), scatter_port.tolist())]
     
     return result
 
