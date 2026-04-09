@@ -198,6 +198,17 @@ async def get_metrics(force: bool = False, costTier: str = 'retail'):
             }
         else:
             response["convexity"] = None
+            
+        # Format Momentum Metrics
+        momentum = metrics.get('Momentum_Metrics')
+        if momentum:
+            response["momentum"] = {
+                "top_rs": momentum.get('top_rs', []),
+                "bot_rs": momentum.get('bot_rs', []),
+                "corr_surges": momentum.get('corr_surges', [])
+            }
+        else:
+            response["momentum"] = None
 
         # Format Risk Attribution
         for ticker, stats in metrics['Risk_Attribution'].items():

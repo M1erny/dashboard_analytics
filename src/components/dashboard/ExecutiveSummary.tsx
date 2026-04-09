@@ -1,10 +1,10 @@
 import { cn } from '../../lib/utils';
-import type { Vitals, HistoryPoint, StressTest } from '../../utils/finance';
+import type { Vitals, HistoryPoint, StressTest, MomentumMetrics } from '../../utils/finance';
 import { ResponsiveContainer, LineChart, Line, Tooltip } from 'recharts';
 import {
     TrendingUp, TrendingDown, Activity, Zap, Shield,
     BarChart3, ArrowUpRight, ArrowDownRight,
-    Gauge, DollarSign
+    Gauge, Flame
 } from 'lucide-react';
 
 interface ExecutiveSummaryProps {
@@ -12,10 +12,14 @@ interface ExecutiveSummaryProps {
     costTier?: string;
     ytdHistory?: HistoryPoint[];
     stressTests?: StressTest[];
+    momentum?: MomentumMetrics | null;
 }
 
 // ─── Formatters ──────────────────────────────────────────────
 const fmt = (val: number | undefined, decimals = 2) =>
+    typeof val === 'number' ? `${(val * 100).toFixed(decimals)}%` : 'N/A';
+
+const fmtPct = (val: number | undefined, decimals = 1) =>
     typeof val === 'number' ? `${(val * 100).toFixed(decimals)}%` : 'N/A';
 
 const fmtSigned = (val: number | undefined, decimals = 2) => {
@@ -46,7 +50,7 @@ const StatRow = ({ label, value, tooltip, valueClassName }: {
 );
 
 // ─── Main Component ──────────────────────────────────────────
-export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, costTier = 'retail', ytdHistory, stressTests }) => {
+export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, costTier = 'retail', ytdHistory, stressTests, momentum }) => {
     const ytdPositive = (vitals.ytdReturn ?? 0) >= 0;
 
     return (
@@ -221,94 +225,133 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                 </div>
             </div>
 
-            {/* ═══════ ROW 2: L/S Contribution + Financing ═══════ */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {/* ═══════ ROW 2: Layout: L/S+Financing (5) | Momentum (4) | Stress Tests (3) ═══════ */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
 
-                {/* L/S Contribution */}
-                <div className="rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl">
-                    <div className="flex items-center gap-2 mb-3">
-                        <BarChart3 className="h-4 w-4 text-blue-400" />
-                        <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">L/S Contribution</span>
+                {/* ── L/S Contribution & Financing ── */}
+                <div className="lg:col-span-5 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col justify-between">
+                    <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                            <BarChart3 className="h-4 w-4 text-blue-400" />
+                            <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">L/S & Financing</span>
+                        </div>
+                        <span className="text-[9px] text-gray-500 uppercase tracking-widest bg-white/[0.03] px-2 py-0.5 rounded border border-white/[0.05]">
+                            {costTier} tier
+                        </span>
                     </div>
-                    <div className="space-y-2">
-                        <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
-                            <div className="flex items-center gap-2">
-                                <span className="flex items-center justify-center w-5 h-5 rounded bg-emerald-500/15">
-                                    <ArrowUpRight className="h-3 w-3 text-emerald-400" />
+
+                    <div className="grid grid-cols-2 gap-3 flex-grow">
+                        {/* Left: L/S */}
+                        <div className="space-y-2">
+                            <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-2.5 py-2 border border-white/[0.05]">
+                                <div className="flex items-center gap-1.5">
+                                    <span className="flex items-center justify-center w-4 h-4 rounded bg-emerald-500/15">
+                                        <ArrowUpRight className="h-2.5 w-2.5 text-emerald-400" />
+                                    </span>
+                                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Longs</span>
+                                </div>
+                                <span className={cn("font-mono text-sm font-black tracking-tight", returnColor(vitals.ytdLongsContrib))}>
+                                    {fmtSigned(vitals.ytdLongsContrib)}
                                 </span>
-                                <div className="flex flex-col">
-                                    <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Longs</span>
-                                    <span className="text-[9px] text-gray-600 font-mono" title="Beta of long-only sub-portfolio vs SPY">
-                                        β {fmtNum(vitals.longOnlyBeta)}
+                            </div>
+                            <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-2.5 py-2 border border-white/[0.05]">
+                                <div className="flex items-center gap-1.5">
+                                    <span className="flex items-center justify-center w-4 h-4 rounded bg-rose-500/15">
+                                        <ArrowDownRight className="h-2.5 w-2.5 text-rose-400" />
+                                    </span>
+                                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Shorts</span>
+                                </div>
+                                <span className={cn("font-mono text-sm font-black tracking-tight", returnColor(vitals.ytdShortsContrib))}>
+                                    {fmtSigned(vitals.ytdShortsContrib)}
+                                </span>
+                            </div>
+                            <div className="flex items-center gap-1 mt-1.5 px-1">
+                                <div className="flex-1 h-1.5 rounded-l bg-emerald-500/30 overflow-hidden">
+                                    <div className="h-full bg-emerald-500/60 transition-all duration-700" style={{ width: `${Math.min(Math.abs((vitals.ytdLongsContrib ?? 0)) * 500, 100)}%` }} />
+                                </div>
+                                <div className="w-px h-2 bg-white/20" />
+                                <div className="flex-1 h-1.5 rounded-r bg-rose-500/30 overflow-hidden flex justify-end">
+                                    <div className="h-full bg-rose-500/60 transition-all duration-700" style={{ width: `${Math.min(Math.abs((vitals.ytdShortsContrib ?? 0)) * 500, 100)}%` }} />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Right: Financing */}
+                        <div className="space-y-2">
+                            <div className="flex flex-col justify-center rounded-lg bg-white/[0.03] px-3 py-2 border border-white/[0.05] h-[34px]">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">YTD Drag</span>
+                                    <span className="font-mono text-sm font-black tracking-tight text-rose-400">
+                                        {vitals.ytdFinancingCost !== undefined ? fmt(-vitals.ytdFinancingCost) : '—'}
                                     </span>
                                 </div>
                             </div>
-                            <span className={cn("font-mono text-lg font-black tracking-tight", returnColor(vitals.ytdLongsContrib))}>
-                                {fmtSigned(vitals.ytdLongsContrib)}
-                            </span>
-                        </div>
-                        <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
-                            <div className="flex items-center gap-2">
-                                <span className="flex items-center justify-center w-5 h-5 rounded bg-rose-500/15">
-                                    <ArrowDownRight className="h-3 w-3 text-rose-400" />
-                                </span>
-                                <div className="flex flex-col">
-                                    <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Shorts</span>
-                                    <span className="text-[9px] text-gray-600 font-mono" title="Beta of short-only sub-portfolio vs SPY (as P&L)">
-                                        β {fmtNum(vitals.shortOnlyBeta)}
+                            <div className="flex flex-col justify-center rounded-lg bg-white/[0.03] px-3 py-2 border border-white/[0.05] h-[34px]">
+                                <div className="flex justify-between items-center">
+                                    <span className="text-[10px] text-gray-400 font-semibold uppercase tracking-wider">Ann. Est</span>
+                                    <span className="font-mono text-sm font-black tracking-tight text-amber-400">
+                                        {vitals.annualFinancingCost !== undefined ? fmt(-vitals.annualFinancingCost) : '—'}
                                     </span>
                                 </div>
-                            </div>
-                            <span className={cn("font-mono text-lg font-black tracking-tight", returnColor(vitals.ytdShortsContrib))}>
-                                {fmtSigned(vitals.ytdShortsContrib)}
-                            </span>
-                        </div>
-                        {/* Visual bar */}
-                        <div className="flex items-center gap-1 mt-1">
-                            <div className="flex-1 h-2 rounded-l-full bg-emerald-500/30 overflow-hidden">
-                                <div className="h-full bg-emerald-500/60 rounded-l-full transition-all duration-700"
-                                    style={{ width: `${Math.min(Math.abs((vitals.ytdLongsContrib ?? 0)) * 500, 100)}%` }} />
-                            </div>
-                            <div className="w-px h-3 bg-white/20" />
-                            <div className="flex-1 h-2 rounded-r-full bg-rose-500/30 overflow-hidden flex justify-end">
-                                <div className="h-full bg-rose-500/60 rounded-r-full transition-all duration-700"
-                                    style={{ width: `${Math.min(Math.abs((vitals.ytdShortsContrib ?? 0)) * 500, 100)}%` }} />
                             </div>
                         </div>
                     </div>
                 </div>
 
-                {/* Financing Impact */}
-                <div className="rounded-xl border border-indigo-500/15 bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl">
-                    <div className="flex items-center gap-2 mb-3">
-                        <DollarSign className="h-4 w-4 text-indigo-400" />
+                {/* ── Momentum & Correlations ── */}
+                <div className="lg:col-span-4 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col h-full">
+                    <div className="flex items-center gap-2 mb-3 shrink-0">
+                        <Flame className="h-4 w-4 text-orange-400" />
                         <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">
-                            Financing
-                            <span className="ml-1.5 text-[9px] text-gray-600 normal-case tracking-normal">
-                                ({costTier.charAt(0).toUpperCase() + costTier.slice(1)})
-                            </span>
+                            Momentum (1M)
                         </span>
                     </div>
-                    <div className="space-y-1.5">
-                        <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
-                            <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider"
-                                title="Accumulated financing drag since Jan 1">YTD Drag</span>
-                            <span className="font-mono text-lg font-black tracking-tight text-rose-400">
-                                {vitals.ytdFinancingCost !== undefined ? fmt(-vitals.ytdFinancingCost) : '—'}
-                            </span>
+
+                    <div className="grid grid-cols-2 gap-3 flex-grow">
+                        {/* Relative Strength */}
+                        <div className="space-y-2">
+                            <div className="text-[9px] text-gray-500 uppercase tracking-widest border-b border-white/[0.05] pb-1 mb-1">
+                                vs Benchmark
+                            </div>
+                            {momentum?.top_rs?.slice(0, 2).map((rs, i) => (
+                                <div key={i} className="flex justify-between items-center text-xs">
+                                    <span className="text-gray-300 font-semibold">{rs.ticker.split('.')[0]}</span>
+                                    <span className="text-emerald-400 font-mono">+{fmtPct(rs.rs)}</span>
+                                </div>
+                            ))}
+                            {momentum?.bot_rs?.slice(0, 2).map((rs, i) => (
+                                <div key={i} className="flex justify-between items-center text-xs mt-1">
+                                    <span className="text-gray-500 font-semibold">{rs.ticker.split('.')[0]}</span>
+                                    <span className="text-rose-400 font-mono">{fmtPct(rs.rs)}</span>
+                                </div>
+                            ))}
+                            {(!momentum?.top_rs || momentum.top_rs.length === 0) && (
+                                <span className="text-xs text-gray-600">No data</span>
+                            )}
                         </div>
-                        <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
-                            <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider"
-                                title="Annualized estimate of combined margin & borrow fees">Ann. Est</span>
-                            <span className="font-mono text-lg font-black tracking-tight text-amber-400">
-                                {vitals.annualFinancingCost !== undefined ? fmt(-vitals.annualFinancingCost) : '—'}
-                            </span>
+
+                        {/* Correlation Surges */}
+                        <div className="space-y-2 border-l border-white/[0.05] pl-3">
+                            <div className="text-[9px] text-gray-500 uppercase tracking-widest border-b border-white/[0.05] pb-1 mb-1" title="Top increases in 1Month vs 1Year correlation">
+                                Corr Surges
+                            </div>
+                            {momentum?.corr_surges?.slice(0, 3).map((surge, i) => (
+                                <div key={i} className="flex justify-between items-center text-xs mb-1">
+                                    <div className="flex flex-col">
+                                        <span className="text-[9px] text-gray-400 leading-none mb-0.5">{surge.t1.split('.')[0]}</span>
+                                        <span className="text-[9px] text-gray-400 leading-none">{surge.t2.split('.')[0]}</span>
+                                    </div>
+                                    <div className="flex flex-col items-end">
+                                        <span className="text-sky-400 font-mono leading-none mb-0.5">+{surge.delta.toFixed(2)}</span>
+                                    </div>
+                                </div>
+                            ))}
                         </div>
                     </div>
                 </div>
 
                 {/* Non-Linear Stress Tests (moved from Convexity) */}
-                <div className="rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col h-full">
+                <div className="lg:col-span-3 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col h-full">
                     <div className="flex items-center gap-2 mb-3 shrink-0">
                         <Zap className="h-4 w-4 text-violet-400" />
                         <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">

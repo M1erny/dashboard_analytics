@@ -135,18 +135,47 @@ export interface CountryAllocation {
     tickers: { ticker: string; weight: number; type: string; contribution: number }[];
 }
 
+export interface RelativeStrength {
+    ticker: string;
+    rs: number;
+    stock_ret: number;
+    bmk_ret: number;
+    bmk: string;
+}
+
+export interface CorrelationSurge {
+    t1: string;
+    t2: string;
+    delta: number;
+    c1m: number;
+    c1y: number;
+}
+
+export interface MomentumMetrics {
+    top_rs: RelativeStrength[];
+    bot_rs: RelativeStrength[];
+    corr_surges: CorrelationSurge[];
+}
+
+export interface FxExposure {
+    exposure: number;
+    pnl: number;
+}
+
 export interface FullRiskReport {
     vitals: Vitals;
     leverage: LeverageStats;
     activeRisks: RiskAttribution[];
     stressTests: StressTest[];
-    periodicReturns: PeriodicReturn[];
     history: HistoryPoint[];
-    ytdHistory?: HistoryPoint[];
+    ytdHistory: HistoryPoint[];
+    periodicReturns: PeriodicReturn[];
     volumeWeightedCorrelation?: CorrelationMatrix;
     talebMetrics?: TalebMetrics;
     countryAllocation?: Record<string, CountryAllocation>;
-    convexity?: ConvexityMetrics | null;
+    convexity: ConvexityMetrics | null;
+    momentum: MomentumMetrics | null;
+    fxExposures: Record<string, FxExposure>;
     error?: string;
 }
 
@@ -202,6 +231,8 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     talebMetrics: data.talebMetrics,
                     countryAllocation: data.countryAllocation,
                     convexity: data.convexity || null,
+                    momentum: data.momentum || null,
+                    fxExposures: data.fxExposures || {},
                     error: data.error
                 };
             }

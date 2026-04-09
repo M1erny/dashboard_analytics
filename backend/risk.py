@@ -873,6 +873,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
                 print(f"Warning: could not enrich scatter point {date_str}: {ex}")
             enriched.append({'d': date_str, 'b': bench_r, 'p': port_r, 'top': top3, 'bot': bot3})
         convexity_metrics['Scatter_Data'] = enriched
+        
+    momentum_metrics = calculate_momentum_metrics(returns_df)
     
     return {
         'Taleb_Metrics': {
@@ -937,8 +939,93 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Stream': portfolio_val_series if 'portfolio_val_series' in locals() else None,
         'YTD_Benchmark_Stream': ytd_benchmark if 'ytd_benchmark' in locals() else None,
         'YTD_Beta_History': ytd_beta_history if 'ytd_beta_history' in locals() else None,
-        'Convexity_Metrics': convexity_metrics
+        'Convexity_Metrics': convexity_metrics,
+        'Momentum_Metrics': momentum_metrics
     }
+
+def calculate_momentum_metrics(returns_df):
+    """Calculate Relative Strength vs regional benchmarks and 1-month vs 1-year Correlation surges."""
+    try:
+        # Timeframes
+        recent_21d = returns_df.iloc[-21:] if len(returns_df) >= 21 else returns_df
+        recent_252d = returns_df.iloc[-252:] if len(returns_df) >= 252 else returns_df
+        
+        # 1. Relative Strength vs Regional Benchmark
+        rs_data = []
+        for tkr, cfg in PORTFOLIO_CONFIG.items():
+            if tkr not in recent_21d.columns:
+                continue
+            
+            # Determine benchmark
+            country = cfg.get('country', 'USA')
+            if country == 'USA':
+                bmk = BENCHMARK
+            elif country == 'POL':
+                bmk = BENCHMARK_WIG
+            else:
+                bmk = BENCHMARK_MSCI
+                
+            if bmk not in recent_21d.columns:
+                continue
+                
+            # Compute 21d compounded return
+            tkr_ret = (1 + recent_21d[tkr]).prod() - 1
+            bmk_ret = (1 + recent_21d[bmk]).prod() - 1
+            
+            rs_data.append({
+                'ticker': tkr,
+                'rs': round(float(tkr_ret - bmk_ret), 4),
+                'stock_ret': round(float(tkr_ret), 4),
+                'bmk_ret': round(float(bmk_ret), 4),
+                'bmk': bmk
+            })
+            
+        rs_data.sort(key=lambda x: x['rs'], reverse=True)
+        top_rs = rs_data[:3]
+        bot_rs = list(reversed(rs_data[-3:])) if len(rs_data) >= 3 else rs_data
+        
+        # 2. Correlation Surge
+        # Only use active portfolio tickers
+        active_tkrs = [t for t in PORTFOLIO_CONFIG.keys() if t in returns_df.columns]
+        
+        corr_1m = recent_21d[active_tkrs].corr()
+        corr_1y = recent_252d[active_tkrs].corr()
+        
+        surges = []
+        for i in range(len(active_tkrs)):
+            for j in range(i + 1, len(active_tkrs)):
+                t1 = active_tkrs[i]
+                t2 = active_tkrs[j]
+                
+                c1m = corr_1m.loc[t1, t2]
+                c1y = corr_1y.loc[t1, t2]
+                
+                if pd.isna(c1m) or pd.isna(c1y):
+                    continue
+                    
+                delta = c1m - c1y
+                
+                # Filter: must be positively correlated now > 0.4 to be considered a strong directional link
+                if c1m > 0.4:
+                    surges.append({
+                        't1': t1,
+                        't2': t2,
+                        'delta': round(float(delta), 4),
+                        'c1m': round(float(c1m), 4),
+                        'c1y': round(float(c1y), 4)
+                    })
+                    
+        surges.sort(key=lambda x: x['delta'], reverse=True)
+        top_surges = surges[:3]
+        
+        return {
+            'top_rs': top_rs,
+            'bot_rs': bot_rs,
+            'corr_surges': top_surges
+        }
+    except Exception as ex:
+        print(f"Error calculating momentum metrics: {ex}")
+        return None
 
 def calculate_convexity_metrics(portfolio_ret, benchmark_ret):
     """Calculate portfolio convexity: capture ratios, quadratic regression, scatter data.

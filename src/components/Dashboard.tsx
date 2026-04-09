@@ -155,7 +155,7 @@ export const Dashboard: React.FC = () => {
                 </div>
 
                 {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing, Stress Tests) */}
-                <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} />
+                <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} momentum={data.momentum} />
 
                 {/* ROW 1.5: Convexity Analysis */}
                 <ConvexityWidget convexity={convexity} />
