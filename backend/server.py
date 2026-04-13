@@ -183,6 +183,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "ytdShortsContrib": to_float(metrics.get('YTD_Shorts_Contrib')),
                 "fxWatchlist": metrics.get('Fx_Watchlist', {}),
                 "currencyExposure": {}, # Will be populated below
+                "periodLabel": metrics.get('Period_Label')
             },
             "leverage": metrics['Leverage_Stats'],
             "talebMetrics": metrics.get('Taleb_Metrics'),

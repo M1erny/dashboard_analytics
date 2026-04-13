@@ -135,6 +135,19 @@ def normalize_to_base_currency(stock_df, fx_df, portfolio_name="main"):
 # ==========================================
 # 3. RISK CALCULATOR
 # ==========================================
+# Helper for calculating dynamic "YTD" start dates
+def get_period_params(portfolio_name):
+    """
+    Returns (period_label, start_date_str). 
+    For Szymon's portfolio, the reporting period starts Q2 2026 (2026-04-01).
+    For others, it defaults to the start of the current year.
+    """
+    current_year = datetime.now().year
+    if portfolio_name.lower() == "szymon":
+        return "Q2 2026", "2026-04-01"
+    
+    return "YTD", f"{current_year}-01-01"
+
 # ==========================================
 # 3. RISK CALCULATOR (ADVANCED)
 # ==========================================
@@ -379,8 +392,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     period_years = (returns_df.index[-1] - returns_df.index[0]).days / 365.25
 
     # --- 5. YTD METRICS ---
-    current_year = datetime.now().year
-    ytd_calc_start = f"{current_year}-01-01"
+    period_label, ytd_calc_start = get_period_params(portfolio_name)
     
     # Standard YTD Logic: Return = (Current_Price - Prev_Year_Close) / Prev_Year_Close
     # To implement this, we need to include the last data point from the previous year in our "YTD Series"
@@ -760,7 +772,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     fx_watchlist_metrics = {}
     if fx_df is not None and not fx_df.empty:
         try:
-            curr_year_start = pd.Timestamp(f"{datetime.now().year}-01-01")
+            curr_year_start = pd.Timestamp(ytd_calc_start)
             for fx_ticker in WATCHLIST_FX:
                 if fx_ticker in fx_df.columns:
                     series = fx_df[fx_ticker].dropna()
@@ -904,6 +916,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Return_PLN': ytd_return_pln,
         'WIG_YTD': wig_ytd,
         'MSCI_YTD': msci_ytd,
+        'Period_Label': period_label,
         'YTD_Longs_Contrib': ytd_longs_contrib,
         'YTD_Shorts_Contrib': ytd_shorts_contrib,
         'YTD_Alpha': ytd_alpha,
@@ -1208,9 +1221,8 @@ def calculate_periodic_returns(data, portfolio_name="main"):
         '5Y': 252 * 5
     }
     
-    # YTD calculation: from Jan 1st of current year
-    current_year = datetime.now().year
-    ytd_start = f"{current_year}-01-01"
+    # YTD calculation: from Jan 1st of current year, or Q2 2026 for Szymon
+    _, ytd_start = get_period_params(portfolio_name)
     
     results = {}
     

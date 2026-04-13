@@ -169,7 +169,7 @@ const groupMeta: Record<string, { label: string; icon: React.ReactNode; colSpan:
 };
 
 // ─── Main Component ──────────────────────────────────────────
-export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicReturn[] }) => {
+export const ReturnsHeatmap = ({ periodicReturns, periodLabel = "YTD" }: { periodicReturns: PeriodicReturn[], periodLabel?: string }) => {
     const [sortKey, setSortKey] = useState<SortKey>('ytdContribution');
     const [sortDir, setSortDir] = useState<SortDir>('desc');
     const [hoveredRow, setHoveredRow] = useState<string | null>(null);
@@ -379,7 +379,7 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
             {/* Summary Strip */}
             <div className="grid grid-cols-3 divide-x divide-white/[0.06] border-b border-white/[0.06] bg-white/[0.015]">
                 {[
-                    { label: 'YTD Impact', value: summary.ytdC, icon: <TrendingUp className="h-3.5 w-3.5" /> },
+                    { label: `${periodLabel} Impact`, value: summary.ytdC, icon: <TrendingUp className="h-3.5 w-3.5" /> },
                     { label: '7D Impact', value: summary.r7dC, icon: <Zap className="h-3.5 w-3.5" /> },
                     { label: '1D Impact', value: summary.r1dC, icon: <Flame className="h-3.5 w-3.5" /> },
                 ].map(item => (
@@ -441,7 +441,7 @@ export const ReturnsHeatmap = ({ periodicReturns }: { periodicReturns: PeriodicR
                                             "text-[12px]"
                                         )}
                                     >
-                                        {col.label}
+                                        {col.label === 'YTD' ? periodLabel : col.label}
                                         <SortIndicator columnKey={col.key} />
                                     </th>
                                 );

@@ -46,6 +46,7 @@ export interface Vitals {
     currencyExposure: Record<string, number>;
     fxWatchlist: Record<string, number>;
     periodInfo: PeriodInfo;
+    periodLabel?: string;
 }
 
 export interface LeverageStats {

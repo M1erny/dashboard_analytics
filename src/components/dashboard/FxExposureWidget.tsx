@@ -5,9 +5,10 @@ import { cn } from '../../lib/utils';
 
 interface FxExposureWidgetProps {
     vitals: Vitals;
+    periodLabel?: string;
 }
 
-export const FxExposureWidget: React.FC<FxExposureWidgetProps> = ({ vitals }) => {
+export const FxExposureWidget: React.FC<FxExposureWidgetProps> = ({ vitals, periodLabel = "YTD" }) => {
     const [isOpen, setIsOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -79,7 +80,7 @@ export const FxExposureWidget: React.FC<FxExposureWidgetProps> = ({ vitals }) =>
                     </div>
 
                     {/* NEW: FX Market Matrix */}
-                    <h4 className="text-white font-medium mb-3 text-xs uppercase tracking-wider border-b border-white/5 pb-2">FX Market (YTD)</h4>
+                    <h4 className="text-white font-medium mb-3 text-xs uppercase tracking-wider border-b border-white/5 pb-2">FX Market ({periodLabel})</h4>
                     <div className="grid grid-cols-2 gap-2">
                         {vitals.fxWatchlist && Object.entries(vitals.fxWatchlist).map(([pair, ytd]) => (
                             <div key={pair} className="bg-white/5 rounded p-2 flex flex-col items-center justify-center">

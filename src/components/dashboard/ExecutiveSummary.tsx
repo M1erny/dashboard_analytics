@@ -53,6 +53,7 @@ const StatRow = ({ label, value, tooltip, valueClassName }: {
 // ─── Main Component ──────────────────────────────────────────
 export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, costTier = 'retail', ytdHistory, stressTests, momentum }) => {
     const ytdPositive = (vitals.ytdReturn ?? 0) >= 0;
+    const periodLabel = vitals.periodLabel ?? "YTD";
 
     return (
         <div className="space-y-4">
@@ -76,7 +77,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                             )}>
                                 {ytdPositive ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
                             </div>
-                            <span className="text-[11px] text-gray-400 uppercase tracking-[0.15em] font-semibold">2026 YTD Return</span>
+                            <span className="text-[11px] text-gray-400 uppercase tracking-[0.15em] font-semibold">{periodLabel} Return</span>
                         </div>
 
                         <div className="flex items-end gap-3">
@@ -281,7 +282,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                     <div className="border-t border-white/[0.05]" />
 
                     <div className="flex justify-between items-center">
-                        <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">YTD Drag</span>
+                        <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">{periodLabel} Drag</span>
                         <span className="font-mono text-sm font-black tracking-tight text-rose-400">
                             {vitals.ytdFinancingCost !== undefined ? fmt(-vitals.ytdFinancingCost) : '—'}
                         </span>

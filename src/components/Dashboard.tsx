@@ -99,7 +99,7 @@ export const Dashboard: React.FC = () => {
 
                     {/* Header Widgets: Exposures & FX */}
                     <div className="flex flex-wrap md:flex-nowrap items-center gap-3 text-sm w-full md:w-auto">
-                        <FxExposureWidget vitals={vitals} />
+                        <FxExposureWidget vitals={vitals} periodLabel={vitals?.periodLabel ?? "YTD"} />
 
                         <div className="flex bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-4 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center min-w-[110px] shadow-lg shadow-emerald-500/5 transition-transform hover:scale-105">
                             <p className="text-[10px] uppercase tracking-wider text-emerald-500/80 font-bold mb-0.5">Long Exp</p>
@@ -181,7 +181,7 @@ export const Dashboard: React.FC = () => {
                 <ConvexityWidget convexity={convexity} />
 
                 {/* ROW 2: Returns Heatmap & Portfolio Contribution (Full Width) */}
-                <ReturnsHeatmap periodicReturns={periodicReturns} />
+                <ReturnsHeatmap periodicReturns={periodicReturns} periodLabel={vitals?.periodLabel ?? "YTD"} />
 
                 {/* ROW 3: World Map (Full Width) */}
                 <CountryMapWidget countryAllocation={countryAllocation} />
