@@ -561,12 +561,20 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             
         # Risk Efficiency -> YTD Sharpe (sample std)
         ytd_vol = np.std(ytd_portfolio_daily_ret, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(ytd_portfolio_daily_ret) > 1 else 0
-        ytd_ann_ret = np.mean(ytd_portfolio_daily_ret) * ANNUAL_FACTOR
+        
+        # Determine Annualized Returns (Compounded for Szymon, Mean-based for Main)
+        ytd_trading_days = len(ytd_portfolio_daily_ret)
+        if portfolio_name.lower() == "szymon" and ytd_trading_days > 0:
+            ytd_ann_ret = (1 + ytd_return) ** (ANNUAL_FACTOR / ytd_trading_days) - 1
+            bench_ytd_ann_ret = (1 + benchmark_ytd) ** (ANNUAL_FACTOR / ytd_trading_days) - 1
+        else:
+            ytd_ann_ret = np.mean(ytd_portfolio_daily_ret) * ANNUAL_FACTOR
+            bench_ytd_ann_ret = np.mean(ytd_benchmark) * ANNUAL_FACTOR
+
         ytd_sharpe = (ytd_ann_ret - rf_rate) / ytd_vol if ytd_vol > 0 else 0
         
         # Benchmark YTD Sharpe (sample std)
         bench_ytd_vol = np.std(ytd_benchmark, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(ytd_benchmark) > 1 else 0
-        bench_ytd_ann_ret = np.mean(ytd_benchmark) * ANNUAL_FACTOR
         bench_ytd_sharpe = (bench_ytd_ann_ret - rf_rate) / bench_ytd_vol if bench_ytd_vol > 0 else 0
         
         # Calculate YTD risk-free rate (scaled by actual trading days)
