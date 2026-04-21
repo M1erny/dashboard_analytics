@@ -799,6 +799,188 @@ async def lookup_stock(query: str):
         return {"error": str(e)}
 
 
+# ==========================================
+# Business Quality API  — "Munger Lens"
+# ==========================================
+
+_quality_cache: dict = {}
+QUALITY_TTL = 3600  # 1 hour – fundamental data doesn't change daily
+
+@app.get("/api/quality")
+async def get_quality(portfolio: str = 'main'):
+    """
+    Return Munger-style business quality metrics for every holding.
+    Metrics: ROIC proxy (ROE as fallback), gross margin, debt/equity,
+             FCF yield (FCF/EV), owner earnings yield ((FCF-SBC)/EV),
+    All sourced from yfinance .info – cached 1 hour.
+    """
+    import math
+
+    now = time.time()
+    if portfolio in _quality_cache:
+        entry = _quality_cache[portfolio]
+        if (now - entry["ts"]) < QUALITY_TTL:
+            print(f"[quality] Returning cached data for {portfolio}")
+            return entry["data"]
+
+    if not risk:
+        return {"error": "Risk module not loaded"}
+
+    portfolio_config = risk.load_portfolio_config(portfolio)
+
+    def sf(val):
+        """Safe float – returns None for NaN/Inf/missing."""
+        try:
+            f = float(val)
+            return None if (math.isnan(f) or math.isinf(f)) else f
+        except:
+            return None
+
+    results = []
+
+    for ticker, cfg in portfolio_config.items():
+        print(f"[quality] Fetching {ticker}…")
+        try:
+            t = yf.Ticker(ticker)
+            info = {}
+            try:
+                info = t.info or {}
+            except Exception:
+                pass
+
+            # ── Core quality metrics ──────────────────────────────
+            roe          = sf(info.get("returnOnEquity"))      # proxy for ROIC when no debt breakdown
+            roic_approx  = sf(info.get("returnOnAssets"))      # more conservative ROIC proxy
+            gross_margin = sf(info.get("grossMargins"))
+            op_margin    = sf(info.get("operatingMargins"))
+            net_margin   = sf(info.get("profitMargins"))
+            debt_equity  = sf(info.get("debtToEquity"))        # as ratio (e.g. 0.5 = 50%)
+            rev_growth   = sf(info.get("revenueGrowth"))       # trailing 12m vs prior year
+            current_ratio= sf(info.get("currentRatio"))
+            peg          = sf(info.get("pegRatio"))
+            pe           = sf(info.get("trailingPE"))
+            pb           = sf(info.get("priceToBook"))
+
+            # ── Owner Earnings (FCF − SBC) / EV ──────────────────
+            fcf          = sf(info.get("freeCashflow"))
+            ev           = sf(info.get("enterpriseValue"))
+
+            sbc = None
+            try:
+                cf = t.cashflow
+                if cf is not None and not cf.empty:
+                    for label in ["Stock Based Compensation", "StockBasedCompensation",
+                                  "Share Based Compensation Expense"]:
+                        if label in cf.index:
+                            v = sf(cf.loc[label].iloc[0])
+                            if v is not None:
+                                sbc = abs(v)
+                                break
+            except Exception:
+                pass
+
+            fcf_ev_yield = (fcf / ev) if (fcf is not None and ev and ev != 0) else None
+            owner_earnings = (fcf - (sbc or 0)) if fcf is not None else None
+            oe_yield = (owner_earnings / ev) if (owner_earnings is not None and ev and ev != 0) else None
+
+            # ── Munger quality score (0-100) ──────────────────────
+            # Each criterion contributes points; no single factor dominates.
+            score = 0
+            flags = []
+
+            if gross_margin is not None:
+                if gross_margin >= 0.50:  score += 25; flags.append("✓ Pricing power")
+                elif gross_margin >= 0.30: score += 12
+                else: flags.append("✗ Thin margins")
+
+            if roic_approx is not None:
+                if roic_approx >= 0.15:   score += 25; flags.append("✓ High ROIC")
+                elif roic_approx >= 0.08:  score += 12
+                else: flags.append("✗ Low ROIC")
+
+            if oe_yield is not None:
+                if oe_yield >= 0.05:   score += 20; flags.append("✓ Cheap on OE")
+                elif oe_yield >= 0.02: score += 10
+                elif oe_yield < 0:     flags.append("✗ Negative OE yield")
+
+            if debt_equity is not None:
+                # yfinance returns D/E as percent (e.g. 45.2 means 45.2%)
+                de_ratio = debt_equity / 100 if debt_equity > 5 else debt_equity
+                if de_ratio <= 0.30:   score += 15; flags.append("✓ Fortress balance sheet")
+                elif de_ratio <= 0.80: score += 7
+                else: flags.append("✗ High leverage")
+
+            if rev_growth is not None:
+                if rev_growth >= 0.10:  score += 15; flags.append("✓ Revenue growth")
+                elif rev_growth >= 0.0:  score += 7
+                else: flags.append("✗ Revenue shrinking")
+
+            score = min(score, 100)
+
+            # ── Inversion: biggest risk to the thesis ─────────────
+            inversion_risks = []
+            if gross_margin is not None and gross_margin < 0.20:
+                inversion_risks.append("Commodity-like pricing — margin compression risk")
+            if debt_equity is not None:
+                de_ratio = debt_equity / 100 if debt_equity > 5 else debt_equity
+                if de_ratio > 1.0:
+                    inversion_risks.append("High debt — rising rates could stress coverage")
+            if pe is not None and pe > 40:
+                inversion_risks.append("Rich valuation — growth disappointment = large de-rating")
+            if rev_growth is not None and rev_growth < 0:
+                inversion_risks.append("Declining revenue — business in structural decline?")
+            if oe_yield is not None and oe_yield < 0:
+                inversion_risks.append("Burning cash after SBC — not self-financing")
+            if not inversion_risks:
+                inversion_risks.append("No obvious red flags in available data")
+
+            results.append({
+                "ticker":        ticker,
+                "direction":     cfg.get("type", "Long"),
+                "weight":        cfg.get("weight", 0),
+                "sector":        cfg.get("sector", "Unknown"),
+                "country":       cfg.get("country", "USA"),
+                "name":          info.get("longName") or info.get("shortName") or ticker,
+                # Quality metrics
+                "grossMargin":   sf(gross_margin),
+                "roic":          sf(roic_approx),   # ROA as ROIC proxy
+                "roe":           sf(roe),
+                "debtEquity":    sf(debt_equity),
+                "revenueGrowth": sf(rev_growth),
+                "currentRatio":  sf(current_ratio),
+                "opMargin":      sf(op_margin),
+                "netMargin":     sf(net_margin),
+                "pe":            sf(pe),
+                "pb":            sf(pb),
+                "peg":           sf(peg),
+                "fcfEvYield":    sf(fcf_ev_yield),
+                "ownerEarningsYield": sf(oe_yield),
+                "sbcEstimated":  sbc is None,
+                # Munger lens
+                "qualityScore":  score,
+                "qualityFlags":  flags,
+                "inversionRisks": inversion_risks,
+            })
+
+        except Exception as e:
+            print(f"[quality] Error fetching {ticker}: {e}")
+            results.append({
+                "ticker": ticker,
+                "direction": cfg.get("type", "Long"),
+                "weight": cfg.get("weight", 0),
+                "sector": cfg.get("sector", "Unknown"),
+                "error": str(e),
+                "qualityScore": None,
+                "qualityFlags": [],
+                "inversionRisks": ["Data unavailable"],
+            })
+
+    payload = {"portfolio": portfolio, "positions": results}
+    _quality_cache[portfolio] = {"data": payload, "ts": now}
+    return payload
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

@@ -7,6 +7,7 @@ import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { CountryMapWidget } from './dashboard/CountryMapWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
 import { StockLookup } from './dashboard/StockLookup';
+import { MoatWidget } from './dashboard/MoatWidget';
 import { LayoutDashboard, ShieldCheck, RefreshCw } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -185,6 +186,9 @@ export const Dashboard: React.FC = () => {
 
                 {/* ROW 3: World Map (Full Width) */}
                 <CountryMapWidget countryAllocation={countryAllocation} />
+
+                {/* ROW 4: Business Quality — Munger Lens */}
+                <MoatWidget portfolioName={portfolioName} />
 
                 {/* ROW 5: Stock Lookup */}
                 <StockLookup />
