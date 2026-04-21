@@ -356,41 +356,115 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
 
                 {/* ── Stress Tests — 4 cols ── */}
                 <div className="lg:col-span-4 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col gap-2">
-                    <div className="flex items-center gap-2 mb-1">
-                        <Zap className="h-4 w-4 text-violet-400" />
-                        <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Stress Tests</span>
+                    {/* Header */}
+                    <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                            <Zap className="h-4 w-4 text-violet-400" />
+                            <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Stress Tests</span>
+                        </div>
+                        <span
+                            className="text-[9px] text-gray-600 bg-white/[0.03] border border-white/[0.06] px-2 py-0.5 rounded cursor-help"
+                            title="Each scenario simulates a sudden SPY market move. The portfolio impact is estimated using a quadratic regression model fitted to YTD daily returns: Portfolio Return = α + β₁·(market move) + β₂·(market move)². This non-linear model accounts for long/short convexity. The linear baseline is simply β × market move."
+                        >
+                            ƒ(x) model ?
+                        </span>
                     </div>
 
                     {stressTests?.map(st => {
+                        const mktMove = st.marketMove ?? 0;
                         const diff = st.linearImpact != null ? st.impact - st.linearImpact : 0;
+                        const hasBoth = st.linearImpact != null && Math.abs(diff) > 0.0001;
                         const convexBenefit = diff > 0;
+                        const isCrash = mktMove < -0.07;
+                        const isDown = mktMove < 0;
+
+                        // Color by scenario direction
+                        const scenarioColor = isDown
+                            ? (isCrash ? 'border-rose-500/25 bg-rose-950/10' : 'border-rose-500/15 bg-rose-950/5')
+                            : (Math.abs(mktMove) > 0.07 ? 'border-emerald-500/25 bg-emerald-950/10' : 'border-emerald-500/15 bg-emerald-950/5');
+
                         return (
-                            <div key={st.scenario} className="rounded-lg bg-white/[0.03] px-3 py-2 border border-white/[0.05]">
-                                <div className="flex justify-between items-center">
-                                    <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider truncate mr-2">
+                            <div key={st.scenario} className={cn("rounded-lg px-3 py-2.5 border", scenarioColor)}>
+
+                                {/* Row 1: Scenario name + SPY move pill */}
+                                <div className="flex items-center justify-between gap-2 mb-1.5">
+                                    <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
                                         {st.scenario.replace(/\(.*?\)/, '').trim()}
                                     </span>
                                     <span className={cn(
-                                        "font-mono text-sm font-black tracking-tight whitespace-nowrap",
+                                        "font-mono text-[10px] font-black px-1.5 py-0.5 rounded border whitespace-nowrap",
+                                        isDown
+                                            ? "text-rose-300 bg-rose-900/30 border-rose-500/30"
+                                            : "text-emerald-300 bg-emerald-900/30 border-emerald-500/30"
+                                    )}>
+                                        SPY {mktMove > 0 ? '+' : ''}{(mktMove * 100).toFixed(0)}%
+                                    </span>
+                                </div>
+
+                                {/* Market move progress bar */}
+                                <div className="flex items-center gap-1.5 mb-2">
+                                    <div className="flex-1 h-1 rounded-full bg-white/[0.06] overflow-hidden">
+                                        <div
+                                            className={cn(
+                                                "h-full rounded-full transition-all duration-500",
+                                                isDown ? "bg-rose-500/60 ml-auto" : "bg-emerald-500/60"
+                                            )}
+                                            style={{
+                                                width: `${Math.abs(mktMove) * 500}%`,
+                                                marginLeft: isDown ? 'auto' : undefined
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* Row 2: Main result (nonlinear) */}
+                                <div className="flex items-center justify-between">
+                                    <div className="flex flex-col">
+                                        <span className="text-[9px] text-gray-600 uppercase tracking-widest">Portfolio Est.</span>
+                                        <span className="text-[9px] text-gray-700 font-mono">α + β·x + β₂·x²</span>
+                                    </div>
+                                    <span className={cn(
+                                        "font-mono text-lg font-black tracking-tight",
                                         st.impact >= 0 ? "text-emerald-400" : "text-rose-400"
                                     )}>
                                         {fmtSigned(st.impact)}
                                     </span>
                                 </div>
-                                {st.linearImpact != null && Math.abs(diff) > 0.0001 && (
-                                    <div className="flex justify-between items-center mt-0.5">
-                                        <span className="text-[9px] text-gray-600">vs linear</span>
+
+                                {/* Row 3: Linear comparison + convexity delta */}
+                                {hasBoth && (
+                                    <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-white/[0.05]">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-[9px] text-gray-600">if β only:</span>
+                                            <span className="font-mono text-[10px] text-gray-500">
+                                                {fmtSigned(st.linearImpact)}
+                                            </span>
+                                        </div>
                                         <span className={cn(
-                                            "font-mono text-[9px] font-semibold",
-                                            convexBenefit ? "text-emerald-500/70" : "text-rose-500/70"
+                                            "font-mono text-[10px] font-bold px-1.5 py-0.5 rounded",
+                                            convexBenefit
+                                                ? "text-emerald-400 bg-emerald-900/30"
+                                                : "text-rose-400 bg-rose-900/30"
                                         )}>
-                                            {fmtSigned(st.linearImpact)} ({convexBenefit ? '▲' : '▼'}{Math.abs(diff * 100).toFixed(2)}pp)
+                                            {convexBenefit ? '▲' : '▼'} {Math.abs(diff * 100).toFixed(2)}pp {convexBenefit ? 'edge' : 'drag'}
                                         </span>
                                     </div>
                                 )}
                             </div>
                         );
                     })}
+
+                    {/* Methodology footnote */}
+                    <div className="mt-1 rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
+                        <p className="text-[9px] text-gray-600 leading-relaxed">
+                            <span className="text-gray-500 font-semibold">How it works: </span>
+                            Each scenario applies a sudden SPY move (−10%, −5%, +5%, +10%). Your estimated portfolio impact uses the{' '}
+                            <span className="text-violet-400/80">quadratic model</span> fit to YTD daily data:{' '}
+                            <span className="font-mono text-[8px] text-gray-500">P = α + β₁·x + β₂·x²</span>.
+                            The <span className="text-gray-400">β only</span> line is the naive linear estimate (β × move).
+                            A positive pp edge means your portfolio loses <em>less</em> in crashes or gains <em>more</em> in rallies than a pure-beta position.
+                        </p>
+                    </div>
                 </div>
             </div>
         </div>
