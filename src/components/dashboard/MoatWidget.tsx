@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { cn } from '../../lib/utils';
 import {
-    TrendingUp, TrendingDown, ArrowUpRight, ArrowDownRight,
-    AlertTriangle, CheckCircle2, RefreshCw, Loader2,
-    Shield, Zap, BarChart3, Target, Brain
+    ArrowUpRight, ArrowDownRight,
+    AlertTriangle, RefreshCw, Loader2,
+    Target, Brain
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────
@@ -322,7 +322,7 @@ const QualitySummary = ({ positions }: { positions: QualityPosition[] }) => {
             {[
                 { label: "Avg Quality · Longs",  score: longScore,  color: "text-emerald-400", positions: longs },
                 { label: "Avg Quality · Shorts", score: shortScore, color: "text-rose-400",    positions: shorts },
-            ].map(({ label, score, color, positions: ps }) => (
+            ].map(({ label, score, positions: ps }) => (
                 <div key={label} className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4">
                     <p className="text-[10px] text-gray-500 uppercase tracking-widest mb-2">{label}</p>
                     <div className="flex items-end gap-3">
@@ -364,7 +364,7 @@ export const MoatWidget = ({ portfolioName = 'main' }: { portfolioName?: string 
     const [error,   setError]   = useState<string | null>(null);
     const [filter,  setFilter]  = useState<'all' | 'Long' | 'Short'>('all');
     const [sort,    setSort]    = useState<'score' | 'weight'>('score');
-    const [loaded,  setLoaded]  = useState(false);  // lazy — only fetch when user expands
+
 
     const BASE_URL = (import.meta as any).env?.VITE_API_URL || '';
 
@@ -375,7 +375,7 @@ export const MoatWidget = ({ portfolioName = 'main' }: { portfolioName?: string 
             const res  = await fetch(`${BASE_URL}/api/quality?portfolio=${portfolioName}`);
             const json = await res.json();
             if (json.error) setError(json.error);
-            else { setData(json); setLoaded(true); }
+            else { setData(json); }
         } catch (e: any) {
             setError('Failed to connect to backend.');
         } finally {
