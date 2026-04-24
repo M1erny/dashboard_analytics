@@ -81,10 +81,18 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                         </div>
 
                         <div className="flex items-end gap-3">
-                            <span className={cn(
-                                "text-4xl sm:text-5xl font-black tracking-tighter leading-none",
-                                ytdPositive ? "text-emerald-400" : "text-rose-400"
-                            )} title="Net Return (After financing drag)">
+                            <span
+                                className={cn(
+                                    "text-4xl sm:text-5xl font-black tracking-tighter leading-none transition-all duration-500",
+                                    ytdPositive ? "text-emerald-400" : "text-rose-400"
+                                )}
+                                style={{
+                                    filter: ytdPositive
+                                        ? 'drop-shadow(0 0 20px rgba(52,211,153,0.35))'
+                                        : 'drop-shadow(0 0 20px rgba(248,113,133,0.35))'
+                                }}
+                                title="Net Return (After financing drag)"
+                            >
                                 {fmtSigned(vitals.ytdReturn)}
                             </span>
                             {vitals.ytdReturnGross !== undefined && (
@@ -102,14 +110,25 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                             { label: 'SPY', value: vitals.benchmarkYtd },
                             { label: 'MSCI', value: vitals.msciYtd },
                             { label: '🇵🇱 PLN', value: vitals.ytdReturnPln },
-                        ].map(b => (
-                            <div key={b.label} className="flex flex-col items-center py-2.5 px-2">
-                                <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">{b.label}</span>
-                                <span className={cn("font-mono text-sm font-bold tracking-tight mt-0.5", returnColor(b.value))}>
-                                    {fmtSigned(b.value)}
-                                </span>
-                            </div>
-                        ))}
+                        ].map(b => {
+                            const portfolioRet = vitals.ytdReturn ?? 0;
+                            const bVal = b.value ?? 0;
+                            const delta = portfolioRet - bVal;
+                            return (
+                                <div key={b.label} className="flex flex-col items-center py-2.5 px-2 gap-0.5">
+                                    <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">{b.label}</span>
+                                    <span className={cn("font-mono text-sm font-bold tracking-tight", returnColor(b.value))}>
+                                        {fmtSigned(b.value)}
+                                    </span>
+                                    <span className={cn(
+                                        "text-[9px] font-mono font-semibold flex items-center gap-0.5",
+                                        delta >= 0 ? "text-emerald-500/80" : "text-rose-500/80"
+                                    )}>
+                                        {delta >= 0 ? '▲' : '▼'} {Math.abs(delta * 100).toFixed(1)}pp
+                                    </span>
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
 
@@ -386,8 +405,8 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                         return (
                             <div key={st.scenario} className={cn("rounded-lg px-3 py-2.5 border", scenarioColor)}>
 
-                                {/* Row 1: Scenario name + SPY move pill */}
-                                <div className="flex items-center justify-between gap-2 mb-1.5">
+                                {/* Row 1: Scenario label + SPY pill */}
+                                <div className="flex items-center justify-between gap-2 mb-2">
                                     <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
                                         {st.scenario.replace(/\(.*?\)/, '').trim()}
                                     </span>
@@ -401,55 +420,28 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                                     </span>
                                 </div>
 
-                                {/* Market move progress bar */}
-                                <div className="flex items-center gap-1.5 mb-2">
-                                    <div className="flex-1 h-1 rounded-full bg-white/[0.06] overflow-hidden">
-                                        <div
-                                            className={cn(
-                                                "h-full rounded-full transition-all duration-500",
-                                                isDown ? "bg-rose-500/60 ml-auto" : "bg-emerald-500/60"
-                                            )}
-                                            style={{
-                                                width: `${Math.abs(mktMove) * 500}%`,
-                                                marginLeft: isDown ? 'auto' : undefined
-                                            }}
-                                        />
-                                    </div>
-                                </div>
-
-                                {/* Row 2: Main result (nonlinear) */}
-                                <div className="flex items-center justify-between">
-                                    <div className="flex flex-col">
-                                        <span className="text-[9px] text-gray-600 uppercase tracking-widest">Portfolio Est.</span>
-                                        <span className="text-[9px] text-gray-700 font-mono">α + β·x + β₂·x²</span>
-                                    </div>
+                                {/* Dominant: portfolio impact */}
+                                <div className="flex items-end justify-between">
                                     <span className={cn(
-                                        "font-mono text-lg font-black tracking-tight",
+                                        "font-mono text-2xl font-black tracking-tight leading-none",
                                         st.impact >= 0 ? "text-emerald-400" : "text-rose-400"
-                                    )}>
+                                    )}
+                                    style={{
+                                        filter: st.impact >= 0
+                                            ? 'drop-shadow(0 0 8px rgba(52,211,153,0.25))'
+                                            : 'drop-shadow(0 0 8px rgba(248,113,133,0.25))'
+                                    }}>
                                         {fmtSigned(st.impact)}
                                     </span>
-                                </div>
-
-                                {/* Row 3: Linear comparison + convexity delta */}
-                                {hasBoth && (
-                                    <div className="flex items-center justify-between mt-1.5 pt-1.5 border-t border-white/[0.05]">
-                                        <div className="flex items-center gap-2">
-                                            <span className="text-[9px] text-gray-600">if β only:</span>
-                                            <span className="font-mono text-[10px] text-gray-500">
-                                                {fmtSigned(st.linearImpact)}
-                                            </span>
-                                        </div>
+                                    {hasBoth && (
                                         <span className={cn(
-                                            "font-mono text-[10px] font-bold px-1.5 py-0.5 rounded",
-                                            convexBenefit
-                                                ? "text-emerald-400 bg-emerald-900/30"
-                                                : "text-rose-400 bg-rose-900/30"
+                                            "font-mono text-[10px] font-bold px-1.5 py-0.5 rounded mb-0.5",
+                                            convexBenefit ? "text-emerald-400 bg-emerald-900/30" : "text-rose-400 bg-rose-900/30"
                                         )}>
-                                            {convexBenefit ? '▲' : '▼'} {Math.abs(diff * 100).toFixed(2)}pp {convexBenefit ? 'edge' : 'drag'}
+                                            {convexBenefit ? '▲' : '▼'} {Math.abs(diff * 100).toFixed(1)}pp
                                         </span>
-                                    </div>
-                                )}
+                                    )}
+                                </div>
                             </div>
                         );
                     })}

@@ -380,10 +380,25 @@ export const StockLookup = () => {
 
             {/* Empty state */}
             {!result && !loading && !errorMsg && (
-                <div className="px-5 py-8 flex flex-col items-center gap-2 text-center">
-                    <Search className="h-8 w-8 text-gray-700" />
-                    <p className="text-sm text-gray-600">Enter a company name or ticker above to look up returns and valuation.</p>
-                    <p className="text-[11px] text-gray-700">Works with US, European, and Asian exchanges.</p>
+                <div className="px-5 py-8 flex flex-col items-center gap-4 text-center">
+                    <div className="flex items-center justify-center w-12 h-12 rounded-xl bg-violet-500/10 border border-violet-500/20">
+                        <Search className="h-5 w-5 text-violet-400/60" />
+                    </div>
+                    <div>
+                        <p className="text-sm text-gray-400 font-medium">Search any global stock</p>
+                        <p className="text-[11px] text-gray-600 mt-1">US, European, and Asian exchanges supported.</p>
+                    </div>
+                    <div className="flex flex-wrap justify-center gap-2 mt-1">
+                        {['AAPL', 'MSFT', 'NVDA', 'BRK-B', 'CDR.WA', 'NOVO-B.CO'].map(ticker => (
+                            <button
+                                key={ticker}
+                                onClick={() => { setQuery(ticker); search(ticker); }}
+                                className="px-3 py-1.5 rounded-lg text-[11px] font-mono font-semibold bg-white/[0.04] border border-white/[0.08] text-gray-400 hover:bg-violet-500/15 hover:border-violet-500/30 hover:text-violet-300 transition-all duration-200"
+                            >
+                                {ticker}
+                            </button>
+                        ))}
+                    </div>
                 </div>
             )}
         </div>

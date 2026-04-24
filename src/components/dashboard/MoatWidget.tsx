@@ -3,7 +3,7 @@ import { cn } from '../../lib/utils';
 import {
     ArrowUpRight, ArrowDownRight,
     AlertTriangle, RefreshCw, Loader2,
-    Target, Brain
+    Target, Brain, ChevronDown, ChevronUp
 } from 'lucide-react';
 
 // ─── Types ────────────────────────────────────────────────────
@@ -82,24 +82,24 @@ const metricColor = (
 // ─── Score Ring ───────────────────────────────────────────────
 const ScoreRing = ({ score }: { score: number | null }) => {
     const s = score ?? 0;
-    const r = 18;
+    const r = 20;
     const circ = 2 * Math.PI * r;
     const fill = (s / 100) * circ;
     const color = s >= 70 ? '#34d399' : s >= 45 ? '#fbbf24' : s >= 20 ? '#fb923c' : '#f87171';
 
     return (
-        <div className="relative flex items-center justify-center w-12 h-12">
-            <svg className="w-12 h-12 -rotate-90" viewBox="0 0 44 44">
-                <circle cx="22" cy="22" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="4" />
+        <div className="relative flex items-center justify-center w-14 h-14 shrink-0">
+            <svg className="w-14 h-14 -rotate-90" viewBox="0 0 50 50">
+                <circle cx="25" cy="25" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="4" />
                 <circle
-                    cx="22" cy="22" r={r} fill="none"
+                    cx="25" cy="25" r={r} fill="none"
                     stroke={color} strokeWidth="4"
                     strokeDasharray={`${fill} ${circ - fill}`}
                     strokeLinecap="round"
                     className="transition-all duration-700"
                 />
             </svg>
-            <span className={cn("absolute text-[11px] font-black", scoreColor(score))}>
+            <span className={cn("absolute text-[12px] font-black", scoreColor(score))}>
                 {score ?? '?'}
             </span>
         </div>
@@ -183,7 +183,9 @@ const PositionCard = ({ pos }: { pos: QualityPosition }) => {
                 </div>
 
                 {/* Expand chevron */}
-                <span className="text-gray-600 text-[10px] ml-1">{expanded ? '▲' : '▼'}</span>
+                <span className="text-gray-500 ml-1 transition-transform duration-200">
+                    {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                </span>
             </div>
 
             {/* Expanded detail */}
@@ -207,10 +209,10 @@ const PositionCard = ({ pos }: { pos: QualityPosition }) => {
                                 <span
                                     key={i}
                                     className={cn(
-                                        "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium",
+                                        "inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-semibold tracking-wide",
                                         f.startsWith('✓')
-                                            ? "bg-emerald-900/40 text-emerald-300 border border-emerald-500/20"
-                                            : "bg-rose-900/40 text-rose-300 border border-rose-500/20"
+                                            ? "bg-emerald-900/50 text-emerald-300 border border-emerald-500/25 shadow-sm shadow-emerald-500/10"
+                                            : "bg-rose-900/50 text-rose-300 border border-rose-500/25 shadow-sm shadow-rose-500/10"
                                     )}
                                 >
                                     {f}

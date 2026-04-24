@@ -8,7 +8,7 @@ import { CountryMapWidget } from './dashboard/CountryMapWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
 import { StockLookup } from './dashboard/StockLookup';
 import { MoatWidget } from './dashboard/MoatWidget';
-import { LayoutDashboard, ShieldCheck, RefreshCw } from 'lucide-react';
+import { LayoutDashboard, ShieldCheck, RefreshCw, Clock } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export const Dashboard: React.FC = () => {
@@ -44,12 +44,18 @@ export const Dashboard: React.FC = () => {
 
     const formatPercent = (val: number | undefined) => typeof val === 'number' ? `${(val * 100).toFixed(2)}%` : 'N/A';
 
+    const [lastUpdated] = useState(() => new Date());
+
     if (loading) {
         return (
             <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
-                <div className="flex flex-col items-center gap-4">
-                    <div className="h-12 w-12 animate-spin rounded-full border-4 border-primary border-t-transparent" />
-                    <p className="text-muted-foreground animate-pulse">Investing Dashboard...</p>
+                <div className="flex flex-col items-center gap-5">
+                    <div className="animated-top-bar w-48 h-1 rounded-full opacity-80" />
+                    <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/10 border-t-white/60" />
+                    <div className="flex flex-col items-center gap-1">
+                        <p className="text-white font-semibold text-sm">Portfolio Intelligence</p>
+                        <p className="text-gray-500 text-xs animate-pulse">Loading analytics engine…</p>
+                    </div>
                 </div>
             </div>
         )
@@ -83,36 +89,56 @@ export const Dashboard: React.FC = () => {
 
     const { vitals, leverage, periodicReturns, countryAllocation, stressTests, convexity, ytdHistory } = data;
 
+    const portfolioLabel = portfolioName === 'main' ? 'My Portfolio' : 'Szymon\'s Portfolio';
+
     return (
-        <div className="min-h-screen bg-background text-foreground p-4 md:p-8">
+        <div className="min-h-screen bg-background text-foreground">
+            {/* Animated top bar */}
+            <div className="animated-top-bar h-[2px] w-full" />
+
+            <div className="p-4 md:p-8">
             <div className="mx-auto max-w-[1600px] space-y-6 md:space-y-8">
 
                 {/* Responsive Header */}
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
                     <div>
                         <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white flex items-center gap-3">
-                            <div className="p-2 bg-primary/20 rounded-xl border border-primary/30">
-                                <LayoutDashboard className="h-6 w-6 md:h-8 md:w-8 text-primary animate-pulse" />
+                            <div className="p-2 bg-gradient-to-br from-indigo-500/20 to-blue-500/20 rounded-xl border border-white/10">
+                                <LayoutDashboard className="h-6 w-6 md:h-7 md:w-7 text-indigo-400" />
                             </div>
-                            <span className="bg-gradient-to-r from-white to-gray-400 bg-clip-text text-transparent">Portfolio</span>
+                            <div className="flex flex-col">
+                                <span className="bg-gradient-to-r from-white via-white to-gray-400 bg-clip-text text-transparent leading-none">
+                                    {portfolioLabel}
+                                </span>
+                                <span className="text-[11px] font-normal text-gray-500 tracking-[0.12em] uppercase mt-1 flex items-center gap-1.5">
+                                    <Clock className="h-3 w-3" />
+                                    Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </span>
+                            </div>
                         </h1>
                     </div>
 
-                    {/* Header Widgets: Exposures & FX */}
+                    {/* Header Controls */}
                     <div className="flex flex-wrap md:flex-nowrap items-center gap-3 text-sm w-full md:w-auto">
-                        <FxExposureWidget vitals={vitals} periodLabel={vitals?.periodLabel ?? "YTD"} />
 
-                        <div className="flex bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-4 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center min-w-[110px] shadow-lg shadow-emerald-500/5 transition-transform hover:scale-105">
-                            <p className="text-[10px] uppercase tracking-wider text-emerald-500/80 font-bold mb-0.5">Long Exp</p>
-                            <p className="font-mono text-emerald-400 font-black text-lg leading-none">{formatPercent(leverage.Long_Exp)}</p>
+                        {/* Exposure Pills */}
+                        <div className="flex items-center gap-2">
+                            <FxExposureWidget vitals={vitals} periodLabel={vitals?.periodLabel ?? "YTD"} />
+                            <div className="flex bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-3 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-emerald-500/5 transition-all hover:scale-105 hover:border-emerald-500/40">
+                                <p className="text-[9px] uppercase tracking-wider text-emerald-500/70 font-bold mb-0.5">Long Exp</p>
+                                <p className="font-mono text-emerald-400 font-black text-sm leading-none">{formatPercent(leverage.Long_Exp)}</p>
+                            </div>
+                            <div className="flex bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-3 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-rose-500/5 transition-all hover:scale-105 hover:border-rose-500/40">
+                                <p className="text-[9px] uppercase tracking-wider text-rose-500/70 font-bold mb-0.5">Short Exp</p>
+                                <p className="font-mono text-rose-400 font-black text-sm leading-none">{formatPercent(leverage.Short_Exp)}</p>
+                            </div>
                         </div>
-                        <div className="flex bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-4 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center min-w-[110px] shadow-lg shadow-rose-500/5 transition-transform hover:scale-105">
-                            <p className="text-[10px] uppercase tracking-wider text-rose-500/80 font-bold mb-0.5">Short Exp</p>
-                            <p className="font-mono text-rose-400 font-black text-lg leading-none">{formatPercent(leverage.Short_Exp)}</p>
-                        </div>
+
+                        {/* Divider */}
+                        <div className="hidden md:block w-px h-8 bg-white/10" />
 
                         {/* Portfolio Switcher */}
-                        <div className="flex bg-white/5 rounded-lg border border-white/10 p-1 relative h-[38px] mr-2">
+                        <div className="flex bg-white/5 rounded-lg border border-white/10 p-1 relative h-[38px]">
                             {(['main', 'szymon'] as const).map(portfolio => (
                                 <button
                                     key={portfolio}
@@ -120,13 +146,13 @@ export const Dashboard: React.FC = () => {
                                     disabled={isSwitchingTier}
                                     className={cn(
                                         "px-3 py-1 text-[10px] sm:text-xs font-semibold uppercase tracking-wider rounded-md transition-all whitespace-nowrap",
-                                        portfolioName === portfolio 
-                                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/30" 
+                                        portfolioName === portfolio
+                                            ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
                                             : "text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent",
                                         isSwitchingTier ? "opacity-50 cursor-not-allowed" : ""
                                     )}
                                 >
-                                    {portfolio === 'main' ? 'My Portfolio' : 'Szymon Portfolio'}
+                                    {portfolio === 'main' ? 'My Portfolio' : 'Szymon'}
                                 </button>
                             ))}
                         </div>
@@ -192,6 +218,7 @@ export const Dashboard: React.FC = () => {
 
                 {/* ROW 5: Stock Lookup */}
                 <StockLookup />
+            </div>
             </div>
         </div>
     );

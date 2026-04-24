@@ -184,12 +184,12 @@ const columns: ColumnDef[] = [
     { key: 'volumeIndicator',  label: 'Vol Ratio',  group: 'risk', tooltip: '7D avg volume ÷ YTD avg volume' },
 ];
 
-const groupMeta: Record<string, { label: string; icon: React.ReactNode; colSpan: number; borderClass: string }> = {
-    position:     { label: 'Position',      icon: <BarChart3 className="h-3 w-3" />, colSpan: 3, borderClass: 'border-l-0' },
-    entry:        { label: 'Entry Details', icon: <TrendingUp className="h-3 w-3" />,colSpan: 2, borderClass: 'border-l border-white/10' },
-    contribution: { label: 'Contribution',  icon: <Zap className="h-3 w-3" />,       colSpan: 3, borderClass: 'border-l border-white/10' },
-    returns:      { label: 'Returns',       icon: <TrendingUp className="h-3 w-3" />,colSpan: 4, borderClass: 'border-l border-white/10' },
-    risk:         { label: 'Risk',          icon: <Flame className="h-3 w-3" />,     colSpan: 2, borderClass: 'border-l border-white/10' },
+const groupMeta: Record<string, { label: string; icon: React.ReactNode; colSpan: number; borderClass: string; accentClass: string }> = {
+    position:     { label: 'Position',      icon: <BarChart3 className="h-3 w-3" />, colSpan: 3, borderClass: 'border-l-0',            accentClass: 'after:bg-blue-500/60' },
+    entry:        { label: 'Entry Details', icon: <TrendingUp className="h-3 w-3" />,colSpan: 2, borderClass: 'border-l border-white/10', accentClass: 'after:bg-amber-500/60' },
+    contribution: { label: 'Contribution',  icon: <Zap className="h-3 w-3" />,       colSpan: 3, borderClass: 'border-l border-white/10', accentClass: 'after:bg-violet-500/60' },
+    returns:      { label: 'Returns',       icon: <TrendingUp className="h-3 w-3" />,colSpan: 4, borderClass: 'border-l border-white/10', accentClass: 'after:bg-emerald-500/60' },
+    risk:         { label: 'Risk',          icon: <Flame className="h-3 w-3" />,     colSpan: 2, borderClass: 'border-l border-white/10', accentClass: 'after:bg-rose-500/60' },
 };
 
 // ─── Main Component ──────────────────────────────────────────
@@ -435,8 +435,10 @@ export const ReturnsHeatmap = ({ periodicReturns, periodLabel = "YTD" }: { perio
                                     key={key}
                                     colSpan={meta.colSpan}
                                     className={cn(
-                                        "px-3 py-1.5 text-[10px] uppercase tracking-[0.12em] font-semibold text-gray-500",
+                                        "px-3 py-1.5 text-[10px] uppercase tracking-[0.12em] font-semibold text-gray-500 relative",
+                                        "after:absolute after:bottom-0 after:left-2 after:right-2 after:h-[2px] after:rounded-full",
                                         meta.borderClass,
+                                        meta.accentClass,
                                         key === 'position' && "text-left"
                                     )}
                                 >
