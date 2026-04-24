@@ -109,7 +109,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                         {[
                             { label: 'SPY', value: vitals.benchmarkYtd },
                             { label: 'MSCI', value: vitals.msciYtd },
-                            { label: '🇵🇱 PLN', value: vitals.ytdReturnPln },
+                            { label: '🇵🇱 WIG20', value: vitals.wigYtd },
                         ].map(b => {
                             const portfolioRet = vitals.ytdReturn ?? 0;
                             const bVal = b.value ?? 0;
@@ -420,27 +420,54 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                                     </span>
                                 </div>
 
-                                {/* Dominant: portfolio impact */}
-                                <div className="flex items-end justify-between">
-                                    <span className={cn(
-                                        "font-mono text-2xl font-black tracking-tight leading-none",
-                                        st.impact >= 0 ? "text-emerald-400" : "text-rose-400"
-                                    )}
-                                    style={{
-                                        filter: st.impact >= 0
-                                            ? 'drop-shadow(0 0 8px rgba(52,211,153,0.25))'
-                                            : 'drop-shadow(0 0 8px rgba(248,113,133,0.25))'
-                                    }}>
-                                        {fmtSigned(st.impact)}
-                                    </span>
-                                    {hasBoth && (
-                                        <span className={cn(
-                                            "font-mono text-[10px] font-bold px-1.5 py-0.5 rounded mb-0.5",
-                                            convexBenefit ? "text-emerald-400 bg-emerald-900/30" : "text-rose-400 bg-rose-900/30"
-                                        )}>
-                                            {convexBenefit ? '▲' : '▼'} {Math.abs(diff * 100).toFixed(1)}pp
+                                {/* Row 2: Two numbers side-by-side */}
+                                <div className="grid grid-cols-2 gap-2 items-end">
+                                    {/* Quadratic model — dominant */}
+                                    <div className="flex flex-col gap-0.5">
+                                        <span className="text-[8px] text-gray-600 uppercase tracking-widest font-semibold">
+                                            ƒ(x) model
                                         </span>
-                                    )}
+                                        <span
+                                            className={cn(
+                                                "font-mono text-xl font-black tracking-tight leading-none",
+                                                st.impact >= 0 ? "text-emerald-400" : "text-rose-400"
+                                            )}
+                                            style={{
+                                                filter: st.impact >= 0
+                                                    ? 'drop-shadow(0 0 8px rgba(52,211,153,0.25))'
+                                                    : 'drop-shadow(0 0 8px rgba(248,113,133,0.25))'
+                                            }}
+                                        >
+                                            {fmtSigned(st.impact)}
+                                        </span>
+                                    </div>
+
+                                    {/* Beta-only — secondary */}
+                                    <div className="flex flex-col gap-0.5 border-l border-white/[0.06] pl-2">
+                                        <span className="text-[8px] text-gray-600 uppercase tracking-widest font-semibold">
+                                            β only
+                                        </span>
+                                        <div className="flex items-end gap-1.5">
+                                            <span className={cn(
+                                                "font-mono text-xl font-black tracking-tight leading-none",
+                                                st.linearImpact != null
+                                                    ? (st.linearImpact >= 0 ? "text-sky-400" : "text-orange-400")
+                                                    : "text-gray-600"
+                                            )}>
+                                                {st.linearImpact != null ? fmtSigned(st.linearImpact) : '—'}
+                                            </span>
+                                            {hasBoth && (
+                                                <span className={cn(
+                                                    "font-mono text-[9px] font-bold px-1 py-0.5 rounded mb-0.5 leading-none",
+                                                    convexBenefit
+                                                        ? "text-emerald-400 bg-emerald-900/40"
+                                                        : "text-rose-400 bg-rose-900/40"
+                                                )}>
+                                                    {convexBenefit ? '▲' : '▼'}{Math.abs(diff * 100).toFixed(1)}pp
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         );

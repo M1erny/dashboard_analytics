@@ -11,6 +11,19 @@ import { MoatWidget } from './dashboard/MoatWidget';
 import { LayoutDashboard, ShieldCheck, RefreshCw, Clock } from 'lucide-react';
 import { cn } from '../lib/utils';
 
+const QUOTES = [
+    { text: "The stock market is a device for transferring money from the impatient to the patient.", author: "Warren Buffett" },
+    { text: "Be fearful when others are greedy, and greedy when others are fearful.", author: "Warren Buffett" },
+    { text: "It's far better to buy a wonderful company at a fair price than a fair company at a wonderful price.", author: "Warren Buffett" },
+    { text: "Our favorite holding period is forever.", author: "Warren Buffett" },
+    { text: "Rule No. 1: Never lose money. Rule No. 2: Never forget Rule No. 1.", author: "Warren Buffett" },
+    { text: "The big money is not in the buying or the selling, but in the waiting.", author: "Charlie Munger" },
+    { text: "You don't have to be brilliant, only a little bit wiser than the other guys, on average, for a long, long time.", author: "Charlie Munger" },
+    { text: "Knowing what you don't know is more useful than being brilliant.", author: "Charlie Munger" },
+    { text: "A string of wonderful numbers times zero will always equal zero. Avoid leverage.", author: "Charlie Munger" },
+    { text: "Invert, always invert. Many hard problems are best solved when they are addressed backwards.", author: "Charlie Munger" },
+];
+
 export const Dashboard: React.FC = () => {
     const [data, setData] = useState<FullRiskReport | null>(null);
     const [loading, setLoading] = useState(true);
@@ -45,17 +58,101 @@ export const Dashboard: React.FC = () => {
     const formatPercent = (val: number | undefined) => typeof val === 'number' ? `${(val * 100).toFixed(2)}%` : 'N/A';
 
     const [lastUpdated] = useState(() => new Date());
+    const [quoteIdx, setQuoteIdx] = useState(() => Math.floor(Math.random() * QUOTES.length));
+    const [quoteVisible, setQuoteVisible] = useState(true);
+
+    // Cycle quotes every 3.5 seconds while loading
+    useEffect(() => {
+        if (!loading) return;
+        const interval = setInterval(() => {
+            setQuoteVisible(false);
+            setTimeout(() => {
+                setQuoteIdx(i => (i + 1) % QUOTES.length);
+                setQuoteVisible(true);
+            }, 400);
+        }, 3500);
+        return () => clearInterval(interval);
+    }, [loading]);
 
     if (loading) {
+        const quote = QUOTES[quoteIdx];
+        const isBuffett = quote.author === 'Warren Buffett';
         return (
-            <div className="min-h-screen bg-background text-foreground flex items-center justify-center">
-                <div className="flex flex-col items-center gap-5">
-                    <div className="animated-top-bar w-48 h-1 rounded-full opacity-80" />
-                    <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/10 border-t-white/60" />
-                    <div className="flex flex-col items-center gap-1">
-                        <p className="text-white font-semibold text-sm">Portfolio Intelligence</p>
-                        <p className="text-gray-500 text-xs animate-pulse">Loading analytics engine…</p>
+            <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center px-6 relative overflow-hidden">
+                {/* Ambient glow blobs */}
+                <div className="absolute top-1/3 left-1/4 w-96 h-96 rounded-full bg-indigo-600/5 blur-3xl pointer-events-none" />
+                <div className="absolute bottom-1/3 right-1/4 w-80 h-80 rounded-full bg-emerald-600/5 blur-3xl pointer-events-none" />
+
+                <div className="flex flex-col items-center gap-8 max-w-xl w-full">
+
+                    {/* Logo / Brand */}
+                    <div className="flex flex-col items-center gap-3">
+                        <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500/20 to-blue-500/20 border border-white/10 shadow-2xl shadow-indigo-500/10">
+                            <LayoutDashboard className="h-7 w-7 text-indigo-400" />
+                        </div>
+                        <div className="text-center">
+                            <p className="text-white font-black text-lg tracking-tight">Portfolio Intelligence</p>
+                            <p className="text-gray-500 text-xs tracking-[0.15em] uppercase mt-0.5">Loading analytics engine…</p>
+                        </div>
                     </div>
+
+                    {/* Quote card */}
+                    <div
+                        className="w-full rounded-2xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-xl p-7 text-center"
+                        style={{
+                            transition: 'opacity 0.4s ease, transform 0.4s ease',
+                            opacity: quoteVisible ? 1 : 0,
+                            transform: quoteVisible ? 'translateY(0)' : 'translateY(6px)',
+                        }}
+                    >
+                        {/* Open-quote mark */}
+                        <div className={cn(
+                            "text-5xl font-black leading-none mb-3 select-none",
+                            isBuffett ? "text-amber-500/30" : "text-emerald-500/30"
+                        )}>
+                            “
+                        </div>
+
+                        <p className="text-gray-200 text-[15px] font-medium leading-relaxed tracking-[0.01em]">
+                            {quote.text}
+                        </p>
+
+                        {/* Attribution */}
+                        <div className="flex items-center justify-center gap-2 mt-5">
+                            <div className={cn(
+                                "w-6 h-[1px]",
+                                isBuffett ? "bg-amber-500/50" : "bg-emerald-500/50"
+                            )} />
+                            <span className={cn(
+                                "text-[11px] font-bold uppercase tracking-[0.18em]",
+                                isBuffett ? "text-amber-400" : "text-emerald-400"
+                            )}>
+                                {quote.author}
+                            </span>
+                            <div className={cn(
+                                "w-6 h-[1px]",
+                                isBuffett ? "bg-amber-500/50" : "bg-emerald-500/50"
+                            )} />
+                        </div>
+                    </div>
+
+                    {/* Progress dots */}
+                    <div className="flex items-center gap-2">
+                        {QUOTES.map((_, i) => (
+                            <div
+                                key={i}
+                                className={cn(
+                                    "rounded-full transition-all duration-300",
+                                    i === quoteIdx
+                                        ? (isBuffett ? "w-5 h-1.5 bg-amber-400" : "w-5 h-1.5 bg-emerald-400")
+                                        : "w-1.5 h-1.5 bg-white/10"
+                                )}
+                            />
+                        ))}
+                    </div>
+
+                    {/* Spinner */}
+                    <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/10 border-t-white/50" />
                 </div>
             </div>
         )
