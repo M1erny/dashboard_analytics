@@ -98,24 +98,48 @@ const WeightBar = ({ current, initial }: { current: number | null; initial: numb
     if (current === null || current === undefined) return <span className="text-gray-600">—</span>;
     const pct = Math.min(current * 100, 30); // cap at 30% for bar width
     const barWidth = (pct / 30) * 100;
-    const drifted = initial !== null && initial !== undefined && Math.abs(current - initial) > 0.005;
+    
+    let textColor = "text-gray-200";
+    let barColor = "bg-white/20";
+    
+    if (initial !== null && initial !== undefined) {
+        const drift = Math.abs(current - initial);
+        if (drift > 0.04) {
+            textColor = "text-rose-400";
+            barColor = "bg-rose-500/80";
+        } else if (drift > 0.02) {
+            textColor = "text-orange-400";
+            barColor = "bg-orange-500/70";
+        } else if (drift > 0.005) {
+            textColor = "text-amber-300";
+            barColor = "bg-amber-500/60";
+        }
+    }
+
     return (
         <div className="flex flex-col items-center gap-0.5 min-w-[60px]">
             <div className="flex items-baseline gap-1">
-                <span className={cn("font-mono text-sm font-semibold", drifted ? "text-amber-300" : "text-gray-200")}>
+                <span className={cn("font-mono text-sm font-semibold", textColor)}>
                     {(current * 100).toFixed(1)}%
                 </span>
             </div>
             <div className="w-full h-[3px] bg-white/5 rounded-full overflow-hidden">
                 <div
-                    className={cn("h-full rounded-full transition-all duration-700", drifted ? "bg-amber-500/60" : "bg-white/20")}
+                    className={cn("h-full rounded-full transition-all duration-700", barColor)}
                     style={{ width: `${barWidth}%` }}
                 />
             </div>
             {initial !== null && initial !== undefined && (
-                <span className="text-[9px] text-gray-600 font-mono leading-none">
-                    target {(initial * 100).toFixed(0)}%
-                </span>
+                <div className="flex items-center gap-0.5 mt-0.5">
+                    <span className="text-[9px] text-gray-500 font-mono leading-none">
+                        target {(initial * 100).toFixed(0)}%
+                    </span>
+                    {Math.abs(current - initial) > 0.005 && (
+                        <span className={cn("text-[8px] leading-none", current > initial ? "text-amber-500" : "text-sky-500")}>
+                            {current > initial ? '▲' : '▼'}
+                        </span>
+                    )}
+                </div>
             )}
         </div>
     );
