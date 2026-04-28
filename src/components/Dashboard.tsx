@@ -12,16 +12,16 @@ import { LayoutDashboard, ShieldCheck, RefreshCw, Clock } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 const QUOTES = [
-    { text: "The stock market is a device for transferring money from the impatient to the patient.", author: "Warren Buffett" },
-    { text: "Be fearful when others are greedy, and greedy when others are fearful.", author: "Warren Buffett" },
-    { text: "It's far better to buy a wonderful company at a fair price than a fair company at a wonderful price.", author: "Warren Buffett" },
-    { text: "Our favorite holding period is forever.", author: "Warren Buffett" },
-    { text: "Rule No. 1: Never lose money. Rule No. 2: Never forget Rule No. 1.", author: "Warren Buffett" },
-    { text: "The big money is not in the buying or the selling, but in the waiting.", author: "Charlie Munger" },
-    { text: "You don't have to be brilliant, only a little bit wiser than the other guys, on average, for a long, long time.", author: "Charlie Munger" },
-    { text: "Knowing what you don't know is more useful than being brilliant.", author: "Charlie Munger" },
-    { text: "A string of wonderful numbers times zero will always equal zero. Avoid leverage.", author: "Charlie Munger" },
-    { text: "Invert, always invert. Many hard problems are best solved when they are addressed backwards.", author: "Charlie Munger" },
+    { text: "To invest successfully over a lifetime does not require a stratospheric IQ, unusual business insights, or inside information. What's needed is a sound intellectual framework for making decisions and the ability to keep emotions from corroding that framework.", author: "Warren Buffett" },
+    { text: "The stock market is a no-called-strike game. You don't have to swing at everything—you can wait for your pitch. The problem when you're a money manager is that your fans keep yelling, 'Swing, you bum!'", author: "Warren Buffett" },
+    { text: "If you aren't willing to own a stock for ten years, don't even think about owning it for ten minutes. Put together a portfolio of companies whose aggregate earnings march upward over the years, and so also will the portfolio's market value.", author: "Warren Buffett" },
+    { text: "We simply attempt to be fearful when others are greedy and to be greedy only when others are fearful. In the end, what counts is buying a good business at a good price and holding it for a long, long time.", author: "Warren Buffett" },
+    { text: "It is far better to buy a wonderful company at a fair price than a fair company at a wonderful price. However, when you find a truly wonderful business, you should be willing to pay a fair price for it and hold it as long as the economics remain excellent.", author: "Warren Buffett" },
+    { text: "It is remarkable how much long-term advantage people like us have gotten by trying to be consistently not stupid, instead of trying to be very intelligent. There must be some wisdom in the folk saying, ‘It’s the strong swimmers who drown.’", author: "Charlie Munger" },
+    { text: "A lot of people with high IQs are terrible investors because they've got terrible temperaments. And that is why we say that having a certain kind of temperament is more important than brains. You need to keep raw irrational emotion under control.", author: "Charlie Munger" },
+    { text: "Understanding both the power of compound interest and the difficulty of getting it is the heart and soul of understanding a lot of things. The big money is not in the buying and the selling, but in the waiting.", author: "Charlie Munger" },
+    { text: "We both insist on a lot of time being available almost every day to just sit and think. That is very uncommon in American business. We read and think. So Warren and I do more reading and thinking and less doing than most people in business.", author: "Charlie Munger" },
+    { text: "You don't have to be brilliant, only a little bit wiser than the other guys, on average, for a long, long time. If you can keep doing that, the results will be surprisingly good. Knowing what you don't know is more useful than being brilliant.", author: "Charlie Munger" },
 ];
 
 export const Dashboard: React.FC = () => {
@@ -61,7 +61,7 @@ export const Dashboard: React.FC = () => {
     const [quoteIdx, setQuoteIdx] = useState(() => Math.floor(Math.random() * QUOTES.length));
     const [quoteVisible, setQuoteVisible] = useState(true);
 
-    // Cycle quotes every 3.5 seconds while loading
+    // Cycle quotes every 7.5 seconds while loading
     useEffect(() => {
         if (!loading) return;
         const interval = setInterval(() => {
@@ -70,7 +70,7 @@ export const Dashboard: React.FC = () => {
                 setQuoteIdx(i => (i + 1) % QUOTES.length);
                 setQuoteVisible(true);
             }, 400);
-        }, 3500);
+        }, 7500);
         return () => clearInterval(interval);
     }, [loading]);
 
