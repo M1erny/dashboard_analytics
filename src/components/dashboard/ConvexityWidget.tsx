@@ -5,6 +5,7 @@ import { ArrowUpRight, ArrowDownRight, TrendingUp, Activity } from 'lucide-react
 
 interface ConvexityWidgetProps {
     convexity?: ConvexityMetrics | null;
+    compact?: boolean;
 }
 
 // ─── Formatters ──────────────────────────────────────────────
@@ -153,7 +154,7 @@ const ScatterPlot: React.FC<{
         <div
             ref={wrapperRef}
             className="relative w-full select-none cursor-crosshair"
-            style={{ height: '240px' }}
+            style={{ height: '320px' }}
             onMouseMove={handleMouseMove}
             onMouseLeave={handleMouseLeave}
         >
@@ -274,150 +275,86 @@ const ScatterPlot: React.FC<{
 
 
 // ─── Main Component ──────────────────────────────────────────
-export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity }) => {
+export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, compact }) => {
     if (!convexity) return null;
 
     const { upsideCapture, downsideCapture, captureSpread, quadraticCoeffs, rSquared, isConvex, scatterData } = convexity;
-
     const spreadPositive = (captureSpread ?? 0) > 0;
 
-    return (
-        <div className="space-y-4 relative z-20">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-
-                {/* ── LEFT: Capture Ratios Card ── */}
-                <div className={cn(
-                    "lg:col-span-4 rounded-xl border p-5 backdrop-blur-xl",
-                    "bg-gradient-to-br",
-                    spreadPositive
-                        ? "border-emerald-500/20 from-emerald-950/20 via-slate-900/90 to-slate-950"
-                        : "border-rose-500/20 from-rose-950/20 via-slate-900/90 to-slate-950"
-                )}>
-                    <div className="flex items-center gap-2 mb-4">
-                        <div className={cn(
-                            "flex items-center justify-center w-7 h-7 rounded-lg",
-                            spreadPositive ? "bg-emerald-500/15 text-emerald-400" : "bg-rose-500/15 text-rose-400"
-                        )}>
-                            <Activity className="h-4 w-4" />
-                        </div>
-                        <span className="text-[11px] text-gray-400 uppercase tracking-[0.15em] font-semibold">
-                            Convexity Profile
-                        </span>
-                    </div>
-
-                    {/* Capture Spread (hero) */}
-                    <div className="mb-4">
-                        <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Capture Spread</span>
-                        <div className="flex items-end gap-2 mt-1">
-                            <span className={cn(
-                                "text-3xl font-black tracking-tighter leading-none",
-                                spreadPositive ? "text-emerald-400" : "text-rose-400"
-                            )}>
-                                {fmtSignedPct(captureSpread)}
-                            </span>
-                            <span className={cn(
-                                "text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border mb-0.5",
-                                spreadPositive
-                                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
-                                    : "bg-rose-500/10 text-rose-400 border-rose-500/20"
-                            )}>
-                                {spreadPositive ? 'Convex' : 'Concave'}
-                            </span>
-                        </div>
-                    </div>
-
-                    {/* Upside / Downside Capture */}
-                    <div className="space-y-2">
-                        <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
-                            <div className="flex items-center gap-2">
-                                <span className="flex items-center justify-center w-5 h-5 rounded bg-emerald-500/15">
-                                    <ArrowUpRight className="h-3 w-3 text-emerald-400" />
-                                </span>
-                                <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Upside</span>
-                            </div>
-                            <span className={cn(
-                                "font-mono text-lg font-black tracking-tight",
-                                (upsideCapture ?? 0) > 1 ? "text-emerald-400" : "text-gray-400"
-                            )}>
-                                {fmtPct(upsideCapture, 0)}
-                            </span>
-                        </div>
-                        <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
-                            <div className="flex items-center gap-2">
-                                <span className="flex items-center justify-center w-5 h-5 rounded bg-rose-500/15">
-                                    <ArrowDownRight className="h-3 w-3 text-rose-400" />
-                                </span>
-                                <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Downside</span>
-                            </div>
-                            <span className={cn(
-                                "font-mono text-lg font-black tracking-tight",
-                                (downsideCapture ?? 0) < 1 ? "text-emerald-400" : "text-rose-400"
-                            )}>
-                                {fmtPct(downsideCapture, 0)}
-                            </span>
-                        </div>
-                    </div>
-
-                    {/* Visual bar: upside vs downside */}
-                    <div className="flex items-center gap-1 mt-3">
-                        <div className="flex-1 h-2 rounded-l-full bg-emerald-500/20 overflow-hidden">
-                            <div className="h-full bg-emerald-500/60 rounded-l-full transition-all duration-700"
-                                style={{ width: `${Math.min((upsideCapture ?? 0) * 50, 100)}%` }} />
-                        </div>
-                        <div className="w-px h-3 bg-white/20" />
-                        <div className="flex-1 h-2 rounded-r-full bg-rose-500/20 overflow-hidden flex justify-end">
-                            <div className="h-full bg-rose-500/60 rounded-r-full transition-all duration-700"
-                                style={{ width: `${Math.min((downsideCapture ?? 0) * 50, 100)}%` }} />
-                        </div>
-                    </div>
-
-                    <p className="text-[10px] text-gray-600 mt-3 leading-relaxed">
-                        <strong className="text-gray-500">Convex payoff:</strong> Upside capture &gt; Downside capture.
-                        Portfolio gains more when SPY is up and loses less when SPY is down.
-                    </p>
+    if (compact) {
+        return (
+            <div className={cn(
+                "rounded-xl border p-4 backdrop-blur-xl h-full flex flex-col",
+                "bg-gradient-to-br",
+                spreadPositive
+                    ? "border-emerald-500/20 from-emerald-950/20 via-slate-900/90 to-slate-950"
+                    : "border-rose-500/20 from-rose-950/20 via-slate-900/90 to-slate-950"
+            )}>
+                <div className="flex items-center gap-2 mb-3">
+                    <div className={cn("flex items-center justify-center w-7 h-7 rounded-lg",
+                        spreadPositive ? "bg-emerald-500/15 text-emerald-400" : "bg-rose-500/15 text-rose-400"
+                    )}><Activity className="h-4 w-4" /></div>
+                    <span className="text-[11px] text-gray-400 uppercase tracking-[0.15em] font-semibold">Convexity Profile</span>
                 </div>
-
-                {/* ── CENTER: Scatter Plot ── */}
-                <div className="lg:col-span-8 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl">
-                    <div className="flex items-center justify-between mb-3">
+                <div className="mb-3">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Capture Spread</span>
+                    <div className="flex items-end gap-2 mt-1">
+                        <span className={cn("text-3xl font-black tracking-tighter leading-none", spreadPositive ? "text-emerald-400" : "text-rose-400")}>{fmtSignedPct(captureSpread)}</span>
+                        <span className={cn("text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border mb-0.5", spreadPositive ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "bg-rose-500/10 text-rose-400 border-rose-500/20")}>{spreadPositive ? 'Convex' : 'Concave'}</span>
+                    </div>
+                </div>
+                <div className="space-y-2 flex-1">
+                    <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
                         <div className="flex items-center gap-2">
-                            <TrendingUp className="h-4 w-4 text-amber-400" />
-                            <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">
-                                Return Scatter + Regression
-                            </span>
+                            <span className="flex items-center justify-center w-5 h-5 rounded bg-emerald-500/15"><ArrowUpRight className="h-3 w-3 text-emerald-400" /></span>
+                            <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Upside</span>
                         </div>
-                        <span className={cn(
-                            "text-[9px] font-mono px-2 py-0.5 rounded border",
-                            isConvex
-                                ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20"
-                                : "text-rose-400 bg-rose-500/10 border-rose-500/20"
-                        )}>
-                            β₂={fmtNum(quadraticCoeffs?.[0], 4)} {isConvex ? '↗ Convex' : '↘ Concave'}
-                        </span>
+                        <span className={cn("font-mono text-lg font-black tracking-tight", (upsideCapture ?? 0) > 1 ? "text-emerald-400" : "text-gray-400")}>{fmtPct(upsideCapture, 0)}</span>
                     </div>
-
-                    {scatterData && scatterData.length > 0 ? (
-                        <ScatterPlot
-                            data={scatterData}
-                            coeffs={quadraticCoeffs}
-                            linearCoeffs={convexity.linearCoeffs}
-                            rSquared={rSquared}
-                        />
-                    ) : (
-                        <div className="flex items-center justify-center h-[240px] text-sm text-gray-600">
-                            No scatter data available
+                    <div className="flex items-center justify-between rounded-lg bg-white/[0.03] px-3 py-2.5 border border-white/[0.05]">
+                        <div className="flex items-center gap-2">
+                            <span className="flex items-center justify-center w-5 h-5 rounded bg-rose-500/15"><ArrowDownRight className="h-3 w-3 text-rose-400" /></span>
+                            <span className="text-xs text-gray-400 font-semibold uppercase tracking-wider">Downside</span>
                         </div>
-                    )}
-
-                    <p className="text-[10px] text-gray-600 mt-2 leading-relaxed">
-                        <span className="text-amber-400/70">━</span> Quadratic fit &nbsp;·&nbsp;
-                        <span className="text-slate-400/70">┄┄</span> Linear fit &nbsp;·&nbsp;
-                        <span className="text-gray-500/40">┄┄</span> β=1 reference &nbsp;·&nbsp;
-                        <span className="text-emerald-400/60">●</span> Favorable &nbsp;
-                        <span className="text-rose-400/60">●</span> Unfavorable
-                    </p>
+                        <span className={cn("font-mono text-lg font-black tracking-tight", (downsideCapture ?? 0) < 1 ? "text-emerald-400" : "text-rose-400")}>{fmtPct(downsideCapture, 0)}</span>
+                    </div>
                 </div>
+                <div className="flex items-center gap-1 mt-3">
+                    <div className="flex-1 h-2 rounded-l-full bg-emerald-500/20 overflow-hidden"><div className="h-full bg-emerald-500/60 rounded-l-full transition-all duration-700" style={{ width: `${Math.min((upsideCapture ?? 0) * 50, 100)}%` }} /></div>
+                    <div className="w-px h-3 bg-white/20" />
+                    <div className="flex-1 h-2 rounded-r-full bg-rose-500/20 overflow-hidden flex justify-end"><div className="h-full bg-rose-500/60 rounded-r-full transition-all duration-700" style={{ width: `${Math.min((downsideCapture ?? 0) * 50, 100)}%` }} /></div>
+                </div>
+                <p className="text-[10px] text-gray-600 mt-3 leading-relaxed"><strong className="text-gray-500">Convex payoff:</strong> Upside capture &gt; Downside capture.</p>
+                <div className="mt-2 flex items-center justify-between">
+                    <span className="text-[9px] text-gray-500 uppercase tracking-wider font-medium">Regression</span>
+                    <span className={cn("text-[9px] font-mono px-2 py-0.5 rounded border", isConvex ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20")}>β₂={fmtNum(quadraticCoeffs?.[0], 4)} · R²={fmtNum(rSquared, 3)}</span>
+                </div>
+            </div>
+        );
+    }
 
+    return (
+        <div className="relative z-20">
+            <div className="rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl">
+                <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                        <TrendingUp className="h-4 w-4 text-amber-400" />
+                        <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Return Scatter + Regression</span>
+                    </div>
+                    <span className={cn("text-[9px] font-mono px-2 py-0.5 rounded border", isConvex ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20")}>β₂={fmtNum(quadraticCoeffs?.[0], 4)} {isConvex ? '↗ Convex' : '↘ Concave'}</span>
+                </div>
+                {scatterData && scatterData.length > 0 ? (
+                    <ScatterPlot data={scatterData} coeffs={quadraticCoeffs} linearCoeffs={convexity.linearCoeffs} rSquared={rSquared} />
+                ) : (
+                    <div className="flex items-center justify-center h-[320px] text-sm text-gray-600">No scatter data available</div>
+                )}
+                <p className="text-[10px] text-gray-600 mt-2 leading-relaxed">
+                    <span className="text-amber-400/70">━</span> Quadratic fit &nbsp;·&nbsp;
+                    <span className="text-slate-400/70">┄┄</span> Linear fit &nbsp;·&nbsp;
+                    <span className="text-gray-500/40">┄┄</span> β=1 reference &nbsp;·&nbsp;
+                    <span className="text-emerald-400/60">●</span> Favorable &nbsp;
+                    <span className="text-rose-400/60">●</span> Unfavorable
+                </p>
             </div>
         </div>
     );

@@ -1,6 +1,7 @@
 import React from 'react';
 import { cn } from '../../lib/utils';
-import type { Vitals, HistoryPoint, StressTest, MomentumMetrics } from '../../utils/finance';
+import type { Vitals, HistoryPoint, StressTest, MomentumMetrics, ConvexityMetrics } from '../../utils/finance';
+import { ConvexityWidget } from './ConvexityWidget';
 import { ResponsiveContainer, LineChart, Line, Tooltip } from 'recharts';
 import {
     TrendingUp, TrendingDown, Activity, Zap, Shield,
@@ -14,6 +15,7 @@ interface ExecutiveSummaryProps {
     ytdHistory?: HistoryPoint[];
     stressTests?: StressTest[];
     momentum?: MomentumMetrics | null;
+    convexity?: ConvexityMetrics | null;
 }
 
 // ─── Formatters ──────────────────────────────────────────────
@@ -51,7 +53,7 @@ const StatRow = ({ label, value, tooltip, valueClassName }: {
 );
 
 // ─── Main Component ──────────────────────────────────────────
-export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, costTier = 'retail', ytdHistory, stressTests, momentum }) => {
+export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, costTier = 'retail', ytdHistory, stressTests, momentum, convexity }) => {
     const ytdPositive = (vitals.ytdReturn ?? 0) >= 0;
     const periodLabel = vitals.periodLabel ?? "YTD";
 
@@ -133,7 +135,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                 </div>
 
                 {/* ── RIGHT PANEL: 2x2 compact metrics ── */}
-                <div className="md:col-span-7 lg:col-span-8 grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="md:col-span-7 lg:col-span-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
 
                     {/* Alpha */}
                     <div className="rounded-xl border border-amber-500/20 bg-gradient-to-br from-amber-950/30 to-slate-950/90 p-4 flex flex-col justify-between">
@@ -204,6 +206,33 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                         </div>
                     </div>
 
+                    {/* Correlation */}
+                    <div className="rounded-xl border border-cyan-500/20 bg-gradient-to-br from-cyan-950/20 to-slate-950/90 p-4 flex flex-col justify-between">
+                        <div className="flex items-center gap-1.5 mb-2">
+                            <Activity className="h-3.5 w-3.5 text-cyan-400" />
+                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Correlation</span>
+                        </div>
+                        <span className={cn(
+                            "text-2xl sm:text-3xl font-black tracking-tight",
+                            (vitals.ytdCorrelation ?? 0) > 0.7 ? "text-emerald-400" : (vitals.ytdCorrelation ?? 0) < 0 ? "text-rose-400" : "text-white"
+                        )}>
+                            {fmtNum(vitals.ytdCorrelation)}
+                        </span>
+                        <div className="mt-2 pt-2 border-t border-white/[0.06]">
+                            <div className="flex justify-between items-center">
+                                <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">vs SPY</span>
+                                <span className={cn(
+                                    "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
+                                    (vitals.ytdCorrelation ?? 0) > 0.5
+                                        ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20"
+                                        : "bg-slate-500/10 text-slate-400 border border-slate-500/20"
+                                )}>
+                                    {(vitals.ytdCorrelation ?? 0) > 0.5 ? "High" : "Low"}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+
                     {/* YTD Sharpe */}
                     <div className="rounded-xl border border-violet-500/20 bg-gradient-to-br from-violet-950/20 to-slate-950/90 p-4 flex flex-col justify-between">
                         <div className="flex items-center gap-1.5 mb-2">
@@ -246,15 +275,15 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                 </div>
             </div>
 
-            {/* ═══════ ROW 2: L/S+Financing | Momentum | Stress Tests ═══════ */}
+            {/* ═══════ ROW 2: L/S+Momentum | Convexity | Stress Tests ═══════ */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
 
-                {/* ── L/S Contribution & Financing — compact 3 cols ── */}
-                <div className="lg:col-span-3 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col gap-3">
+                {/* ── L/S Contribution, Financing & Momentum — 4 cols ── */}
+                <div className="lg:col-span-4 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col gap-3">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                             <BarChart3 className="h-4 w-4 text-blue-400" />
-                            <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">L/S & Financing</span>
+                            <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">L/S · Financing · Momentum</span>
                         </div>
                         <span className="text-[9px] text-gray-500 uppercase tracking-widest bg-white/[0.03] px-2 py-0.5 rounded border border-white/[0.05]">
                             {costTier}
@@ -298,8 +327,6 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                         </div>
                     </div>
 
-                    <div className="border-t border-white/[0.05]" />
-
                     <div className="flex justify-between items-center">
                         <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">{periodLabel} Drag</span>
                         <span className="font-mono text-sm font-black tracking-tight text-rose-400">
@@ -312,22 +339,14 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                             {vitals.annualFinancingCost !== undefined ? fmt(-vitals.annualFinancingCost) : '—'}
                         </span>
                     </div>
-                </div>
 
-                {/* ── Momentum tile — 5 cols ── */}
-                <div className="lg:col-span-5 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col gap-3">
-                    <div className="flex items-center gap-2">
-                        <Flame className="h-4 w-4 text-orange-400" />
-                        <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Momentum · 1M vs Benchmark</span>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-x-4 gap-y-1 flex-grow">
-                        {/* Left: Relative Strength */}
+                    {/* Momentum: Relative Strength */}
+                    <div className="border-t border-white/[0.05] pt-2">
+                        <div className="flex items-center gap-2 mb-2">
+                            <Flame className="h-3.5 w-3.5 text-orange-400" />
+                            <span className="text-[10px] text-gray-500 uppercase tracking-[0.12em] font-semibold">1M vs Benchmark</span>
+                        </div>
                         <div className="flex flex-col gap-1">
-                            <div className="flex justify-between text-[9px] text-gray-500 uppercase tracking-widest pb-1 border-b border-white/[0.05] mb-0.5">
-                                <span>Ticker</span>
-                                <span>vs Bmk</span>
-                            </div>
                             {momentum?.top_rs?.slice(0, 3).map((rs, i) => (
                                 <div key={`top-${i}`} className="flex justify-between items-center py-0.5">
                                     <div className="flex items-center gap-1.5">
@@ -351,26 +370,12 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
                                 <span className="text-xs text-gray-600 italic mt-1">No data</span>
                             )}
                         </div>
-
-                        {/* Right: Correlation Surges */}
-                        <div className="flex flex-col gap-1 border-l border-white/[0.05] pl-4">
-                            <div className="flex justify-between text-[9px] text-gray-500 uppercase tracking-widest pb-1 border-b border-white/[0.05] mb-0.5">
-                                <span>Pair</span>
-                                <span title="1M corr − 1Y corr">Δ Corr</span>
-                            </div>
-                            {momentum?.corr_surges?.slice(0, 5).map((surge, i) => (
-                                <div key={i} className="flex justify-between items-center py-0.5 gap-2">
-                                    <span className="text-[10px] text-gray-400 font-mono truncate">
-                                        {surge.t1.split('.')[0]}<span className="text-gray-600 mx-0.5">·</span>{surge.t2.split('.')[0]}
-                                    </span>
-                                    <span className="text-[10px] text-sky-400 font-mono font-bold shrink-0">+{surge.delta.toFixed(2)}</span>
-                                </div>
-                            ))}
-                            {(!momentum?.corr_surges || momentum.corr_surges.length === 0) && (
-                                <span className="text-xs text-gray-600 italic mt-1">No data</span>
-                            )}
-                        </div>
                     </div>
+                </div>
+
+                {/* ── Convexity Profile — 4 cols ── */}
+                <div className="lg:col-span-4">
+                    <ConvexityWidget convexity={convexity} compact />
                 </div>
 
                 {/* ── Stress Tests — 4 cols ── */}

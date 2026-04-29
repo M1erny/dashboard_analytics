@@ -166,6 +166,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "ytdAlphaRaw": to_float(metrics.get('YTD_Alpha_Raw')),
                 "benchmarkYtd": to_float(metrics.get('Benchmark_YTD')),
                 "ytdBeta": to_float(metrics.get('YTD_Beta')),
+                "ytdCorrelation": to_float(metrics.get('YTD_Correlation')),
                 "ytdMaxDrawdown": to_float(metrics.get('YTD_Max_Drawdown')),
                 "benchmarkYtdMaxDrawdown": to_float(metrics.get('Benchmark_YTD_Max_Drawdown')),
                 "ytdReturnGross": to_float(metrics.get('YTD_Return_Gross')),

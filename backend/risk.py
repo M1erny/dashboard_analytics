@@ -533,6 +533,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         # YTD Beta
         if not ytd_benchmark_aligned.empty and np.var(ytd_benchmark_aligned, ddof=1) > 0:
             ytd_beta = np.cov(ytd_portfolio_daily_ret, ytd_benchmark_aligned)[0][1] / np.var(ytd_benchmark_aligned, ddof=1)
+            ytd_correlation = np.corrcoef(ytd_portfolio_daily_ret, ytd_benchmark_aligned)[0][1]
             
             # YTD Beta History (Expanding Window)
             ytd_beta_history = pd.Series(index=ytd_benchmark_aligned.index, dtype=float)
@@ -546,6 +547,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
                     ytd_beta_history.iloc[i-1] = np.nan
         else:
             ytd_beta = 0
+            ytd_correlation = 0
             ytd_beta_history = pd.Series()
             
         # YTD Sub-portfolio Betas
@@ -702,6 +704,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_return_gross = 0.0
         benchmark_ytd = 0.0
         ytd_beta = 0.0
+        ytd_correlation = 0.0
         ytd_financing_cost = 0.0
         annual_financing_cost = 0.0
         ytd_sharpe = 0.0
@@ -920,6 +923,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Return': ytd_return,
         'Benchmark_YTD': benchmark_ytd,
         'YTD_Beta': ytd_beta,
+        'YTD_Correlation': ytd_correlation,
         'YTD_Long_Only_Beta': ytd_long_only_beta if 'ytd_long_only_beta' in locals() else 0,
         'YTD_Short_Only_Beta': ytd_short_only_beta if 'ytd_short_only_beta' in locals() else 0,
         'YTD_Sharpe': ytd_sharpe,

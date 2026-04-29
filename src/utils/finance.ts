@@ -26,6 +26,7 @@ export interface Vitals {
     benchmarkYtd: number;
     benchmarkVol: number;
     ytdBeta: number;
+    ytdCorrelation?: number;
     // Standardized Sharpe Metrics
     ytdSharpe: number;
     benchmarkYtdSharpe: number;

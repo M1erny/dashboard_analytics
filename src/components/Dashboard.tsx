@@ -22,6 +22,15 @@ const QUOTES = [
     { text: "Understanding both the power of compound interest and the difficulty of getting it is the heart and soul of understanding a lot of things. The big money is not in the buying and the selling, but in the waiting.", author: "Charlie Munger" },
     { text: "We both insist on a lot of time being available almost every day to just sit and think. That is very uncommon in American business. We read and think. So Warren and I do more reading and thinking and less doing than most people in business.", author: "Charlie Munger" },
     { text: "You don't have to be brilliant, only a little bit wiser than the other guys, on average, for a long, long time. If you can keep doing that, the results will be surprisingly good. Knowing what you don't know is more useful than being brilliant.", author: "Charlie Munger" },
+    { text: "Your margin is my opportunity.", author: "Jeff Bezos" },
+    { text: "We are stubborn on vision. We are flexible on details.", author: "Jeff Bezos" },
+    { text: "If you do build a great experience, customers tell each other about that. Word of mouth is very powerful.", author: "Jeff Bezos" },
+    { text: "When something is important enough, you do it even if the odds are not in your favor.", author: "Elon Musk" },
+    { text: "Constantly seek criticism. A well thought out critique of whatever you're doing is as valuable as gold.", author: "Elon Musk" },
+    { text: "Some people don't like change, but you need to embrace change if the alternative is disaster.", author: "Elon Musk" },
+    { text: "The essence of life is statistical improbability on a colossal scale.", author: "Richard Dawkins" },
+    { text: "We are survival machines—robot vehicles blindly programmed to preserve the selfish molecules known as genes.", author: "Richard Dawkins" },
+    { text: "Biology is the study of complicated things that give the appearance of having been designed for a purpose.", author: "Richard Dawkins" },
 ];
 
 export const Dashboard: React.FC = () => {
@@ -61,7 +70,7 @@ export const Dashboard: React.FC = () => {
     const [quoteIdx, setQuoteIdx] = useState(() => Math.floor(Math.random() * QUOTES.length));
     const [quoteVisible, setQuoteVisible] = useState(true);
 
-    // Cycle quotes every 7.5 seconds while loading
+    // Cycle quotes every 15 seconds while loading
     useEffect(() => {
         if (!loading) return;
         const interval = setInterval(() => {
@@ -70,13 +79,25 @@ export const Dashboard: React.FC = () => {
                 setQuoteIdx(i => (i + 1) % QUOTES.length);
                 setQuoteVisible(true);
             }, 400);
-        }, 7500);
+        }, 15000);
         return () => clearInterval(interval);
     }, [loading]);
 
     if (loading) {
         const quote = QUOTES[quoteIdx];
-        const isBuffett = quote.author === 'Warren Buffett';
+        
+        const getAuthorColors = (author: string) => {
+            switch(author) {
+                case 'Warren Buffett': return { color: 'text-amber-500/30', bg: 'bg-amber-500/50', text: 'text-amber-400', dot: 'bg-amber-400' };
+                case 'Charlie Munger': return { color: 'text-emerald-500/30', bg: 'bg-emerald-500/50', text: 'text-emerald-400', dot: 'bg-emerald-400' };
+                case 'Jeff Bezos': return { color: 'text-orange-500/30', bg: 'bg-orange-500/50', text: 'text-orange-400', dot: 'bg-orange-400' };
+                case 'Elon Musk': return { color: 'text-red-500/30', bg: 'bg-red-500/50', text: 'text-red-400', dot: 'bg-red-400' };
+                case 'Richard Dawkins': return { color: 'text-blue-500/30', bg: 'bg-blue-500/50', text: 'text-blue-400', dot: 'bg-blue-400' };
+                default: return { color: 'text-indigo-500/30', bg: 'bg-indigo-500/50', text: 'text-indigo-400', dot: 'bg-indigo-400' };
+            }
+        };
+        const colors = getAuthorColors(quote.author);
+
         return (
             <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center px-6 relative overflow-hidden">
                 {/* Ambient glow blobs */}
@@ -98,7 +119,7 @@ export const Dashboard: React.FC = () => {
 
                     {/* Quote card */}
                     <div
-                        className="w-full rounded-2xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-xl p-7 text-center"
+                        className="w-full rounded-2xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-xl p-7 text-center flex flex-col justify-between min-h-[260px]"
                         style={{
                             transition: 'opacity 0.4s ease, transform 0.4s ease',
                             opacity: quoteVisible ? 1 : 0,
@@ -108,47 +129,52 @@ export const Dashboard: React.FC = () => {
                         {/* Open-quote mark */}
                         <div className={cn(
                             "text-5xl font-black leading-none mb-3 select-none",
-                            isBuffett ? "text-amber-500/30" : "text-emerald-500/30"
+                            colors.color
                         )}>
                             “
                         </div>
 
-                        <p className="text-gray-200 text-[15px] font-medium leading-relaxed tracking-[0.01em]">
-                            {quote.text}
-                        </p>
+                        <div className="flex-1 flex items-center justify-center">
+                            <p className="text-gray-200 text-[15px] font-medium leading-relaxed tracking-[0.01em]">
+                                {quote.text}
+                            </p>
+                        </div>
 
                         {/* Attribution */}
                         <div className="flex items-center justify-center gap-2 mt-5">
                             <div className={cn(
                                 "w-6 h-[1px]",
-                                isBuffett ? "bg-amber-500/50" : "bg-emerald-500/50"
+                                colors.bg
                             )} />
                             <span className={cn(
                                 "text-[11px] font-bold uppercase tracking-[0.18em]",
-                                isBuffett ? "text-amber-400" : "text-emerald-400"
+                                colors.text
                             )}>
                                 {quote.author}
                             </span>
                             <div className={cn(
                                 "w-6 h-[1px]",
-                                isBuffett ? "bg-amber-500/50" : "bg-emerald-500/50"
+                                colors.bg
                             )} />
                         </div>
                     </div>
 
                     {/* Progress dots */}
-                    <div className="flex items-center gap-2">
-                        {QUOTES.map((_, i) => (
-                            <div
-                                key={i}
-                                className={cn(
-                                    "rounded-full transition-all duration-300",
-                                    i === quoteIdx
-                                        ? (isBuffett ? "w-5 h-1.5 bg-amber-400" : "w-5 h-1.5 bg-emerald-400")
-                                        : "w-1.5 h-1.5 bg-white/10"
-                                )}
-                            />
-                        ))}
+                    <div className="flex flex-wrap justify-center items-center gap-2 max-w-md">
+                        {QUOTES.map((q, i) => {
+                            const c = getAuthorColors(q.author);
+                            return (
+                                <div
+                                    key={i}
+                                    className={cn(
+                                        "rounded-full transition-all duration-300",
+                                        i === quoteIdx
+                                            ? `w-5 h-1.5 ${c.dot}`
+                                            : "w-1.5 h-1.5 bg-white/10"
+                                    )}
+                                />
+                            );
+                        })}
                     </div>
 
                     {/* Spinner */}
@@ -299,7 +325,7 @@ export const Dashboard: React.FC = () => {
                 </div>
 
                 {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing, Stress Tests) */}
-                <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} momentum={data.momentum} />
+                <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} momentum={data.momentum} convexity={convexity} />
 
                 {/* ROW 1.5: Convexity Analysis */}
                 <ConvexityWidget convexity={convexity} />
