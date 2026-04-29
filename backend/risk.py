@@ -719,6 +719,13 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_bench_max_drawdown = 0.0
         ytd_alpha = 0.0
         ytd_alpha_raw = 0.0
+        ytd_long_only_beta = 0.0
+        ytd_short_only_beta = 0.0
+        ytd_beta_history = pd.Series()
+        portfolio_val_series_gross = pd.Series(dtype=float)
+        portfolio_val_series = pd.Series(dtype=float)
+        ytd_benchmark_aligned = pd.Series(dtype=float)
+        ytd_trading_days = 0
 
     # --- 6. VOLUME WEIGHTED CORRELATION (Past 1 Year) ---
     vol_weighted_corr = pd.DataFrame()
@@ -848,8 +855,11 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     # Removed for performance
     
     # --- 12. CONVEXITY METRICS (YTD Only) ---
-    ytd_portfolio_gross_aligned = portfolio_val_series_gross.pct_change().dropna().reindex(ytd_benchmark_aligned.index).fillna(0)
-    convexity_metrics = calculate_convexity_metrics(ytd_portfolio_gross_aligned, ytd_benchmark_aligned)
+    if not portfolio_val_series_gross.empty and not ytd_benchmark_aligned.empty and len(ytd_benchmark_aligned) >= 2:
+        ytd_portfolio_gross_aligned = portfolio_val_series_gross.pct_change().dropna().reindex(ytd_benchmark_aligned.index).fillna(0)
+        convexity_metrics = calculate_convexity_metrics(ytd_portfolio_gross_aligned, ytd_benchmark_aligned)
+    else:
+        convexity_metrics = None
 
     # --- 12b. ENRICH SCATTER DATA WITH PER-DAY CONTRIBUTORS ---
     # For every scatter point add top-3 positive and top-3 negative ticker contributions
@@ -1075,15 +1085,15 @@ def calculate_convexity_metrics(portfolio_ret, benchmark_ret):
     clean_bench = benchmark_ret[valid_mask].values
     clean_dates = portfolio_ret[valid_mask].index  # keep dates aligned
     
-    if len(clean_bench) < 30:
-        print("Warning: Insufficient data for convexity analysis")
+    if len(clean_bench) < 10:
+        print("Warning: Insufficient data for convexity analysis (need at least 10 days)")
         return result
     
     # --- 1. CAPTURE RATIOS ---
     up_days = clean_bench > 0
     down_days = clean_bench < 0
     
-    if np.sum(up_days) > 5 and np.sum(down_days) > 5:
+    if np.sum(up_days) > 3 and np.sum(down_days) > 3:
         # Upside Capture = avg(port on up days) / avg(bench on up days)
         avg_port_up = np.mean(clean_port[up_days])
         avg_bench_up = np.mean(clean_bench[up_days])
