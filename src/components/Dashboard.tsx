@@ -12,25 +12,27 @@ import { LayoutDashboard, ShieldCheck, RefreshCw, Clock } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 const QUOTES = [
-    { text: "To invest successfully over a lifetime does not require a stratospheric IQ, unusual business insights, or inside information. What's needed is a sound intellectual framework for making decisions and the ability to keep emotions from corroding that framework.", author: "Warren Buffett" },
-    { text: "The stock market is a no-called-strike game. You don't have to swing at everything—you can wait for your pitch. The problem when you're a money manager is that your fans keep yelling, 'Swing, you bum!'", author: "Warren Buffett" },
-    { text: "If you aren't willing to own a stock for ten years, don't even think about owning it for ten minutes. Put together a portfolio of companies whose aggregate earnings march upward over the years, and so also will the portfolio's market value.", author: "Warren Buffett" },
-    { text: "We simply attempt to be fearful when others are greedy and to be greedy only when others are fearful. In the end, what counts is buying a good business at a good price and holding it for a long, long time.", author: "Warren Buffett" },
-    { text: "It is far better to buy a wonderful company at a fair price than a fair company at a wonderful price. However, when you find a truly wonderful business, you should be willing to pay a fair price for it and hold it as long as the economics remain excellent.", author: "Warren Buffett" },
-    { text: "It is remarkable how much long-term advantage people like us have gotten by trying to be consistently not stupid, instead of trying to be very intelligent. There must be some wisdom in the folk saying, ‘It’s the strong swimmers who drown.’", author: "Charlie Munger" },
-    { text: "A lot of people with high IQs are terrible investors because they've got terrible temperaments. And that is why we say that having a certain kind of temperament is more important than brains. You need to keep raw irrational emotion under control.", author: "Charlie Munger" },
-    { text: "Understanding both the power of compound interest and the difficulty of getting it is the heart and soul of understanding a lot of things. The big money is not in the buying and the selling, but in the waiting.", author: "Charlie Munger" },
-    { text: "We both insist on a lot of time being available almost every day to just sit and think. That is very uncommon in American business. We read and think. So Warren and I do more reading and thinking and less doing than most people in business.", author: "Charlie Munger" },
-    { text: "You don't have to be brilliant, only a little bit wiser than the other guys, on average, for a long, long time. If you can keep doing that, the results will be surprisingly good. Knowing what you don't know is more useful than being brilliant.", author: "Charlie Munger" },
+    // Warren Buffett — 2
+    { text: "The stock market is a no-called-strike game. You don't have to swing at everything — you can wait for your pitch. The problem when you're a money manager is that your fans keep yelling, 'Swing, you bum!'", author: "Warren Buffett" },
+    { text: "It is far better to buy a wonderful company at a fair price than a fair company at a wonderful price.", author: "Warren Buffett" },
+    // Charlie Munger — 2
+    { text: "The big money is not in the buying and the selling, but in the waiting.", author: "Charlie Munger" },
+    { text: "It is remarkable how much long-term advantage people like us have gotten by trying to be consistently not stupid, instead of trying to be very intelligent.", author: "Charlie Munger" },
+    // Ben Graham — 2
+    { text: "In the short run, the market is a voting machine, but in the long run, it is a weighing machine.", author: "Ben Graham" },
+    { text: "The investor's chief problem — and even his worst enemy — is likely to be himself.", author: "Ben Graham" },
+    // Howard Marks — 2
+    { text: "You can't predict. You can prepare.", author: "Howard Marks" },
+    { text: "The most dangerous thing is to buy something at the peak of its popularity. At that point, all favorable facts and opinions are already factored into its price, and no new buyers are left to emerge.", author: "Howard Marks" },
+    // Jeff Bezos — 2
     { text: "Your margin is my opportunity.", author: "Jeff Bezos" },
     { text: "We are stubborn on vision. We are flexible on details.", author: "Jeff Bezos" },
-    { text: "If you do build a great experience, customers tell each other about that. Word of mouth is very powerful.", author: "Jeff Bezos" },
+    // Elon Musk — 2
     { text: "When something is important enough, you do it even if the odds are not in your favor.", author: "Elon Musk" },
     { text: "Constantly seek criticism. A well thought out critique of whatever you're doing is as valuable as gold.", author: "Elon Musk" },
-    { text: "Some people don't like change, but you need to embrace change if the alternative is disaster.", author: "Elon Musk" },
+    // Richard Dawkins — 2
     { text: "The essence of life is statistical improbability on a colossal scale.", author: "Richard Dawkins" },
-    { text: "We are survival machines—robot vehicles blindly programmed to preserve the selfish molecules known as genes.", author: "Richard Dawkins" },
-    { text: "Biology is the study of complicated things that give the appearance of having been designed for a purpose.", author: "Richard Dawkins" },
+    { text: "We are survival machines — robot vehicles blindly programmed to preserve the selfish molecules known as genes.", author: "Richard Dawkins" },
 ];
 
 export const Dashboard: React.FC = () => {
@@ -90,6 +92,8 @@ export const Dashboard: React.FC = () => {
             switch(author) {
                 case 'Warren Buffett': return { color: 'text-amber-500/30', bg: 'bg-amber-500/50', text: 'text-amber-400', dot: 'bg-amber-400' };
                 case 'Charlie Munger': return { color: 'text-emerald-500/30', bg: 'bg-emerald-500/50', text: 'text-emerald-400', dot: 'bg-emerald-400' };
+                case 'Ben Graham': return { color: 'text-slate-400/30', bg: 'bg-slate-400/50', text: 'text-slate-300', dot: 'bg-slate-400' };
+                case 'Howard Marks': return { color: 'text-violet-500/30', bg: 'bg-violet-500/50', text: 'text-violet-400', dot: 'bg-violet-400' };
                 case 'Jeff Bezos': return { color: 'text-orange-500/30', bg: 'bg-orange-500/50', text: 'text-orange-400', dot: 'bg-orange-400' };
                 case 'Elon Musk': return { color: 'text-red-500/30', bg: 'bg-red-500/50', text: 'text-red-400', dot: 'bg-red-400' };
                 case 'Richard Dawkins': return { color: 'text-blue-500/30', bg: 'bg-blue-500/50', text: 'text-blue-400', dot: 'bg-blue-400' };
