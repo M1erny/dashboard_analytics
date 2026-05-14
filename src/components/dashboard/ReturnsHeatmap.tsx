@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import React, { useState, useMemo } from 'react';
 import { cn } from '../../lib/utils';
 import type { PeriodicReturn } from '../../utils/finance';
 import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap } from 'lucide-react';
@@ -193,7 +193,7 @@ const groupMeta: Record<string, { label: string; icon: React.ReactNode; colSpan:
 };
 
 // ─── Main Component ──────────────────────────────────────────
-export const ReturnsHeatmap = ({ periodicReturns, periodLabel = "YTD" }: { periodicReturns: PeriodicReturn[], periodLabel?: string }) => {
+export const ReturnsHeatmap = React.memo(({ periodicReturns, periodLabel = "YTD" }: { periodicReturns: PeriodicReturn[], periodLabel?: string }) => {
     const [sortKey, setSortKey] = useState<SortKey>('ytdContribution');
     const [sortDir, setSortDir] = useState<SortDir>('desc');
     const [hoveredRow, setHoveredRow] = useState<string | null>(null);
@@ -515,4 +515,4 @@ export const ReturnsHeatmap = ({ periodicReturns, periodLabel = "YTD" }: { perio
             </div>
         </div>
     );
-};
+});

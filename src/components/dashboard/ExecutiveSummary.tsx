@@ -53,7 +53,7 @@ const StatRow = ({ label, value, tooltip, valueClassName }: {
 );
 
 // ─── Main Component ──────────────────────────────────────────
-export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, costTier = 'retail', ytdHistory, stressTests, momentum, convexity }) => {
+export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ vitals, costTier = 'retail', ytdHistory, stressTests, momentum, convexity }) => {
     const ytdPositive = (vitals.ytdReturn ?? 0) >= 0;
     const periodLabel = vitals.periodLabel ?? "YTD";
 
@@ -493,4 +493,4 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = ({ vitals, cost
             </div>
         </div>
     );
-};
+});

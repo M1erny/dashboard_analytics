@@ -8,7 +8,7 @@ interface FxExposureWidgetProps {
     periodLabel?: string;
 }
 
-export const FxExposureWidget: React.FC<FxExposureWidgetProps> = ({ vitals, periodLabel = "YTD" }) => {
+export const FxExposureWidget: React.FC<FxExposureWidgetProps> = React.memo(({ vitals, periodLabel = "YTD" }) => {
     const [isOpen, setIsOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -98,4 +98,4 @@ export const FxExposureWidget: React.FC<FxExposureWidgetProps> = ({ vitals, peri
             )}
         </div>
     );
-};
+});

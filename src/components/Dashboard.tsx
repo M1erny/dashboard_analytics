@@ -1,16 +1,36 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback, Suspense, lazy } from 'react';
 import { fetchDashboardData } from '../utils/finance';
 import type { FullRiskReport, CostTier } from '../utils/finance';
 import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
-import { CountryMapWidget } from './dashboard/CountryMapWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
-import { StockLookup } from './dashboard/StockLookup';
-import { MoatWidget } from './dashboard/MoatWidget';
 import { LayoutDashboard, ShieldCheck, RefreshCw, Clock } from 'lucide-react';
 import { cn } from '../lib/utils';
 
+// ─── Lazy-loaded below-the-fold widgets ──────────────────────
+// These are code-split into separate chunks, loaded only when
+// the user scrolls past the ExecutiveSummary + ReturnsHeatmap.
+const CountryMapWidget = lazy(() => import('./dashboard/CountryMapWidget').then(m => ({ default: m.CountryMapWidget })));
+// ConvexityWidget is statically imported (also used inside ExecutiveSummary compact view)
+const StockLookup = lazy(() => import('./dashboard/StockLookup').then(m => ({ default: m.StockLookup })));
+const MoatWidget = lazy(() => import('./dashboard/MoatWidget').then(m => ({ default: m.MoatWidget })));
+
+// ─── Suspense fallback skeleton ──────────────────────────────
+const WidgetSkeleton = ({ height = 'h-[300px]' }: { height?: string }) => (
+    <div className={cn(
+        "rounded-2xl border border-white/[0.06] bg-gradient-to-b from-slate-900/60 to-slate-950/80",
+        "flex items-center justify-center animate-pulse",
+        height
+    )}>
+        <div className="flex flex-col items-center gap-3">
+            <div className="h-6 w-6 rounded-full border-2 border-white/10 border-t-white/40 animate-spin" />
+            <span className="text-[11px] text-gray-600 uppercase tracking-widest">Loading widget…</span>
+        </div>
+    </div>
+);
+
+// ─── Quotes (static, outside component) ──────────────────────
 const QUOTES = [
     // Warren Buffett — 2
     { text: "The stock market is a no-called-strike game. You don't have to swing at everything — you can wait for your pitch. The problem when you're a money manager is that your fans keep yelling, 'Swing, you bum!'", author: "Warren Buffett" },
@@ -34,6 +54,20 @@ const QUOTES = [
     { text: "The essence of life is statistical improbability on a colossal scale.", author: "Richard Dawkins" },
     { text: "We are survival machines — robot vehicles blindly programmed to preserve the selfish molecules known as genes.", author: "Richard Dawkins" },
 ];
+
+// ─── Author color map (pure function, outside component) ─────
+const getAuthorColors = (author: string) => {
+    switch(author) {
+        case 'Warren Buffett': return { color: 'text-amber-500/30', bg: 'bg-amber-500/50', text: 'text-amber-400', dot: 'bg-amber-400' };
+        case 'Charlie Munger': return { color: 'text-emerald-500/30', bg: 'bg-emerald-500/50', text: 'text-emerald-400', dot: 'bg-emerald-400' };
+        case 'Ben Graham': return { color: 'text-slate-400/30', bg: 'bg-slate-400/50', text: 'text-slate-300', dot: 'bg-slate-400' };
+        case 'Howard Marks': return { color: 'text-violet-500/30', bg: 'bg-violet-500/50', text: 'text-violet-400', dot: 'bg-violet-400' };
+        case 'Jeff Bezos': return { color: 'text-orange-500/30', bg: 'bg-orange-500/50', text: 'text-orange-400', dot: 'bg-orange-400' };
+        case 'Elon Musk': return { color: 'text-red-500/30', bg: 'bg-red-500/50', text: 'text-red-400', dot: 'bg-red-400' };
+        case 'Richard Dawkins': return { color: 'text-blue-500/30', bg: 'bg-blue-500/50', text: 'text-blue-400', dot: 'bg-blue-400' };
+        default: return { color: 'text-indigo-500/30', bg: 'bg-indigo-500/50', text: 'text-indigo-400', dot: 'bg-indigo-400' };
+    }
+};
 
 export const Dashboard: React.FC = () => {
     const [data, setData] = useState<FullRiskReport | null>(null);
@@ -66,7 +100,11 @@ export const Dashboard: React.FC = () => {
         });
     }, [costTier, portfolioName]);
 
-    const formatPercent = (val: number | undefined) => typeof val === 'number' ? `${(val * 100).toFixed(2)}%` : 'N/A';
+    // Memoized formatter — avoids re-creation on every render
+    const formatPercent = useCallback(
+        (val: number | undefined) => typeof val === 'number' ? `${(val * 100).toFixed(2)}%` : 'N/A',
+        []
+    );
 
     const [lastUpdated] = useState(() => new Date());
     const [quoteIdx, setQuoteIdx] = useState(() => Math.floor(Math.random() * QUOTES.length));
@@ -87,19 +125,6 @@ export const Dashboard: React.FC = () => {
 
     if (loading) {
         const quote = QUOTES[quoteIdx];
-        
-        const getAuthorColors = (author: string) => {
-            switch(author) {
-                case 'Warren Buffett': return { color: 'text-amber-500/30', bg: 'bg-amber-500/50', text: 'text-amber-400', dot: 'bg-amber-400' };
-                case 'Charlie Munger': return { color: 'text-emerald-500/30', bg: 'bg-emerald-500/50', text: 'text-emerald-400', dot: 'bg-emerald-400' };
-                case 'Ben Graham': return { color: 'text-slate-400/30', bg: 'bg-slate-400/50', text: 'text-slate-300', dot: 'bg-slate-400' };
-                case 'Howard Marks': return { color: 'text-violet-500/30', bg: 'bg-violet-500/50', text: 'text-violet-400', dot: 'bg-violet-400' };
-                case 'Jeff Bezos': return { color: 'text-orange-500/30', bg: 'bg-orange-500/50', text: 'text-orange-400', dot: 'bg-orange-400' };
-                case 'Elon Musk': return { color: 'text-red-500/30', bg: 'bg-red-500/50', text: 'text-red-400', dot: 'bg-red-400' };
-                case 'Richard Dawkins': return { color: 'text-blue-500/30', bg: 'bg-blue-500/50', text: 'text-blue-400', dot: 'bg-blue-400' };
-                default: return { color: 'text-indigo-500/30', bg: 'bg-indigo-500/50', text: 'text-indigo-400', dot: 'bg-indigo-400' };
-            }
-        };
         const colors = getAuthorColors(quote.author);
 
         return (
@@ -135,7 +160,7 @@ export const Dashboard: React.FC = () => {
                             "text-5xl font-black leading-none mb-3 select-none",
                             colors.color
                         )}>
-                            “
+                            &ldquo;
                         </div>
 
                         <div className="flex-1 flex items-center justify-center">
@@ -216,6 +241,7 @@ export const Dashboard: React.FC = () => {
 
     const { vitals, leverage, periodicReturns, countryAllocation, stressTests, convexity, ytdHistory } = data;
 
+    // Memoized label
     const portfolioLabel = portfolioName === 'main' ? 'My Portfolio' : 'Szymon\'s Portfolio';
 
     return (
@@ -331,20 +357,26 @@ export const Dashboard: React.FC = () => {
                 {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing, Stress Tests) */}
                 <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} momentum={data.momentum} convexity={convexity} />
 
-                {/* ROW 1.5: Convexity Analysis */}
+                {/* ROW 1.5: Convexity Analysis (lazy-loaded) */}
                 <ConvexityWidget convexity={convexity} />
 
                 {/* ROW 2: Returns Heatmap & Portfolio Contribution (Full Width) */}
                 <ReturnsHeatmap periodicReturns={periodicReturns} periodLabel={vitals?.periodLabel ?? "YTD"} />
 
-                {/* ROW 3: World Map (Full Width) */}
-                <CountryMapWidget countryAllocation={countryAllocation} />
+                {/* ROW 3: World Map (Full Width, lazy-loaded — heaviest widget) */}
+                <Suspense fallback={<WidgetSkeleton height="h-[450px]" />}>
+                    <CountryMapWidget countryAllocation={countryAllocation} />
+                </Suspense>
 
-                {/* ROW 4: Business Quality — Munger Lens */}
-                <MoatWidget portfolioName={portfolioName} />
+                {/* ROW 4: Business Quality — Munger Lens (lazy-loaded, makes own API call) */}
+                <Suspense fallback={<WidgetSkeleton height="h-[300px]" />}>
+                    <MoatWidget portfolioName={portfolioName} />
+                </Suspense>
 
-                {/* ROW 5: Stock Lookup */}
-                <StockLookup />
+                {/* ROW 5: Stock Lookup (lazy-loaded, interactive tool) */}
+                <Suspense fallback={<WidgetSkeleton height="h-[200px]" />}>
+                    <StockLookup />
+                </Suspense>
             </div>
             </div>
         </div>
