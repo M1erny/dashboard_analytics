@@ -357,11 +357,11 @@ export const Dashboard: React.FC = () => {
                 {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing, Stress Tests) */}
                 <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} momentum={data.momentum} convexity={convexity} />
 
-                {/* ROW 1.5: Convexity Analysis (lazy-loaded) */}
-                <ConvexityWidget convexity={convexity} />
-
-                {/* ROW 2: Returns Heatmap & Portfolio Contribution (Full Width) */}
+                {/* ROW 1.5: Returns Heatmap & Portfolio Contribution (Full Width) */}
                 <ReturnsHeatmap periodicReturns={periodicReturns} periodLabel={vitals?.periodLabel ?? "YTD"} />
+
+                {/* ROW 2: Convexity Analysis */}
+                <ConvexityWidget convexity={convexity} />
 
                 {/* ROW 3: World Map (Full Width, lazy-loaded — heaviest widget) */}
                 <Suspense fallback={<WidgetSkeleton height="h-[450px]" />}>
