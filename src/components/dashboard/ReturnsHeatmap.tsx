@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { cn } from '../../lib/utils';
 import type { PeriodicReturn } from '../../utils/finance';
-import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap } from 'lucide-react';
+import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap, Target, Trophy, TrendingDown, Activity } from 'lucide-react';
 
 type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry';
 type SortDir = 'asc' | 'desc';
@@ -176,10 +176,10 @@ const columns: ColumnDef[] = [
     { key: 'ytdContribution',  label: 'YTD',        group: 'contribution', tooltip: 'YTD portfolio contribution' },
     { key: 'r7dContribution',  label: '7D',         group: 'contribution', tooltip: '7-day portfolio contribution' },
     { key: 'r1dContribution',  label: '1D',         group: 'contribution', tooltip: '1-day portfolio contribution' },
+    { key: 'r1d',              label: '1D',         group: 'returns', tooltip: '1-day return' },
     { key: 'ytd',              label: 'YTD',        group: 'returns' },
     { key: 'r7d',              label: '7D',         group: 'returns', tooltip: '7-day return' },
     { key: 'r1m',              label: '1M',         group: 'returns' },
-    { key: 'r1y',              label: '1Y',         group: 'returns' },
     { key: 'volatility',       label: 'Vol',        group: 'risk', tooltip: 'Annualized volatility' },
     { key: 'volumeIndicator',  label: 'Vol Ratio',  group: 'risk', tooltip: '7D avg volume ÷ YTD avg volume' },
 ];
@@ -265,6 +265,52 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, periodLabel = "YTD"
             if (r.direction === 'Short') shortCount++;
         }
         return { ytdC, r7dC, r1dC, longCount, shortCount, total: periodicReturns.length };
+    }, [periodicReturns]);
+
+    // Book Analytics — hedge fund standard metrics
+    const bookAnalytics = useMemo(() => {
+        // Filter to actual portfolio positions (have a contribution)
+        const positions = periodicReturns.filter(r => r.ytdContribution != null && r.direction);
+        if (positions.length === 0) return null;
+
+        const winners = positions.filter(r => r.ytdContribution! > 0);
+        const losers = positions.filter(r => r.ytdContribution! < 0);
+
+        // Batting Average: % of positions that are profitable
+        const battingAvg = positions.length > 0 ? winners.length / positions.length : 0;
+
+        // Profit Factor: Σ(gains) / |Σ(losses)|
+        const totalGains = winners.reduce((s, r) => s + r.ytdContribution!, 0);
+        const totalLosses = Math.abs(losers.reduce((s, r) => s + r.ytdContribution!, 0));
+        const profitFactor = totalLosses > 0 ? totalGains / totalLosses : totalGains > 0 ? Infinity : 0;
+
+        // Win/Loss Ratio: avg gain on winners / |avg loss on losers|
+        const avgWin = winners.length > 0 ? totalGains / winners.length : 0;
+        const avgLoss = losers.length > 0 ? totalLosses / losers.length : 0;
+        const winLossRatio = avgLoss > 0 ? avgWin / avgLoss : avgWin > 0 ? Infinity : 0;
+
+        // Best & Worst contributor
+        const sorted = [...positions].sort((a, b) => (b.ytdContribution ?? 0) - (a.ytdContribution ?? 0));
+        const best = sorted[0];
+        const worst = sorted[sorted.length - 1];
+
+        // Top-5 Concentration: sum of top 5 weights / total gross
+        const withWeights = positions.filter(r => r.currentWeight != null);
+        const sortedByWeight = [...withWeights].sort((a, b) => (b.currentWeight ?? 0) - (a.currentWeight ?? 0));
+        const top5Weight = sortedByWeight.slice(0, 5).reduce((s, r) => s + (r.currentWeight ?? 0), 0);
+        const totalGrossWeight = withWeights.reduce((s, r) => s + (r.currentWeight ?? 0), 0);
+        const top5Concentration = totalGrossWeight > 0 ? top5Weight / totalGrossWeight : 0;
+
+        return {
+            battingAvg,
+            profitFactor,
+            winLossRatio,
+            best: best ? { ticker: best.ticker, value: best.ytdContribution! } : null,
+            worst: worst ? { ticker: worst.ticker, value: worst.ytdContribution! } : null,
+            top5Concentration,
+            winnersCount: winners.length,
+            losersCount: losers.length,
+        };
     }, [periodicReturns]);
 
     const SortIndicator = ({ columnKey }: { columnKey: SortKey }) => {
@@ -423,6 +469,111 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, periodLabel = "YTD"
                     </div>
                 ))}
             </div>
+
+            {/* Book Analytics Strip */}
+            {bookAnalytics && (
+                <div className="border-b border-white/[0.06] bg-gradient-to-r from-white/[0.01] to-white/[0.025] px-5 py-3">
+                    <div className="flex items-center gap-2 mb-2.5">
+                        <Activity className="h-3 w-3 text-indigo-400" />
+                        <span className="text-[10px] uppercase tracking-[0.14em] font-semibold text-gray-500">Book Analytics</span>
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                        {/* Batting Average */}
+                        <div className="flex flex-col gap-1 rounded-xl border border-white/[0.06] bg-white/[0.03] px-3 py-2.5">
+                            <div className="flex items-center gap-1.5">
+                                <Target className="h-3 w-3 text-indigo-400" />
+                                <span className="text-[9px] uppercase tracking-widest text-gray-500 font-semibold">Batting Avg</span>
+                            </div>
+                            <span className={cn(
+                                "font-mono text-lg font-black leading-none",
+                                bookAnalytics.battingAvg >= 0.55 ? "text-emerald-400" : bookAnalytics.battingAvg >= 0.45 ? "text-amber-400" : "text-red-400"
+                            )}>
+                                {(bookAnalytics.battingAvg * 100).toFixed(0)}%
+                            </span>
+                            <span className="text-[9px] text-gray-600 leading-tight">
+                                {bookAnalytics.winnersCount}W / {bookAnalytics.losersCount}L
+                            </span>
+                        </div>
+
+                        {/* Profit Factor */}
+                        <div className="flex flex-col gap-1 rounded-xl border border-white/[0.06] bg-white/[0.03] px-3 py-2.5">
+                            <div className="flex items-center gap-1.5">
+                                <Zap className="h-3 w-3 text-amber-400" />
+                                <span className="text-[9px] uppercase tracking-widest text-gray-500 font-semibold">Profit Factor</span>
+                            </div>
+                            <span className={cn(
+                                "font-mono text-lg font-black leading-none",
+                                bookAnalytics.profitFactor >= 2.0 ? "text-emerald-400" : bookAnalytics.profitFactor >= 1.0 ? "text-amber-400" : "text-red-400"
+                            )}>
+                                {bookAnalytics.profitFactor === Infinity ? '∞' : bookAnalytics.profitFactor.toFixed(2)}×
+                            </span>
+                            <span className="text-[9px] text-gray-600 leading-tight">gains / losses</span>
+                        </div>
+
+                        {/* Win/Loss Ratio */}
+                        <div className="flex flex-col gap-1 rounded-xl border border-white/[0.06] bg-white/[0.03] px-3 py-2.5">
+                            <div className="flex items-center gap-1.5">
+                                <BarChart3 className="h-3 w-3 text-sky-400" />
+                                <span className="text-[9px] uppercase tracking-widest text-gray-500 font-semibold">Win / Loss</span>
+                            </div>
+                            <span className={cn(
+                                "font-mono text-lg font-black leading-none",
+                                bookAnalytics.winLossRatio >= 1.5 ? "text-emerald-400" : bookAnalytics.winLossRatio >= 1.0 ? "text-amber-400" : "text-red-400"
+                            )}>
+                                {bookAnalytics.winLossRatio === Infinity ? '∞' : bookAnalytics.winLossRatio.toFixed(2)}×
+                            </span>
+                            <span className="text-[9px] text-gray-600 leading-tight">avg winner / avg loser</span>
+                        </div>
+
+                        {/* Top-5 Concentration */}
+                        <div className="flex flex-col gap-1 rounded-xl border border-white/[0.06] bg-white/[0.03] px-3 py-2.5">
+                            <div className="flex items-center gap-1.5">
+                                <Flame className="h-3 w-3 text-orange-400" />
+                                <span className="text-[9px] uppercase tracking-widest text-gray-500 font-semibold">Top 5 Conc.</span>
+                            </div>
+                            <span className={cn(
+                                "font-mono text-lg font-black leading-none",
+                                bookAnalytics.top5Concentration >= 0.80 ? "text-rose-400" : bookAnalytics.top5Concentration >= 0.60 ? "text-amber-400" : "text-emerald-400"
+                            )}>
+                                {(bookAnalytics.top5Concentration * 100).toFixed(0)}%
+                            </span>
+                            <span className="text-[9px] text-gray-600 leading-tight">of gross exposure</span>
+                        </div>
+
+                        {/* Best Contributor */}
+                        {bookAnalytics.best && (
+                            <div className="flex flex-col gap-1 rounded-xl border border-emerald-500/10 bg-emerald-500/[0.04] px-3 py-2.5">
+                                <div className="flex items-center gap-1.5">
+                                    <Trophy className="h-3 w-3 text-emerald-400" />
+                                    <span className="text-[9px] uppercase tracking-widest text-gray-500 font-semibold">Best</span>
+                                </div>
+                                <span className="font-mono text-lg font-black leading-none text-emerald-400">
+                                    {bookAnalytics.best.ticker}
+                                </span>
+                                <span className="text-[9px] text-emerald-500/80 font-mono leading-tight">
+                                    +{(bookAnalytics.best.value * 100).toFixed(2)}% contrib
+                                </span>
+                            </div>
+                        )}
+
+                        {/* Worst Contributor */}
+                        {bookAnalytics.worst && bookAnalytics.worst.value < 0 && (
+                            <div className="flex flex-col gap-1 rounded-xl border border-rose-500/10 bg-rose-500/[0.04] px-3 py-2.5">
+                                <div className="flex items-center gap-1.5">
+                                    <TrendingDown className="h-3 w-3 text-rose-400" />
+                                    <span className="text-[9px] uppercase tracking-widest text-gray-500 font-semibold">Worst</span>
+                                </div>
+                                <span className="font-mono text-lg font-black leading-none text-rose-400">
+                                    {bookAnalytics.worst.ticker}
+                                </span>
+                                <span className="text-[9px] text-rose-500/80 font-mono leading-tight">
+                                    {(bookAnalytics.worst.value * 100).toFixed(2)}% contrib
+                                </span>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Table */}
             <div className="overflow-x-auto max-h-[520px] overflow-y-auto scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
