@@ -318,9 +318,9 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             direction = ticker_config.get('type', None)  # 'Long' or 'Short'
             
             # Calculate YTD contribution: weight * ytd_return * direction
-            ytd_ret = row['YTD'] if 'YTD' in row and not pd.isna(row['YTD']) else 0
+            ytd_ret = row['YTD'] if 'YTD' in row and not pd.isna(row['YTD']) else None
             dir_multiplier = 1 if direction == 'Long' else (-1 if direction == 'Short' else 0)
-            ytd_contribution = weight * ytd_ret * dir_multiplier if weight and ytd_ret else None
+            ytd_contribution = weight * ytd_ret * dir_multiplier if weight and ytd_ret is not None else None
             
             # Calculate current drifted weight
             # W_current = W_initial * (1 + R_stock) / (1 + R_portfolio)
@@ -329,7 +329,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             #   Short: stock up → exposure ($ owed) grows AND NAV shrinks → weight grows ✓
             #   Short: stock down → exposure shrinks AND NAV grows → weight shrinks ✓
             # The raw stock return (NOT direction-adjusted) drives exposure size.
-            current_weight = float(weight * (1 + ytd_ret) / (1 + portfolio_ytd)) if weight else None
+            current_weight = float(weight * (1 + ytd_ret) / (1 + portfolio_ytd)) if weight and ytd_ret is not None else None
             
             # Calculate Returns and Contributions
             r1d = None
@@ -389,8 +389,12 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                     if len(daily_returns) > 0:
                         volatility = float(daily_returns.std() * np.sqrt(252))
             
-            r1d_contribution = weight * r1d * dir_multiplier if weight and r1d is not None else None
-            r7d_contribution = weight * r7d * dir_multiplier if weight and r7d is not None else None
+            # Daily/Weekly contribution uses CURRENT (drifted) weight, not initial.
+            # Rationale: 1D P&L = current_exposure × return. The current exposure 
+            # reflects YTD drift. Using initial weight overstates contributions for
+            # positions that have shrunk and understates those that have grown.
+            r1d_contribution = current_weight * r1d * dir_multiplier if current_weight and r1d is not None else None
+            r7d_contribution = current_weight * r7d * dir_multiplier if current_weight and r7d is not None else None
 
             item = {
                 "ticker": ticker,
