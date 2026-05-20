@@ -20,7 +20,8 @@ export default defineConfig({
     chunkSizeWarningLimit: 600,
   },
   server: {
-    port: 2137,
+    port: 5176,
+    strictPort: true,
     host: '0.0.0.0', // Listen on all addresses
     proxy: {
       '/api': {

@@ -253,7 +253,6 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, periodLabel = "YTD"
         return max || 0.01;
     }, [periodicReturns]);
 
-    // Summary row aggregation
     const summary = useMemo(() => {
         let ytdC = 0, r7dC = 0, r1dC = 0;
         let longCount = 0, shortCount = 0;
@@ -264,7 +263,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, periodLabel = "YTD"
             if (r.direction === 'Long') longCount++;
             if (r.direction === 'Short') shortCount++;
         }
-        return { ytdC, r7dC, r1dC, longCount, shortCount, total: periodicReturns.length };
+        return { ytdC, r7dC, r1dC, longCount, shortCount, total: longCount + shortCount };
     }, [periodicReturns]);
 
     // Book Analytics — hedge fund standard metrics
