@@ -1,9 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import { cn } from '../../lib/utils';
-import type { PeriodicReturn } from '../../utils/finance';
+import type { PeriodicReturn, RiskAttribution } from '../../utils/finance';
 import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap, Target, Trophy, TrendingDown, Activity } from 'lucide-react';
 
-type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry';
+type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry' | 'volatilityContribution';
 type SortDir = 'asc' | 'desc';
 
 // ─── Color System ────────────────────────────────────────────
@@ -35,6 +35,14 @@ const getVolatilityColor = (val: number | null): string => {
     if (val > 0.50) return 'bg-amber-800/40 text-amber-300';
     if (val > 0.30) return 'bg-yellow-800/30 text-yellow-300';
     return 'bg-sky-900/25 text-sky-300';
+};
+
+const getRiskContribColor = (val: number | null): string => {
+    if (val === null || val === undefined) return '';
+    if (val > 0.20) return 'bg-rose-950/40 text-rose-300';
+    if (val > 0.10) return 'bg-amber-950/30 text-amber-300';
+    if (val > 0.0)  return 'bg-sky-950/25 text-sky-300';
+    return 'bg-emerald-950/40 text-emerald-300';
 };
 
 const getVolumeColor = (val: number | null): string => {
@@ -73,6 +81,12 @@ const formatPrice = (val: number | null, currency: string = 'USD'): string => {
 const formatVolatility = (val: number | null): string => {
     if (val === null || val === undefined) return '—';
     return `${(val * 100).toFixed(0)}%`;
+};
+
+const formatRiskContrib = (val: number | null): string => {
+    if (val === null || val === undefined) return '—';
+    const sign = val > 0 ? '+' : '';
+    return `${sign}${(val * 100).toFixed(1)}%`;
 };
 
 // ─── Contribution Bar (visual magnitude indicator) ───────────
@@ -181,6 +195,7 @@ const columns: ColumnDef[] = [
     { key: 'r7d',              label: '7D',         group: 'returns', tooltip: '7-day return' },
     { key: 'r1m',              label: '1M',         group: 'returns' },
     { key: 'volatility',       label: 'Vol',        group: 'risk', tooltip: 'Annualized volatility' },
+    { key: 'volatilityContribution', label: 'Vol Contrib. %', group: 'risk', tooltip: 'Volatility contribution to portfolio (% of total portfolio vol)' },
     { key: 'volumeIndicator',  label: 'Vol Ratio',  group: 'risk', tooltip: '7D avg volume ÷ YTD avg volume' },
 ];
 
@@ -189,14 +204,22 @@ const groupMeta: Record<string, { label: string; icon: React.ReactNode; colSpan:
     entry:        { label: 'Entry Details', icon: <TrendingUp className="h-3 w-3" />,colSpan: 2, borderClass: 'border-l border-white/10', accentClass: 'after:bg-amber-500/60' },
     contribution: { label: 'Contribution',  icon: <Zap className="h-3 w-3" />,       colSpan: 3, borderClass: 'border-l border-white/10', accentClass: 'after:bg-violet-500/60' },
     returns:      { label: 'Returns',       icon: <TrendingUp className="h-3 w-3" />,colSpan: 4, borderClass: 'border-l border-white/10', accentClass: 'after:bg-emerald-500/60' },
-    risk:         { label: 'Risk',          icon: <Flame className="h-3 w-3" />,     colSpan: 2, borderClass: 'border-l border-white/10', accentClass: 'after:bg-rose-500/60' },
+    risk:         { label: 'Risk',          icon: <Flame className="h-3 w-3" />,     colSpan: 3, borderClass: 'border-l border-white/10', accentClass: 'after:bg-rose-500/60' },
 };
 
 // ─── Main Component ──────────────────────────────────────────
-export const ReturnsHeatmap = React.memo(({ periodicReturns, periodLabel = "YTD" }: { periodicReturns: PeriodicReturn[], periodLabel?: string }) => {
+export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], periodLabel = "YTD" }: { periodicReturns: PeriodicReturn[], activeRisks?: RiskAttribution[], periodLabel?: string }) => {
     const [sortKey, setSortKey] = useState<SortKey>('ytdContribution');
     const [sortDir, setSortDir] = useState<SortDir>('desc');
     const [hoveredRow, setHoveredRow] = useState<string | null>(null);
+
+    const riskMap = useMemo(() => {
+        const map = new Map<string, number>();
+        for (const r of activeRisks) {
+            map.set(r.ticker, r.pctRisk);
+        }
+        return map;
+    }, [activeRisks]);
 
     const handleSort = (key: SortKey) => {
         if (sortKey === key) {
@@ -220,6 +243,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, periodLabel = "YTD"
             case 'r1y': return row.r1y ?? null;
             case 'lastPrice': return row.lastPrice ?? null;
             case 'volatility': return row.volatility ?? null;
+            case 'volatilityContribution': return riskMap.get(row.ticker) ?? null;
             case 'volumeIndicator': return row.volumeIndicator ?? null;
             case 'currentWeight': return row.currentWeight ?? null;
             case 'entryPrice': return row.entryPrice ?? null;
@@ -400,6 +424,19 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, periodLabel = "YTD"
                         {formatVolatility(row.volatility)}
                     </td>
                 );
+            case 'volatilityContribution': {
+                const val = riskMap.get(row.ticker) ?? null;
+                return (
+                    <td key={col.key} className={cn(
+                        "px-3 py-2.5 text-center font-mono text-[13px] transition-all duration-200",
+                        getRiskContribColor(val),
+                        isHovered && "brightness-125",
+                        groupBorder
+                    )}>
+                        {formatRiskContrib(val)}
+                    </td>
+                );
+            }
             case 'volumeIndicator':
                 return (
                     <td key={col.key} className={cn(

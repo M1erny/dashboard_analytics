@@ -239,7 +239,7 @@ export const Dashboard: React.FC = () => {
         )
     }
 
-    const { vitals, leverage, periodicReturns, countryAllocation, stressTests, convexity, ytdHistory } = data;
+    const { vitals, leverage, periodicReturns, activeRisks, countryAllocation, stressTests, convexity, ytdHistory } = data;
 
     // Memoized label
     const portfolioLabel = portfolioName === 'main' ? 'My Portfolio' : 'Szymon\'s Portfolio';
@@ -347,7 +347,7 @@ export const Dashboard: React.FC = () => {
                                 }}
                                 className="bg-white/5 hover:bg-white/10 w-[38px] h-[38px] rounded-lg border border-white/10 transition-colors flex items-center justify-center shrink-0"
                                 title="Force Refresh Data"
-                            >
+                             >
                                 <RefreshCw className={cn("h-4 w-4 text-emerald-400", isSwitchingTier ? "animate-spin" : "")} />
                             </button>
                         </div>
@@ -358,7 +358,7 @@ export const Dashboard: React.FC = () => {
                 <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} momentum={data.momentum} convexity={convexity} />
 
                 {/* ROW 1.5: Returns Heatmap & Portfolio Contribution (Full Width) */}
-                <ReturnsHeatmap periodicReturns={periodicReturns} periodLabel={vitals?.periodLabel ?? "YTD"} />
+                <ReturnsHeatmap periodicReturns={periodicReturns} activeRisks={activeRisks} periodLabel={vitals?.periodLabel ?? "YTD"} />
 
                 {/* ROW 2: Convexity Analysis */}
                 <ConvexityWidget convexity={convexity} />
