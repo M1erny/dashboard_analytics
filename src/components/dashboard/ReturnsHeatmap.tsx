@@ -211,15 +211,13 @@ interface ColumnDef {
     key: SortKey;
     label: string;
     tooltip?: string;
-    group: 'position' | 'entry' | 'contribution' | 'returns' | 'risk';
+    group: 'position' | 'contribution' | 'returns' | 'risk';
 }
 
 const columns: ColumnDef[] = [
     { key: 'ticker',           label: 'Ticker',     group: 'position' },
     { key: 'lastPrice',        label: 'Price',      group: 'position', tooltip: 'Last fetched price' },
     { key: 'currentWeight',    label: 'Weight',     group: 'position', tooltip: 'Current drifted weight' },
-    { key: 'entryPrice',       label: 'Entry',      group: 'entry', tooltip: 'Original entry price' },
-    { key: 'rSinceEntry',      label: 'Ret. Entry', group: 'entry', tooltip: 'Return since entry' },
     { key: 'ytdContribution',  label: 'YTD',        group: 'contribution', tooltip: 'YTD portfolio contribution' },
     { key: 'r7dContribution',  label: '7D',         group: 'contribution', tooltip: '7-day portfolio contribution' },
     { key: 'r1dContribution',  label: '1D',         group: 'contribution', tooltip: '1-day portfolio contribution' },
@@ -234,7 +232,6 @@ const columns: ColumnDef[] = [
 
 const groupMeta: Record<string, { label: string; icon: React.ReactNode; colSpan: number; color: string; accentColor: string }> = {
     position:     { label: 'Position',      icon: <BarChart3 className="h-3 w-3" />, colSpan: 3, color: 'text-blue-400',    accentColor: 'bg-blue-500' },
-    entry:        { label: 'Entry Details', icon: <TrendingUp className="h-3 w-3" />,colSpan: 2, color: 'text-amber-400',   accentColor: 'bg-amber-500' },
     contribution: { label: 'Contribution',  icon: <Zap className="h-3 w-3" />,       colSpan: 3, color: 'text-violet-400',  accentColor: 'bg-violet-500' },
     returns:      { label: 'Returns',       icon: <TrendingUp className="h-3 w-3" />,colSpan: 4, color: 'text-emerald-400', accentColor: 'bg-emerald-500' },
     risk:         { label: 'Risk',          icon: <Flame className="h-3 w-3" />,     colSpan: 3, color: 'text-rose-400',    accentColor: 'bg-rose-500' },
