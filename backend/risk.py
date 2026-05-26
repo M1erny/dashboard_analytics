@@ -77,6 +77,51 @@ def fetch_data(portfolio_name="main"):
     if stock_raw.empty:
          print("WARNING: Stock Raw is EMPTY!")
     
+    # --- Recovery logic for failed stock downloads ---
+    def get_ticker_series(df, t):
+        if df.empty:
+            return pd.Series()
+        if isinstance(df.columns, pd.MultiIndex):
+            for price_col in ['Close', 'Adj Close']:
+                if (price_col, t) in df.columns:
+                    return df[(price_col, t)].dropna()
+        else:
+            if t in df.columns:
+                return df[t].dropna()
+        return pd.Series()
+
+    failed_tickers = []
+    for t in tickers:
+        series = get_ticker_series(stock_raw, t)
+        if series.empty:
+            failed_tickers.append(t)
+
+    if failed_tickers:
+        print(f"Failed to fetch {len(failed_tickers)} tickers in bulk: {failed_tickers}. Retrying individually...")
+        import time
+        for t in failed_tickers:
+            print(f"Retrying single download for stock: {t}")
+            for attempt in range(3):
+                try:
+                    single_raw = yf.download([t], start=start_date, end=end_date, auto_adjust=True, threads=False, progress=False)
+                    if not single_raw.empty:
+                        valid_series = get_ticker_series(single_raw, t)
+                        if not valid_series.empty:
+                            if stock_raw.empty:
+                                stock_raw = single_raw.copy()
+                            else:
+                                for col in single_raw.columns:
+                                    stock_raw[col] = single_raw[col]
+                            print(f"Successfully recovered stock ticker: {t} on attempt {attempt + 1}")
+                            break
+                        else:
+                            print(f"Attempt {attempt+1}: Data downloaded but valid series is empty for {t}")
+                    else:
+                        print(f"Attempt {attempt+1}: Returned empty DataFrame for {t}")
+                except Exception as ex:
+                    print(f"Error recovering stock ticker {t} (attempt {attempt + 1}): {ex}")
+                time.sleep(1)
+
     # Handle Data Structure (MultiIndex vs Single)
     if isinstance(stock_raw.columns, pd.MultiIndex):
         try:
@@ -96,6 +141,51 @@ def fetch_data(portfolio_name="main"):
     print(f"Fetching FX rates for: {fx_pairs}...")
     fx_raw = yf.download(fx_pairs, start=start_date, auto_adjust=True, threads=True)
     
+    # --- Recovery logic for failed FX downloads ---
+    def get_fx_series(df, fx_t):
+        if df.empty:
+            return pd.Series()
+        if isinstance(df.columns, pd.MultiIndex):
+            for price_col in ['Close', 'Adj Close']:
+                if (price_col, fx_t) in df.columns:
+                    return df[(price_col, fx_t)].dropna()
+        else:
+            if fx_t in df.columns:
+                return df[fx_t].dropna()
+        return pd.Series()
+
+    failed_fx = []
+    for fx_t in fx_pairs:
+        series = get_fx_series(fx_raw, fx_t)
+        if series.empty:
+            failed_fx.append(fx_t)
+
+    if failed_fx:
+        print(f"Failed to fetch {len(failed_fx)} FX pairs in bulk: {failed_fx}. Retrying individually...")
+        import time
+        for fx_t in failed_fx:
+            print(f"Retrying single download for FX: {fx_t}")
+            for attempt in range(3):
+                try:
+                    single_raw = yf.download([fx_t], start=start_date, auto_adjust=True, threads=False, progress=False)
+                    if not single_raw.empty:
+                        valid_series = get_fx_series(single_raw, fx_t)
+                        if not valid_series.empty:
+                            if fx_raw.empty:
+                                fx_raw = single_raw.copy()
+                            else:
+                                for col in single_raw.columns:
+                                    fx_raw[col] = single_raw[col]
+                            print(f"Successfully recovered FX: {fx_t} on attempt {attempt + 1}")
+                            break
+                        else:
+                            print(f"Attempt {attempt+1}: Data downloaded but valid series is empty for FX {fx_t}")
+                    else:
+                        print(f"Attempt {attempt+1}: Returned empty DataFrame for FX {fx_t}")
+                except Exception as ex:
+                    print(f"Error recovering FX {fx_t} (attempt {attempt + 1}): {ex}")
+                time.sleep(1)
+
     if isinstance(fx_raw.columns, pd.MultiIndex):
         try:
             fx_data = fx_raw['Close'].ffill()
@@ -104,9 +194,10 @@ def fetch_data(portfolio_name="main"):
     elif 'Close' in fx_raw.columns:
          fx_data = fx_raw['Close'].ffill()
     else:
-        fx_data = fx_raw.ffill()
+         fx_data = fx_raw.ffill()
 
     return stock_data, fx_data, volume_data
+
 
 def normalize_to_base_currency(stock_df, fx_df, portfolio_name="main"):
     PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)

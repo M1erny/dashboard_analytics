@@ -311,24 +311,20 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
         # We need to add 1M returns and YTD contribution
         portfolio_ytd = to_float(metrics.get('YTD_Return')) or 0.0
         
-        for ticker, row in periodic_rets.iterrows():
-            # Get portfolio info for this ticker
-            ticker_config = portfolio_config.get(ticker, {})
+        for ticker, ticker_config in portfolio_config.items():
             weight = ticker_config.get('weight', 0) if ticker_config else 0
             direction = ticker_config.get('type', None)  # 'Long' or 'Short'
             
+            # Check if this ticker is in periodic_rets
+            has_rets = (periodic_rets is not None) and (ticker in periodic_rets.index)
+            row = periodic_rets.loc[ticker] if has_rets else None
+            
             # Calculate YTD contribution: weight * ytd_return * direction
-            ytd_ret = row['YTD'] if 'YTD' in row and not pd.isna(row['YTD']) else None
+            ytd_ret = row['YTD'] if (row is not None and 'YTD' in row and not pd.isna(row['YTD'])) else None
             dir_multiplier = 1 if direction == 'Long' else (-1 if direction == 'Short' else 0)
             ytd_contribution = weight * ytd_ret * dir_multiplier if weight and ytd_ret is not None else None
             
             # Calculate current drifted weight
-            # W_current = W_initial * (1 + R_stock) / (1 + R_portfolio)
-            # This is correct for BOTH longs and shorts:
-            #   Long:  stock up → exposure grows → weight grows ✓
-            #   Short: stock up → exposure ($ owed) grows AND NAV shrinks → weight grows ✓
-            #   Short: stock down → exposure shrinks AND NAV grows → weight shrinks ✓
-            # The raw stock return (NOT direction-adjusted) drives exposure size.
             current_weight = float(weight * (1 + ytd_ret) / (1 + portfolio_ytd)) if weight and ytd_ret is not None else None
             
             # Calculate Returns and Contributions
@@ -362,7 +358,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                         if vol_ytd_avg > 0:
                             volume_indicator = vol_7d_avg / vol_ytd_avg
 
-            if ticker in usd_prices.columns:
+            if usd_prices is not None and ticker in usd_prices.columns:
                 series = usd_prices[ticker].dropna()
                 
                 # 1D return
@@ -390,25 +386,22 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                         volatility = float(daily_returns.std() * np.sqrt(252))
             
             # Daily/Weekly contribution uses CURRENT (drifted) weight, not initial.
-            # Rationale: 1D P&L = current_exposure × return. The current exposure 
-            # reflects YTD drift. Using initial weight overstates contributions for
-            # positions that have shrunk and understates those that have grown.
             r1d_contribution = current_weight * r1d * dir_multiplier if current_weight and r1d is not None else None
             r7d_contribution = current_weight * r7d * dir_multiplier if current_weight and r7d is not None else None
 
             item = {
                 "ticker": ticker,
                 "sector": sector,
-                "ytd": row['YTD'] if 'YTD' in row and not pd.isna(row['YTD']) else None,
+                "ytd": ytd_ret,
                 "r1d": to_float(r1d),
                 "r7d": to_float(r7d),
                 "r1m": to_float(r1m),
-                "r1y": row['1Y'] if not pd.isna(row['1Y']) else None,
+                "r1y": row['1Y'] if (row is not None and '1Y' in row and not pd.isna(row['1Y'])) else None,
                 "ytdContribution": to_float(ytd_contribution),
                 "r1dContribution": to_float(r1d_contribution),
                 "r7dContribution": to_float(r7d_contribution),
                 "weight": to_float(weight) if weight else None,
-                "currentWeight": to_float(current_weight),
+                "currentWeight": to_float(current_weight) if current_weight is not None else to_float(weight),
                 "direction": direction,
                 "lastPrice": last_price,
                 "entryPrice": ticker_config.get('entry_price', None) if ticker_config else None,
@@ -417,6 +410,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "volumeIndicator": to_float(volume_indicator),
             }
             response["periodicReturns"].append(item)
+
             
         # Format History (Cumulative 1000 base)
         portfolio_cum = (1 + metrics['Returns_Stream']).cumprod() * 1000
