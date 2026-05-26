@@ -82,7 +82,7 @@ export const Dashboard: React.FC = () => {
         if (isInitialLoad) setLoading(true);
         else setIsSwitchingTier(true);
 
-        fetchDashboardData(5, 3000, isInitialLoad, costTier, portfolioName).then(res => {
+        fetchDashboardData(5, 3000, false, costTier, portfolioName).then(res => {
             if (res) {
                 if (res.error) {
                     setError(res.error);

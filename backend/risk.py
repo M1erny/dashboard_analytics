@@ -34,7 +34,7 @@ BENCHMARK_WIG = 'ETFBW20TR.WA'  # Beta ETF WIG20TR PCIF-Investment Certificates
 BENCHMARK_MSCI = 'URTH'     # iShares MSCI World ETF
 WATCHLIST_FX = ['USDPLN=X', 'EURPLN=X', 'EURUSD=X', 'DKKEUR=X', 'JPYUSD=X'] # Pairs to track
 BASE_CURRENCY = 'USD'
-LOOKBACK_YEARS = 6
+LOOKBACK_YEARS = 5.2
 
 # Cost of Carry Assumptions (Retail Broker Estimate)
 MARGIN_RATE = 0.12  # 12.0% typical retail margin rate (e.g., Schwab/Fidelity)
