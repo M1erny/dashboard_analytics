@@ -241,8 +241,7 @@ export const Dashboard: React.FC = () => {
 
     const { vitals, leverage, periodicReturns, activeRisks, countryAllocation, stressTests, convexity, ytdHistory } = data;
 
-    // Memoized label
-    const portfolioLabel = portfolioName === 'main' ? 'My Portfolio' : 'Szymon\'s Portfolio';
+    const portfolioLabel = 'My Portfolio';
 
     return (
         <div className="min-h-screen bg-background text-foreground">
@@ -287,28 +286,7 @@ export const Dashboard: React.FC = () => {
                             </div>
                         </div>
 
-                        {/* Divider */}
-                        <div className="hidden md:block w-px h-8 bg-white/10" />
 
-                        {/* Portfolio Switcher */}
-                        <div className="flex bg-white/5 rounded-lg border border-white/10 p-1 relative h-[38px]">
-                            {(['main', 'szymon'] as const).map(portfolio => (
-                                <button
-                                    key={portfolio}
-                                    onClick={() => setPortfolioName(portfolio)}
-                                    disabled={isSwitchingTier}
-                                    className={cn(
-                                        "px-3 py-1 text-[10px] sm:text-xs font-semibold uppercase tracking-wider rounded-md transition-all whitespace-nowrap",
-                                        portfolioName === portfolio
-                                            ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30"
-                                            : "text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent",
-                                        isSwitchingTier ? "opacity-50 cursor-not-allowed" : ""
-                                    )}
-                                >
-                                    {portfolio === 'main' ? 'My Portfolio' : 'Szymon'}
-                                </button>
-                            ))}
-                        </div>
 
                         {/* Cost Tier Toggle & Refresh Wrapper */}
                         <div className="flex w-full md:w-auto items-center gap-3 mt-2 md:mt-0">

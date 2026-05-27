@@ -230,13 +230,9 @@ def normalize_to_base_currency(stock_df, fx_df, portfolio_name="main"):
 def get_period_params(portfolio_name):
     """
     Returns (period_label, start_date_str). 
-    For Szymon's portfolio, the reporting period starts Q2 2026 (2026-04-01).
-    For others, it defaults to the start of the current year.
+    Defaults to the start of the current year.
     """
     current_year = datetime.now().year
-    if portfolio_name.lower() == "szymon":
-        return "Q2 2026", "2026-04-01"
-    
     return "YTD", f"{current_year}-01-01"
 
 # ==========================================
@@ -656,17 +652,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_vol = np.std(ytd_portfolio_daily_ret, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(ytd_portfolio_daily_ret) > 1 else 0
         
         # Determine Annualized Returns
-        # For Szymon (short Q2 window): linear scaling r × (252/N) is the industry-standard
-        # intra-quarter annualization method (FactSet/Bloomberg style). Geometric compounding
-        # is NOT used for short periods as (1+r)^(252/N) explodes when N is small (e.g. 8 days
-        # → exponent of 31.5x turns +11% into +2300%).
-        ytd_trading_days = len(ytd_portfolio_daily_ret)
-        if portfolio_name.lower() == "szymon" and ytd_trading_days > 0:
-            ytd_ann_ret = ytd_return * (ANNUAL_FACTOR / ytd_trading_days)
-            bench_ytd_ann_ret = benchmark_ytd * (ANNUAL_FACTOR / ytd_trading_days)
-        else:
-            ytd_ann_ret = np.mean(ytd_portfolio_daily_ret) * ANNUAL_FACTOR
-            bench_ytd_ann_ret = np.mean(ytd_benchmark) * ANNUAL_FACTOR
+        ytd_ann_ret = np.mean(ytd_portfolio_daily_ret) * ANNUAL_FACTOR
+        bench_ytd_ann_ret = np.mean(ytd_benchmark) * ANNUAL_FACTOR
 
         ytd_sharpe = (ytd_ann_ret - rf_rate) / ytd_vol if ytd_vol > 0 else 0
         
@@ -1338,7 +1325,7 @@ def calculate_periodic_returns(data, portfolio_name="main"):
         '5Y': 252 * 5
     }
     
-    # YTD calculation: from Jan 1st of current year, or Q2 2026 for Szymon
+    # YTD calculation: from Jan 1st of current year
     _, ytd_start = get_period_params(portfolio_name)
     
     results = {}
