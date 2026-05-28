@@ -74,8 +74,8 @@ export const Dashboard: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [isSwitchingTier, setIsSwitchingTier] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [costTier, setCostTier] = useState<CostTier>('none');
-    const [portfolioName, setPortfolioName] = useState<string>('main');
+    const costTier: CostTier = 'none';
+    const portfolioName: string = 'main';
 
     useEffect(() => {
         const isInitialLoad = !data;
@@ -290,30 +290,7 @@ export const Dashboard: React.FC = () => {
 
                         {/* Cost Tier Toggle & Refresh Wrapper */}
                         <div className="flex w-full md:w-auto items-center gap-3 mt-2 md:mt-0">
-                            <div className="flex-1 md:flex-none flex bg-white/5 rounded-lg border border-white/10 p-1 relative h-[38px]">
-                                {isSwitchingTier && (
-                                    <div className="absolute -top-1 -right-1 flex h-3 w-3">
-                                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                        <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
-                                    </div>
-                                )}
-                                {(['institutional', 'retail', 'none'] as const).map(tier => (
-                                    <button
-                                        key={tier}
-                                        onClick={() => setCostTier(tier)}
-                                        disabled={isSwitchingTier}
-                                        className={cn(
-                                            "flex-1 md:flex-none px-2 sm:px-3 py-1 text-[10px] sm:text-xs font-semibold uppercase tracking-wider rounded-md transition-all whitespace-nowrap",
-                                            costTier === tier 
-                                                ? "bg-indigo-500/20 text-indigo-300 border border-indigo-500/30" 
-                                                : "text-gray-500 hover:text-gray-300 hover:bg-white/5 border border-transparent",
-                                            isSwitchingTier ? "opacity-50 cursor-not-allowed" : ""
-                                        )}
-                                    >
-                                        {tier === 'none' ? 'No Drag' : tier}
-                                    </button>
-                                ))}
-                            </div>
+
 
                             {/* Refresh Button */}
                             <button
