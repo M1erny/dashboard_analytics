@@ -149,14 +149,34 @@ def fetch_data(portfolio_name="main"):
                     ticker_obj = yf.Ticker(t)
                     last_price = ticker_obj.fast_info['lastPrice']
                     if last_price is not None and not np.isnan(last_price):
+                        patch_price = last_price
+                        prev_close = ticker_obj.fast_info.get('previousClose')
+                        
+                        if prev_close is not None and not np.isnan(prev_close) and prev_close > 0:
+                            diff_pct = abs(last_price - prev_close) / prev_close
+                            if diff_pct > 0.15:
+                                # Quote is considered stale if price deviates by >15% and we have stale quote markers
+                                open_val = ticker_obj.fast_info.get('open')
+                                volume_val = ticker_obj.fast_info.get('lastVolume')
+                                qtype = ticker_obj.fast_info.get('quoteType')
+                                is_stale_indicator = (
+                                    qtype == 'MUTUALFUND' or 
+                                    open_val is None or 
+                                    np.isnan(open_val) or
+                                    volume_val == 0
+                                )
+                                if is_stale_indicator:
+                                    print(f"  Warning: large difference ({diff_pct*100:.2f}%) between lastPrice ({last_price}) and previousClose ({prev_close}) for {t}. Using previousClose ({prev_close}) instead of stale lastPrice.")
+                                    patch_price = prev_close
+
                         if isinstance(stock_raw.columns, pd.MultiIndex):
                             for price_col in ['Close', 'Adj Close']:
                                 if (price_col, t) in stock_raw.columns:
-                                    stock_raw.loc[last_date, (price_col, t)] = last_price
+                                    stock_raw.loc[last_date, (price_col, t)] = patch_price
                         else:
                             if t in stock_raw.columns:
-                                stock_raw.loc[last_date, t] = last_price
-                        print(f"  Patched latest NaN price for {t} with fast_info lastPrice: {last_price}")
+                                stock_raw.loc[last_date, t] = patch_price
+                        print(f"  Patched latest NaN price for {t} with: {patch_price}")
         except Exception as ex:
             print(f"  Failed to patch latest price for {t}: {ex}")
 
