@@ -122,6 +122,44 @@ def fetch_data(portfolio_name="main"):
                     print(f"Error recovering stock ticker {t} (attempt {attempt + 1}): {ex}")
                 time.sleep(1)
 
+    # --- Patch latest row NaNs using fast_info lastPrice (handling WSE/international update delays) ---
+    print("Checking for latest date NaNs to patch with fast_info...")
+    for t in tickers:
+        try:
+            series = get_ticker_series(stock_raw, t)
+            if not series.empty:
+                last_date = stock_raw.index[-1]
+                is_nan_val = True
+                if isinstance(stock_raw.columns, pd.MultiIndex):
+                    for price_col in ['Close', 'Adj Close']:
+                        if (price_col, t) in stock_raw.columns:
+                            val = stock_raw.loc[last_date, (price_col, t)]
+                            if pd.isna(val):
+                                is_nan_val = True
+                                break
+                            else:
+                                is_nan_val = False
+                else:
+                    if t in stock_raw.columns:
+                        is_nan_val = pd.isna(stock_raw.loc[last_date, t])
+                    else:
+                        is_nan_val = True
+
+                if is_nan_val:
+                    ticker_obj = yf.Ticker(t)
+                    last_price = ticker_obj.fast_info['lastPrice']
+                    if last_price is not None and not np.isnan(last_price):
+                        if isinstance(stock_raw.columns, pd.MultiIndex):
+                            for price_col in ['Close', 'Adj Close']:
+                                if (price_col, t) in stock_raw.columns:
+                                    stock_raw.loc[last_date, (price_col, t)] = last_price
+                        else:
+                            if t in stock_raw.columns:
+                                stock_raw.loc[last_date, t] = last_price
+                        print(f"  Patched latest NaN price for {t} with fast_info lastPrice: {last_price}")
+        except Exception as ex:
+            print(f"  Failed to patch latest price for {t}: {ex}")
+
     # Handle Data Structure (MultiIndex vs Single)
     if isinstance(stock_raw.columns, pd.MultiIndex):
         try:
