@@ -135,7 +135,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                 </div>
 
                 {/* ── RIGHT PANEL: 2x2 compact metrics ── */}
-                <div className="md:col-span-7 lg:col-span-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                <div className="md:col-span-7 lg:col-span-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
 
                     {/* Alpha */}
                     <div className="rounded-xl border border-amber-500/20 bg-gradient-to-br from-amber-950/30 to-slate-950/90 p-4 flex flex-col justify-between">
@@ -280,6 +280,53 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                         </div>
                         <div className="mt-2 pt-2 border-t border-white/[0.06]">
                             <StatRow label="SPY" value={fmt(vitals.benchmarkYtdMaxDrawdown)} valueClassName="text-gray-400" />
+                        </div>
+                    </div>
+
+                    {/* Volatility — Portfolio vs SPY */}
+                    <div className="rounded-xl border border-orange-500/20 bg-gradient-to-br from-orange-950/20 to-slate-950/90 p-4 flex flex-col justify-between">
+                        <div className="flex items-center gap-1.5 mb-2">
+                            <Activity className="h-3.5 w-3.5 text-orange-400" />
+                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Volatility</span>
+                        </div>
+                        <div className="h-[36px] flex items-end">
+                            <span className={cn(
+                                "text-2xl sm:text-3xl font-black tracking-tight leading-none",
+                                (vitals.ytdVol ?? 0) > (vitals.benchmarkYtdVol ?? 0) ? "text-orange-400" : "text-emerald-400"
+                            )}>
+                                {fmt(vitals.ytdVol)}
+                            </span>
+                        </div>
+                        <div className="mt-2 pt-2 border-t border-white/[0.06] space-y-1.5">
+                            <StatRow label="SPY" value={fmt(vitals.benchmarkYtdVol)} valueClassName="text-gray-400" />
+                            {/* Ratio bar */}
+                            {(() => {
+                                const pVol = vitals.ytdVol ?? 0;
+                                const bVol = vitals.benchmarkYtdVol ?? 1;
+                                const ratio = bVol > 0 ? pVol / bVol : 1;
+                                const isHigher = ratio > 1;
+                                return (
+                                    <div className="flex flex-col gap-1">
+                                        <div className="flex items-center gap-1.5">
+                                            <div className="flex-1 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                                                <div
+                                                    className={cn(
+                                                        "h-full rounded-full transition-all duration-700",
+                                                        isHigher ? "bg-orange-500/60" : "bg-emerald-500/60"
+                                                    )}
+                                                    style={{ width: `${Math.min(ratio * 50, 100)}%` }}
+                                                />
+                                            </div>
+                                            <span className={cn(
+                                                "text-[9px] font-mono font-bold whitespace-nowrap",
+                                                isHigher ? "text-orange-400" : "text-emerald-400"
+                                            )}>
+                                                {ratio.toFixed(2)}×
+                                            </span>
+                                        </div>
+                                    </div>
+                                );
+                            })()}
                         </div>
                     </div>
                 </div>

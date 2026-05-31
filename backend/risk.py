@@ -845,6 +845,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         annual_financing_cost = 0.0
         ytd_sharpe = 0.0
         bench_ytd_sharpe = 0.0
+        ytd_vol = 0.0
+        bench_ytd_vol = 0.0
         bench_hist_sharpe = 0.0
         ytd_return_pln = 0.0
         wig_ytd = 0.0
@@ -1074,6 +1076,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Short_Only_Beta': ytd_short_only_beta if 'ytd_short_only_beta' in locals() else 0,
         'YTD_Sharpe': ytd_sharpe,
         'Benchmark_YTD_Sharpe': bench_ytd_sharpe,
+        'YTD_Vol': ytd_vol,
+        'Benchmark_YTD_Vol': bench_ytd_vol,
         'Benchmark_Hist_Sharpe': bench_hist_sharpe,
         'YTD_Return_PLN': ytd_return_pln,
         'WIG_YTD': wig_ytd,

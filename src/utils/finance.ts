@@ -31,6 +31,9 @@ export interface Vitals {
     ytdSharpe: number;
     benchmarkYtdSharpe: number;
     benchmarkHistSharpe: number;
+    // YTD Volatility (annualized)
+    ytdVol?: number;
+    benchmarkYtdVol?: number;
     ytdReturnPln: number;
     wigYtd: number;
     msciYtd: number;

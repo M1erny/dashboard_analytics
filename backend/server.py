@@ -177,6 +177,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "ytdSharpe": to_float(metrics.get('YTD_Sharpe')),           # Previously riskEfficiencyVol
                 "benchmarkYtdSharpe": to_float(metrics.get('Benchmark_YTD_Sharpe')), 
                 "benchmarkHistSharpe": to_float(metrics.get('Benchmark_Hist_Sharpe')), # For Hist Avg comparison
+                "ytdVol": to_float(metrics.get('YTD_Vol')),
+                "benchmarkYtdVol": to_float(metrics.get('Benchmark_YTD_Vol')),
                 "ytdReturnPln": to_float(metrics.get('YTD_Return_PLN')),
                 "wigYtd": to_float(metrics.get('WIG_YTD')),
                 "msciYtd": to_float(metrics.get('MSCI_YTD')),
