@@ -71,7 +71,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     ytdPositive ? "from-emerald-950/40 via-slate-900/90 to-slate-950" : "from-rose-950/40 via-slate-900/90 to-slate-950",
                     "shadow-2xl shadow-black/30"
                 )}>
-                    <div className="p-5 pb-3">
+                    <div className="p-4 pb-3 flex-1 flex flex-col justify-center">
                         <div className="flex items-center gap-2 mb-3">
                             <div className={cn(
                                 "flex items-center justify-center w-7 h-7 rounded-lg",
@@ -107,7 +107,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     </div>
 
                     {/* Benchmark comparison strip */}
-                    <div className="mt-auto grid grid-cols-3 divide-x divide-white/[0.06] border-t border-white/[0.06] bg-white/[0.02]">
+                    <div className="mt-auto h-[68px] grid grid-cols-3 divide-x divide-white/[0.06] border-t border-white/[0.06] bg-white/[0.02]">
                         {[
                             { label: 'SPY', value: vitals.benchmarkYtd },
                             { label: 'MSCI', value: vitals.msciYtd },
@@ -117,7 +117,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             const bVal = b.value ?? 0;
                             const delta = portfolioRet - bVal;
                             return (
-                                <div key={b.label} className="flex flex-col items-center py-2.5 px-2 gap-0.5">
+                                <div key={b.label} className="flex flex-col items-center justify-center py-2 px-2 gap-0.5 h-full">
                                     <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">{b.label}</span>
                                     <span className={cn("font-mono text-sm font-bold tracking-tight", returnColor(b.value))}>
                                         {fmtSigned(b.value)}
@@ -143,7 +143,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             <Zap className="h-3.5 w-3.5 text-amber-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Alpha</span>
                         </div>
-                        <div className="h-[36px] flex items-end">
+                        <div className="flex-1 flex items-center">
                             <span className={cn(
                                 "text-2xl sm:text-3xl font-black tracking-tight leading-none",
                                 (vitals.ytdAlphaRaw ?? 0) >= 0 ? "text-amber-400" : "text-rose-400"
@@ -151,7 +151,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                 {fmtSigned(vitals.ytdAlphaRaw)}
                             </span>
                         </div>
-                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[50px] flex flex-col justify-start">
+                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[52px] flex flex-col justify-start">
                             <StatRow label="Ann." value={fmtSigned(vitals.ytdAlpha)}
                                 valueClassName={(vitals.ytdAlpha ?? 0) >= 0 ? "text-amber-400/70" : "text-rose-400/70"} />
                         </div>
@@ -163,7 +163,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             <Activity className="h-3.5 w-3.5 text-blue-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Beta</span>
                         </div>
-                        <div className="flex items-end justify-between gap-3 w-full h-[36px]">
+                        <div className="flex-1 flex items-center justify-between gap-3 w-full">
                             <span className="text-2xl sm:text-3xl font-black tracking-tight text-white leading-none shrink-0">
                                 {fmtNum(vitals.ytdBeta)}
                             </span>
@@ -192,7 +192,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                 </div>
                             )}
                         </div>
-                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[50px] flex flex-col justify-start">
+                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[52px] flex flex-col justify-start">
                             <div className="flex justify-between items-center py-1.5">
                                 <span className="text-[11px] text-gray-500 uppercase tracking-wider font-medium">Regime</span>
                                 <span className={cn(
@@ -214,7 +214,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             <Activity className="h-3.5 w-3.5 text-cyan-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Correlation</span>
                         </div>
-                        <div className="h-[36px] flex items-end">
+                        <div className="flex-1 flex items-center">
                             <span className={cn(
                                 "text-2xl sm:text-3xl font-black tracking-tight leading-none",
                                 (vitals.ytdCorrelation ?? 0) > 0.7 ? "text-emerald-400" : (vitals.ytdCorrelation ?? 0) < 0 ? "text-rose-400" : "text-white"
@@ -222,7 +222,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                 {fmtNum(vitals.ytdCorrelation)}
                             </span>
                         </div>
-                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[50px] flex flex-col justify-start">
+                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[52px] flex flex-col justify-start">
                             <div className="flex justify-between items-center py-1.5">
                                 <span className="text-[11px] text-gray-500 uppercase tracking-wider font-medium">vs SPY</span>
                                 <span className={cn(
@@ -245,7 +245,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             <Gauge className="h-3.5 w-3.5 text-violet-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Sharpe</span>
                         </div>
-                        <div className="h-[36px] flex items-end">
+                        <div className="flex-1 flex items-center">
                             <span className={cn(
                                 "text-2xl sm:text-3xl font-black tracking-tight leading-none",
                                 (vitals.ytdSharpe ?? 0) > 1 ? "text-emerald-400" : (vitals.ytdSharpe ?? 0) > 0.5 ? "text-white" : "text-gray-400"
@@ -253,7 +253,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                 {fmtNum(vitals.ytdSharpe)}
                             </span>
                         </div>
-                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[50px] flex flex-col justify-start">
+                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[52px] flex flex-col justify-start">
                             <StatRow label="SPY" value={fmtNum(vitals.benchmarkYtdSharpe)} valueClassName="text-gray-400" />
                         </div>
                     </div>
@@ -269,7 +269,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             <TrendingDown className="h-3.5 w-3.5 text-rose-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Max DD</span>
                         </div>
-                        <div className="h-[36px] flex items-end">
+                        <div className="flex-1 flex items-center">
                             <span className={cn(
                                 "text-2xl sm:text-3xl font-black tracking-tight leading-none",
                                 (vitals.ytdMaxDrawdown ?? 0) < -0.1 ? "text-rose-400"
@@ -278,7 +278,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                 {fmt(vitals.ytdMaxDrawdown)}
                             </span>
                         </div>
-                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[50px] flex flex-col justify-start">
+                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[52px] flex flex-col justify-start">
                             <StatRow label="SPY" value={fmt(vitals.benchmarkYtdMaxDrawdown)} valueClassName="text-gray-400" />
                         </div>
                     </div>
@@ -289,7 +289,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             <Activity className="h-3.5 w-3.5 text-orange-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Volatility</span>
                         </div>
-                        <div className="h-[36px] flex items-end">
+                        <div className="flex-1 flex items-center">
                             <span className={cn(
                                 "text-2xl sm:text-3xl font-black tracking-tight leading-none",
                                 (vitals.ytdVol ?? 0) > (vitals.benchmarkYtdVol ?? 0) ? "text-orange-400" : "text-emerald-400"
@@ -297,7 +297,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                 {fmt(vitals.ytdVol)}
                             </span>
                         </div>
-                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[50px] flex flex-col justify-start space-y-1.5">
+                        <div className="mt-auto pt-2 border-t border-white/[0.06] h-[52px] flex flex-col justify-start space-y-1">
                             <StatRow label="SPY" value={fmt(vitals.benchmarkYtdVol)} valueClassName="text-gray-400" />
                             {/* Ratio bar */}
                             {(() => {
