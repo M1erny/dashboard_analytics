@@ -31,11 +31,11 @@ export const FxExposureWidget: React.FC<FxExposureWidgetProps> = React.memo(({ v
     if (entries.length === 0) return null;
 
     return (
-        <div className="relative" ref={containerRef}>
+        <div className="relative h-full" ref={containerRef}>
             <button
                 onClick={() => setIsOpen(!isOpen)}
                 className={cn(
-                    "flex flex-col items-start justify-center px-4 py-2 rounded-lg border transition-all duration-200 w-full md:w-auto",
+                    "flex min-h-[56px] h-full flex-col items-start justify-center px-4 py-2 rounded-lg border transition-all duration-200 w-full md:w-auto",
                     isOpen
                         ? "bg-emerald-500/20 border-emerald-500/50"
                         : "bg-white/5 border-white/10 hover:bg-white/10"
@@ -46,7 +46,7 @@ export const FxExposureWidget: React.FC<FxExposureWidgetProps> = React.memo(({ v
                     <span>Net FX</span>
                     <ChevronDown className={cn("h-3 w-3 transition-transform", isOpen && "rotate-180")} />
                 </div>
-                <div className="font-mono text-emerald-400 text-sm font-bold flex gap-2 mt-0.5">
+                <div className="font-mono text-emerald-400 text-sm font-bold flex flex-wrap gap-x-2 gap-y-0.5 mt-0.5">
                     {entries.slice(0, 2).map(([curr, share]) => (
                         <span key={curr} className={cn(share >= 0 ? "text-emerald-400" : "text-rose-400")}>
                             {curr} <span className="opacity-80">{share >= 0 ? '+' : ''}{(share * 100).toFixed(0)}%</span>

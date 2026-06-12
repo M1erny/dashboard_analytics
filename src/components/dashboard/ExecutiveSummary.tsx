@@ -65,13 +65,13 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
 
                 {/* ── HERO: YTD Return ── */}
                 <div className={cn(
-                    "md:col-span-5 lg:col-span-4 rounded-2xl overflow-hidden flex flex-col",
+                    "md:col-span-5 lg:col-span-4 rounded-2xl overflow-hidden flex flex-col min-h-[186px]",
                     "border", ytdPositive ? "border-emerald-500/20" : "border-rose-500/20",
                     "bg-gradient-to-br",
                     ytdPositive ? "from-emerald-950/40 via-slate-900/90 to-slate-950" : "from-rose-950/40 via-slate-900/90 to-slate-950",
                     "shadow-2xl shadow-black/30"
                 )}>
-                    <div className="p-4 pb-3 flex-1 flex flex-col justify-center">
+                    <div className="p-4 sm:p-5 pb-3 flex-1 flex flex-col justify-center">
                         <div className="flex items-center gap-2 mb-3">
                             <div className={cn(
                                 "flex items-center justify-center w-7 h-7 rounded-lg",
@@ -82,7 +82,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             <span className="text-[11px] text-gray-400 uppercase tracking-[0.15em] font-semibold">{periodLabel} Return</span>
                         </div>
 
-                        <div className="flex items-baseline gap-2.5">
+                        <div className="flex flex-wrap items-end gap-2.5">
                             <span
                                 className={cn(
                                     "text-4xl sm:text-5xl font-black tracking-tighter leading-none transition-all duration-500",
@@ -107,7 +107,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     </div>
 
                     {/* Benchmark comparison strip */}
-                    <div className="mt-auto h-[68px] grid grid-cols-3 divide-x divide-white/[0.06] border-t border-white/[0.06] bg-white/[0.02]">
+                    <div className="mt-auto min-h-[68px] grid grid-cols-3 divide-x divide-white/[0.06] border-t border-white/[0.06] bg-white/[0.02]">
                         {[
                             { label: 'SPY', value: vitals.benchmarkYtd },
                             { label: 'MSCI', value: vitals.msciYtd },
@@ -138,7 +138,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                 <div className="md:col-span-7 lg:col-span-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
 
                     {/* Alpha */}
-                    <div className="rounded-xl border border-amber-500/20 bg-gradient-to-br from-amber-950/30 to-slate-950/90 p-4 flex flex-col">
+                    <div className="rounded-xl border border-amber-500/20 bg-gradient-to-br from-amber-950/30 to-slate-950/90 p-3.5 sm:p-4 flex flex-col min-h-[144px]">
                         <div className="flex items-center gap-1.5 mb-2">
                             <Zap className="h-3.5 w-3.5 text-amber-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Alpha</span>
@@ -158,7 +158,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     </div>
 
                     {/* Beta */}
-                    <div className="rounded-xl border border-blue-500/20 bg-gradient-to-br from-blue-950/20 to-slate-950/90 p-4 flex flex-col">
+                    <div className="rounded-xl border border-blue-500/20 bg-gradient-to-br from-blue-950/20 to-slate-950/90 p-3.5 sm:p-4 flex flex-col min-h-[144px]">
                         <div className="flex items-center gap-1.5 mb-2">
                             <Activity className="h-3.5 w-3.5 text-blue-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Beta</span>
@@ -209,7 +209,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     </div>
 
                     {/* Correlation */}
-                    <div className="rounded-xl border border-cyan-500/20 bg-gradient-to-br from-cyan-950/20 to-slate-950/90 p-4 flex flex-col">
+                    <div className="rounded-xl border border-cyan-500/20 bg-gradient-to-br from-cyan-950/20 to-slate-950/90 p-3.5 sm:p-4 flex flex-col min-h-[144px]">
                         <div className="flex items-center gap-1.5 mb-2">
                             <Activity className="h-3.5 w-3.5 text-cyan-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Correlation</span>
@@ -240,7 +240,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     </div>
 
                     {/* YTD Sharpe */}
-                    <div className="rounded-xl border border-violet-500/20 bg-gradient-to-br from-violet-950/20 to-slate-950/90 p-4 flex flex-col">
+                    <div className="rounded-xl border border-violet-500/20 bg-gradient-to-br from-violet-950/20 to-slate-950/90 p-3.5 sm:p-4 flex flex-col min-h-[144px]">
                         <div className="flex items-center gap-1.5 mb-2">
                             <Gauge className="h-3.5 w-3.5 text-violet-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Sharpe</span>
@@ -260,7 +260,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
 
                     {/* Max Drawdown */}
                     <div className={cn(
-                        "rounded-xl border p-4 flex flex-col bg-gradient-to-br",
+                        "rounded-xl border p-3.5 sm:p-4 flex flex-col bg-gradient-to-br min-h-[144px]",
                         (vitals.ytdMaxDrawdown ?? 0) < -0.1
                             ? "border-rose-500/30 from-rose-950/30 to-slate-950/90"
                             : "border-white/10 from-slate-900/50 to-slate-950/90"
@@ -284,7 +284,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     </div>
 
                     {/* Volatility — Portfolio vs SPY */}
-                    <div className="rounded-xl border border-orange-500/20 bg-gradient-to-br from-orange-950/20 to-slate-950/90 p-4 flex flex-col">
+                    <div className="rounded-xl border border-orange-500/20 bg-gradient-to-br from-orange-950/20 to-slate-950/90 p-3.5 sm:p-4 flex flex-col min-h-[144px]">
                         <div className="flex items-center gap-1.5 mb-2">
                             <Activity className="h-3.5 w-3.5 text-orange-400" />
                             <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Volatility</span>
@@ -336,7 +336,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
 
                 {/* ── L/S Contribution, Financing & Momentum — 4 cols ── */}
-                <div className="lg:col-span-4 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col gap-3">
+                <div className="lg:col-span-4 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-3.5 sm:p-4 backdrop-blur-xl flex flex-col gap-3">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
                             <BarChart3 className="h-4 w-4 text-blue-400" />
@@ -436,7 +436,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                 </div>
 
                 {/* ── Stress Tests — 4 cols ── */}
-                <div className="lg:col-span-4 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 backdrop-blur-xl flex flex-col gap-2">
+                <div className="lg:col-span-4 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-3.5 sm:p-4 backdrop-blur-xl flex flex-col gap-2">
                     {/* Header */}
                     <div className="flex items-center justify-between mb-1">
                         <div className="flex items-center gap-2">
@@ -472,7 +472,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                     <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
                                         {st.scenario.replace(/\(.*?\)/, '').trim()}
                                     </span>
-                                    <div className="flex items-center gap-1.5">
+                                    <div className="flex items-center gap-1.5 shrink-0">
                                         {st.stressDays && (
                                             <span className="font-mono text-[9px] font-bold px-1.5 py-0.5 rounded border border-white/[0.08] bg-white/[0.03] text-gray-500 whitespace-nowrap">
                                                 {st.stressDays}d
@@ -490,7 +490,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                 </div>
 
                                 {/* Row 2: Two numbers side-by-side */}
-                                <div className="grid grid-cols-2 gap-2 items-end">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 items-end">
                                     {/* Quadratic model — dominant */}
                                     <div className="flex flex-col gap-0.5">
                                         <span className="text-[8px] text-gray-600 uppercase tracking-widest font-semibold">
@@ -512,7 +512,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                     </div>
 
                                     {/* Beta-only — secondary */}
-                                    <div className="flex flex-col gap-0.5 border-l border-white/[0.06] pl-2">
+                                    <div className="flex flex-col gap-0.5 border-t sm:border-t-0 sm:border-l border-white/[0.06] pt-2 sm:pt-0 sm:pl-2">
                                         <span className="text-[8px] text-gray-600 uppercase tracking-widest font-semibold">
                                             β only
                                         </span>

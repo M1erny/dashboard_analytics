@@ -256,21 +256,21 @@ export const Dashboard: React.FC = () => {
             {/* Animated top bar */}
             <div className="animated-top-bar h-[2px] w-full" />
 
-            <div className="p-4 md:p-8">
+            <div className="px-4 py-5 sm:px-5 md:p-8">
             <div className="mx-auto max-w-[1600px] space-y-6 md:space-y-8">
 
                 {/* Responsive Header */}
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                    <div>
-                        <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white flex items-center gap-3">
-                            <div className="p-2 bg-gradient-to-br from-indigo-500/20 to-blue-500/20 rounded-xl border border-white/10">
+                <div className="flex flex-col xl:flex-row xl:items-start justify-between gap-5 md:gap-6">
+                    <div className="min-w-0">
+                        <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white flex items-center gap-3 min-w-0">
+                            <div className="p-2 bg-gradient-to-br from-indigo-500/20 to-blue-500/20 rounded-xl border border-white/10 shrink-0">
                                 <LayoutDashboard className="h-6 w-6 md:h-7 md:w-7 text-indigo-400" />
                             </div>
-                            <div className="flex flex-col">
-                                <span className="bg-gradient-to-r from-white via-white to-gray-400 bg-clip-text text-transparent leading-none">
+                            <div className="flex flex-col min-w-0">
+                                <span className="bg-gradient-to-r from-white via-white to-gray-400 bg-clip-text text-transparent leading-none truncate">
                                     {portfolioLabel}
                                 </span>
-                                <span className="text-[11px] font-normal text-gray-500 tracking-[0.12em] uppercase mt-1 flex items-center gap-1.5">
+                                <span className="text-[11px] font-normal text-gray-500 tracking-[0.12em] uppercase mt-1 flex items-center gap-1.5 whitespace-nowrap">
                                     <Clock className="h-3 w-3" />
                                     Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                 </span>
@@ -279,16 +279,18 @@ export const Dashboard: React.FC = () => {
                     </div>
 
                     {/* Header Controls */}
-                    <div className="flex flex-wrap md:flex-nowrap items-center gap-3 text-sm w-full md:w-auto">
+                    <div className="flex flex-col sm:flex-row sm:flex-wrap xl:flex-nowrap items-stretch sm:items-center gap-3 text-sm w-full xl:w-auto">
 
                         {/* Exposure Pills */}
-                        <div className="flex items-center gap-2">
-                            <FxExposureWidget vitals={vitals} periodLabel={vitals?.periodLabel ?? "YTD"} />
-                            <div className="flex bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-3 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-emerald-500/5 transition-all hover:scale-105 hover:border-emerald-500/40">
+                        <div className="grid grid-cols-2 sm:flex items-stretch gap-2 w-full xl:w-auto">
+                            <div className="col-span-2 sm:col-span-1">
+                                <FxExposureWidget vitals={vitals} periodLabel={vitals?.periodLabel ?? "YTD"} />
+                            </div>
+                            <div className="flex min-h-[56px] bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-3 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-emerald-500/5 transition-all hover:scale-[1.02] hover:border-emerald-500/40">
                                 <p className="text-[9px] uppercase tracking-wider text-emerald-500/70 font-bold mb-0.5">Long Exp</p>
                                 <p className="font-mono text-emerald-400 font-black text-sm leading-none">{formatPercent(leverage.Long_Exp)}</p>
                             </div>
-                            <div className="flex bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-3 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-rose-500/5 transition-all hover:scale-105 hover:border-rose-500/40">
+                            <div className="flex min-h-[56px] bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-3 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-rose-500/5 transition-all hover:scale-[1.02] hover:border-rose-500/40">
                                 <p className="text-[9px] uppercase tracking-wider text-rose-500/70 font-bold mb-0.5">Short Exp</p>
                                 <p className="font-mono text-rose-400 font-black text-sm leading-none">{formatPercent(leverage.Short_Exp)}</p>
                             </div>
@@ -297,9 +299,9 @@ export const Dashboard: React.FC = () => {
 
 
                         {/* Cost Tier Toggle & Refresh Wrapper */}
-                        <div className="flex w-full md:w-auto items-center gap-3 mt-2 md:mt-0">
+                        <div className="flex w-full sm:w-auto items-center gap-3">
 
-                            <div className="flex items-center rounded-lg border border-white/10 bg-white/[0.04] p-1 h-[38px]">
+                            <div className="flex flex-1 sm:flex-none items-center rounded-lg border border-white/10 bg-white/[0.04] p-1 h-[38px] min-w-0">
                                 <CircleDollarSign className="h-4 w-4 text-amber-400 mx-2 hidden sm:block" />
                                 {COST_TIER_OPTIONS.map(option => {
                                     const active = costTier === option.value;
@@ -308,7 +310,7 @@ export const Dashboard: React.FC = () => {
                                             key={option.value}
                                             onClick={() => setCostTier(option.value)}
                                             className={cn(
-                                                "h-7 px-2.5 rounded-md text-[11px] font-bold uppercase tracking-[0.08em] transition-colors",
+                                                "h-7 flex-1 sm:flex-none px-2.5 rounded-md text-[11px] font-bold uppercase tracking-[0.08em] transition-colors whitespace-nowrap",
                                                 active
                                                     ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
                                                     : "text-gray-500 hover:text-gray-300 hover:bg-white/[0.04]"
