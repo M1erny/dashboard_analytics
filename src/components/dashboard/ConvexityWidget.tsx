@@ -75,7 +75,7 @@ const ScatterPlot: React.FC<{
         ctx.beginPath(); ctx.moveTo(zx, pad.top);  ctx.lineTo(zx, pad.top + plotH); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(pad.left, zy); ctx.lineTo(pad.left + plotW, zy); ctx.stroke();
 
-        // β=1 reference
+        // Beta=1 reference
         ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
         ctx.beginPath(); ctx.moveTo(sx(-maxAbsX), sy(-maxAbsX)); ctx.lineTo(sx(maxAbsX), sy(maxAbsX)); ctx.stroke();
         ctx.setLineDash([]);
@@ -113,14 +113,14 @@ const ScatterPlot: React.FC<{
 
         // Axis labels
         ctx.fillStyle = 'rgba(156,163,175,0.7)'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
-        ctx.fillText('SPY Daily Return →', w / 2, h - 4);
+        ctx.fillText('SPY daily return', w / 2, h - 4);
         ctx.save(); ctx.translate(10, h / 2); ctx.rotate(-Math.PI / 2);
-        ctx.fillText('Portfolio Return →', 0, 0); ctx.restore();
+        ctx.fillText('Portfolio return', 0, 0); ctx.restore();
 
         // Annotations
         ctx.fillStyle = 'rgba(251,191,36,0.7)'; ctx.font = 'bold 10px monospace'; ctx.textAlign = 'right';
-        ctx.fillText(`R² = ${rSquared.toFixed(3)}`, w - pad.right - 4, pad.top + 14);
-        ctx.fillText(`β₂ = ${b2.toFixed(4)}`,       w - pad.right - 4, pad.top + 28);
+        ctx.fillText(`Fit = ${rSquared.toFixed(3)}`, w - pad.right - 4, pad.top + 14);
+        ctx.fillText(`Curve = ${b2.toFixed(4)}`,     w - pad.right - 4, pad.top + 28);
 
     }, [data, coeffs, linearCoeffs, rSquared]);
 
@@ -212,7 +212,7 @@ const ScatterPlot: React.FC<{
                             </div>
                             {/* Spread bar */}
                             <div className="mt-2 flex justify-between items-center">
-                                <span className="text-[9px] text-gray-600">α-spread</span>
+                                <span className="text-[9px] text-gray-600">Alpha spread</span>
                                 <span className={`text-[10px] font-bold ${(tooltip.point.p - tooltip.point.b) >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                                     {sp(tooltip.point.p - tooltip.point.b)}
                                 </span>
@@ -336,16 +336,16 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, com
                     <div className="flex-1 h-2 rounded-r-full bg-rose-500/20 overflow-hidden flex justify-end"><div className="h-full bg-rose-500/60 rounded-r-full transition-all duration-700" style={{ width: `${Math.min((downsideCapture ?? 0) * 50, 100)}%` }} /></div>
                 </div>
                 <p className="text-[10px] text-gray-600 mt-3 leading-relaxed">
-                    <strong className="text-gray-500">{profileLabel} profile:</strong>{' '}
+                    <strong className="text-gray-500">{profileLabel}:</strong>{' '}
                     {profileTone === 'mixed'
-                        ? 'Capture spread and regression beta disagree.'
+                        ? 'Capture spread is strong, but the curve does not confirm convexity.'
                         : profileTone === 'positive'
-                            ? 'Upside capture beats downside and beta2 is positive.'
-                            : 'Capture spread and beta2 do not confirm convexity.'}
+                            ? 'Upside capture beats downside and the curve is positive.'
+                            : 'Capture spread and curve shape do not confirm convexity.'}
                 </p>
                 <div className="mt-2 flex items-center justify-between">
-                    <span className="text-[9px] text-gray-500 uppercase tracking-wider font-medium">Regression</span>
-                    <span className={cn("text-[9px] font-mono px-2 py-0.5 rounded border", isConvex ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20")}>β₂={fmtNum(quadraticCoeffs?.[0], 4)} · R²={fmtNum(rSquared, 3)}</span>
+                    <span className="text-[9px] text-gray-500 uppercase tracking-wider font-medium">Model Fit</span>
+                    <span className={cn("text-[9px] font-mono px-2 py-0.5 rounded border", isConvex ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20")}>Curve {fmtNum(quadraticCoeffs?.[0], 4)} | Fit {fmtNum(rSquared, 3)}</span>
                 </div>
             </div>
         );
@@ -359,7 +359,7 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, com
                         <TrendingUp className="h-4 w-4 text-amber-400" />
                         <span className="text-[11px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Return Scatter + Regression</span>
                     </div>
-                    <span className={cn("text-[9px] font-mono px-2 py-0.5 rounded border", isConvex ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20")}>β₂={fmtNum(quadraticCoeffs?.[0], 4)} {isConvex ? '↗ Convex' : '↘ Concave'}</span>
+                    <span className={cn("text-[9px] font-mono px-2 py-0.5 rounded border", isConvex ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20")}>Curve {fmtNum(quadraticCoeffs?.[0], 4)} | {isConvex ? 'Convex' : 'Concave'}</span>
                 </div>
                 {scatterData && scatterData.length > 0 ? (
                     <ScatterPlot data={scatterData} coeffs={quadraticCoeffs} linearCoeffs={convexity.linearCoeffs} rSquared={rSquared} />
@@ -367,11 +367,11 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, com
                     <div className="flex items-center justify-center h-[320px] text-sm text-gray-600">No scatter data available</div>
                 )}
                 <p className="text-[10px] text-gray-600 mt-2 leading-relaxed">
-                    <span className="text-amber-400/70">━</span> Quadratic fit &nbsp;·&nbsp;
-                    <span className="text-slate-400/70">┄┄</span> Linear fit &nbsp;·&nbsp;
-                    <span className="text-gray-500/40">┄┄</span> β=1 reference &nbsp;·&nbsp;
-                    <span className="text-emerald-400/60">●</span> Favorable &nbsp;
-                    <span className="text-rose-400/60">●</span> Unfavorable
+                    <span className="text-amber-400/70">Quadratic fit</span> |{' '}
+                    <span className="text-slate-400/70">Linear fit</span> |{' '}
+                    <span className="text-gray-500/60">Beta = 1</span> |{' '}
+                    <span className="text-emerald-400/60">Favorable</span> /{' '}
+                    <span className="text-rose-400/60">Unfavorable</span>
                 </p>
             </div>
         </div>

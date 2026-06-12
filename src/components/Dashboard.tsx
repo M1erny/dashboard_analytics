@@ -25,7 +25,7 @@ const WidgetSkeleton = ({ height = 'h-[300px]' }: { height?: string }) => (
     )}>
         <div className="flex flex-col items-center gap-3">
             <div className="h-6 w-6 rounded-full border-2 border-white/10 border-t-white/40 animate-spin" />
-            <span className="text-[11px] text-gray-600 uppercase tracking-widest">Loading widget…</span>
+            <span className="text-[11px] text-gray-600 uppercase tracking-widest">Loading widget...</span>
         </div>
     </div>
 );
@@ -150,7 +150,7 @@ export const Dashboard: React.FC = () => {
                         </div>
                         <div className="text-center">
                             <p className="text-white font-black text-lg tracking-tight">Portfolio Intelligence</p>
-                            <p className="text-gray-500 text-xs tracking-[0.15em] uppercase mt-0.5">Loading analytics engine…</p>
+                            <p className="text-gray-500 text-xs tracking-[0.15em] uppercase mt-0.5">Loading analytics engine...</p>
                         </div>
                     </div>
 
@@ -287,11 +287,11 @@ export const Dashboard: React.FC = () => {
                                 <FxExposureWidget vitals={vitals} periodLabel={vitals?.periodLabel ?? "YTD"} />
                             </div>
                             <div className="flex min-h-[56px] bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-3 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-emerald-500/5 transition-all hover:scale-[1.02] hover:border-emerald-500/40">
-                                <p className="text-[9px] uppercase tracking-wider text-emerald-500/70 font-bold mb-0.5">Long Exp</p>
+                                <p className="text-[9px] uppercase tracking-wider text-emerald-500/70 font-bold mb-0.5">Long Exposure</p>
                                 <p className="font-mono text-emerald-400 font-black text-sm leading-none">{formatPercent(leverage.Long_Exp)}</p>
                             </div>
                             <div className="flex min-h-[56px] bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-3 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-rose-500/5 transition-all hover:scale-[1.02] hover:border-rose-500/40">
-                                <p className="text-[9px] uppercase tracking-wider text-rose-500/70 font-bold mb-0.5">Short Exp</p>
+                                <p className="text-[9px] uppercase tracking-wider text-rose-500/70 font-bold mb-0.5">Short Exposure</p>
                                 <p className="font-mono text-rose-400 font-black text-sm leading-none">{formatPercent(leverage.Short_Exp)}</p>
                             </div>
                         </div>
