@@ -5,7 +5,7 @@ import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
-import { LayoutDashboard, ShieldCheck, RefreshCw, Clock } from 'lucide-react';
+import { LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 // ─── Lazy-loaded below-the-fold widgets ──────────────────────
@@ -69,12 +69,18 @@ const getAuthorColors = (author: string) => {
     }
 };
 
+const COST_TIER_OPTIONS: { value: CostTier; label: string; short: string }[] = [
+    { value: 'retail', label: 'Retail', short: 'Ret.' },
+    { value: 'institutional', label: 'Institutional', short: 'Inst.' },
+    { value: 'none', label: 'No Drag', short: 'None' },
+];
+
 export const Dashboard: React.FC = () => {
     const [data, setData] = useState<FullRiskReport | null>(null);
     const [loading, setLoading] = useState(true);
     const [isSwitchingTier, setIsSwitchingTier] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const costTier: CostTier = 'none';
+    const [costTier, setCostTier] = useState<CostTier>('retail');
     const portfolioName: string = 'main';
 
     useEffect(() => {
@@ -88,6 +94,8 @@ export const Dashboard: React.FC = () => {
                     setError(res.error);
                 } else {
                     setData(res);
+                    setError(null);
+                    setLastUpdated(new Date());
                 }
             } else {
                 setError("Failed to connect to backend API. Please check if the server is running.");
@@ -106,7 +114,7 @@ export const Dashboard: React.FC = () => {
         []
     );
 
-    const [lastUpdated] = useState(() => new Date());
+    const [lastUpdated, setLastUpdated] = useState(() => new Date());
     const [quoteIdx, setQuoteIdx] = useState(() => Math.floor(Math.random() * QUOTES.length));
     const [quoteVisible, setQuoteVisible] = useState(true);
 
@@ -291,13 +299,39 @@ export const Dashboard: React.FC = () => {
                         {/* Cost Tier Toggle & Refresh Wrapper */}
                         <div className="flex w-full md:w-auto items-center gap-3 mt-2 md:mt-0">
 
+                            <div className="flex items-center rounded-lg border border-white/10 bg-white/[0.04] p-1 h-[38px]">
+                                <CircleDollarSign className="h-4 w-4 text-amber-400 mx-2 hidden sm:block" />
+                                {COST_TIER_OPTIONS.map(option => {
+                                    const active = costTier === option.value;
+                                    return (
+                                        <button
+                                            key={option.value}
+                                            onClick={() => setCostTier(option.value)}
+                                            className={cn(
+                                                "h-7 px-2.5 rounded-md text-[11px] font-bold uppercase tracking-[0.08em] transition-colors",
+                                                active
+                                                    ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                                    : "text-gray-500 hover:text-gray-300 hover:bg-white/[0.04]"
+                                            )}
+                                            title={`${option.label} financing assumptions`}
+                                        >
+                                            <span className="hidden sm:inline">{option.label}</span>
+                                            <span className="sm:hidden">{option.short}</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
 
                             {/* Refresh Button */}
                             <button
                                 onClick={() => {
                                     setIsSwitchingTier(true);
                                     fetchDashboardData(5, 1000, true, costTier, portfolioName).then(res => { // force=true
-                                        if (res) setData(res);
+                                        if (res) {
+                                            setData(res);
+                                            setError(res.error || null);
+                                            if (!res.error) setLastUpdated(new Date());
+                                        }
                                     }).finally(() => setIsSwitchingTier(false));
                                 }}
                                 className="bg-white/5 hover:bg-white/10 w-[38px] h-[38px] rounded-lg border border-white/10 transition-colors flex items-center justify-center shrink-0"

@@ -8,6 +8,7 @@ Tests:
 
 import numpy as np
 import pandas as pd
+from risk import stress_test_portfolio
 
 print("=" * 60)
 print("  PORTFOLIO CALCULATION VERIFICATION")
@@ -170,7 +171,7 @@ else:
     failed += 1
 
 # ============================================================
-# TEST 6: Convexity - Quadratic Regression & Non-Linear Stress
+# TEST 6: Convexity - Quadratic Regression & Scaled Non-Linear Stress
 # ============================================================
 print("\n--- TEST 6: Quadratic regression detects convexity ---")
 
@@ -187,20 +188,32 @@ else:
     print("  ❌ FAIL: β₂ should be positive for convex portfolio")
     failed += 1
 
-# Verify non-linear stress test diverges from linear
-linear_crash = coeffs[1] * (-0.10)  # β₁ × -10%
-nonlinear_crash = np.polyval(coeffs, -0.10)  # α + β₁×(-0.10) + β₂×(-0.10)²
+# Verify scaled non-linear stress test diverges from linear
+metrics = {
+    "Beta": coeffs[1],
+    "YTD_Beta": coeffs[1],
+    "Convexity_Metrics": {
+        "Quadratic_Coeffs": coeffs.tolist(),
+        "R_Squared": 0.50,
+    },
+}
+stress = stress_test_portfolio(metrics)
+crash = stress["Market Crash (-10%)"]
+linear_crash = crash["linear"]
+nonlinear_crash = crash["nonlinear"]
+stress_days = crash["stress_days"]
 
-print(f"  Linear stress (-10%):     {linear_crash:.4%}")
-print(f"  Non-linear stress (-10%): {nonlinear_crash:.4%}")
+print(f"  Stress days for -10% scenario: {stress_days}")
+print(f"  Linear stress (-10%):          {linear_crash:.4%}")
+print(f"  Non-linear stress (-10%):      {nonlinear_crash:.4%}")
 
-# For a convex portfolio, β₂ > 0 means the quadratic term adds a POSITIVE contribution
-# even in a crash (because (-0.10)² = +0.01), so non-linear should be LESS negative
-if nonlinear_crash > linear_crash:
-    print("  ✅ PASS: Non-linear stress shows less downside than linear (convexity benefit)")
+# The model is fit on daily returns, so the -10% scenario must be split
+# and compounded. Convexity should reduce losses without flipping positive.
+if stress_days > 1 and linear_crash < nonlinear_crash < 0:
+    print("  ✅ PASS: Scaled non-linear stress is less negative without flipping positive")
     passed += 1
 else:
-    print("  ❌ FAIL: Convex portfolio should lose less in non-linear model")
+    print("  ❌ FAIL: Scaled convex stress should lose less than linear while remaining plausible")
     failed += 1
 
 # ============================================================

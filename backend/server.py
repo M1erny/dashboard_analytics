@@ -241,6 +241,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                     "impact": to_float(result.get('nonlinear', 0)),
                     "linearImpact": to_float(result.get('linear', 0)),
                     "marketMove": to_float(result.get('market_move', 0)),
+                    "stressDays": result.get('stress_days'),
+                    "dailyMarketMove": to_float(result.get('daily_market_move')),
                 })
             else:
                 # Fallback for old format
@@ -253,23 +255,32 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
         # Get portfolio config for weights and direction (Used for Currency & Periodic Returns)
         portfolio_config = risk.load_portfolio_config(portfolio)
 
-        # Calculate Currency Exposure using portfolio_config
-        # Share of Gross Exposure
-        curr_exposure = {}
+        # Calculate Currency Exposure using portfolio_config.
+        # Net exposure is the signed currency risk as a share of equity;
+        # gross exposure is the absolute book size in that currency.
+        curr_exposure_net = {}
+        curr_exposure_gross = {}
         total_gross = 0
         if portfolio_config:
             for ticker, info in portfolio_config.items():
                 curr = info.get('currency', 'USD')
                 weight = info.get('weight', 0)
-                curr_exposure[curr] = curr_exposure.get(curr, 0) + weight
+                direction = 1 if info.get('type', 'Long') == 'Long' else -1
+                curr_exposure_net[curr] = curr_exposure_net.get(curr, 0) + weight * direction
+                curr_exposure_gross[curr] = curr_exposure_gross.get(curr, 0) + weight
                 total_gross += weight
         
-        # Normalize to percentages of entire portfolio gross exposure
+        curr_exposure_gross_share = {}
         if total_gross > 0:
-            for curr in curr_exposure:
-                curr_exposure[curr] = curr_exposure[curr] / total_gross
+            curr_exposure_gross_share = {
+                curr: gross / total_gross
+                for curr, gross in curr_exposure_gross.items()
+            }
         
-        response["vitals"]["currencyExposure"] = curr_exposure
+        response["vitals"]["currencyExposure"] = curr_exposure_net
+        response["vitals"]["currencyExposureNet"] = curr_exposure_net
+        response["vitals"]["currencyExposureGross"] = curr_exposure_gross
+        response["vitals"]["currencyExposureGrossShare"] = curr_exposure_gross_share
 
         # Calculate Country Allocation for World Map
         country_allocation = {}

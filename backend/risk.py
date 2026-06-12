@@ -1293,12 +1293,11 @@ def calculate_convexity_metrics(portfolio_ret, benchmark_ret):
 
 
 def stress_test_portfolio(metrics):
-    """Non-linear stress test using quadratic regression model.
-    
-    The portfolio is long/short with option-like components (e.g. AFRM),
-    so a linear β × market_move model is wrong — it overstates downside
-    and understates upside. We use the fitted quadratic model instead:
-        expected_move = α + β₁·scenario + β₂·scenario²
+    """Non-linear stress test using a compounded quadratic daily model.
+
+    The convexity regression is fit on daily observations. To avoid extreme
+    extrapolation, each scenario is split into daily-sized benchmark moves and
+    compounded instead of plugging a +/-10% move directly into a one-day model.
     """
     print("--- 4b. Running Non-Linear Stress Tests ---")
     if metrics is None: return {}
@@ -1323,27 +1322,33 @@ def stress_test_portfolio(metrics):
     
     if has_quadratic:
         coeffs = convexity['Quadratic_Coeffs']  # [β₂, β₁, α]
-    
+
+    def compound_daily_return(daily_ret, days):
+        # Avoid invalid compounding if a regression extrapolates below -100%.
+        daily_ret = max(float(daily_ret), -0.99)
+        return (1 + daily_ret) ** days - 1
+
     for name, mkt_move in scenarios.items():
-        # Linear estimate (old model, kept for comparison)
-        linear_est = beta * mkt_move
+        # The regression was fit on daily observations. Use enough steps to
+        # keep each benchmark shock near 1% in magnitude, then compound.
+        stress_days = max(1, int(np.ceil(abs(np.log1p(mkt_move)) / 0.01)))
+        daily_market_move = np.expm1(np.log1p(mkt_move) / stress_days)
+
+        linear_daily = beta * daily_market_move
+        linear_est = compound_daily_return(linear_daily, stress_days)
         
         if has_quadratic:
-            # Non-linear estimate: α + β₁·x + β₂·x²
-            # Note: for stress test, we want the CHANGE in portfolio value,
-            # which is the predicted daily return when bench moves by mkt_move.
-            # Since mkt_move is much larger than a single daily return,
-            # we scale by dividing into daily-scale chunks and compound.
-            # However, for communicative clarity, we apply the model directly
-            # as if it were a single-period scenario.
-            nonlinear_est = np.polyval(coeffs, mkt_move)
+            nonlinear_daily = np.polyval(coeffs, daily_market_move)
+            nonlinear_est = compound_daily_return(nonlinear_daily, stress_days)
         else:
             nonlinear_est = linear_est
         
         results[name] = {
             'linear': linear_est,
             'nonlinear': nonlinear_est,
-            'market_move': mkt_move
+            'market_move': mkt_move,
+            'stress_days': stress_days,
+            'daily_market_move': daily_market_move
         }
     
     return results

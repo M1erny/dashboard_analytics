@@ -280,19 +280,23 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, com
 
     const { upsideCapture, downsideCapture, captureSpread, quadraticCoeffs, rSquared, isConvex, scatterData } = convexity;
     const spreadPositive = (captureSpread ?? 0) > 0;
+    const profileLabel = spreadPositive && isConvex ? 'Convex' : spreadPositive || isConvex ? 'Mixed' : 'Concave';
+    const profileTone = profileLabel === 'Convex' ? 'positive' : profileLabel === 'Mixed' ? 'mixed' : 'negative';
 
     if (compact) {
         return (
             <div className={cn(
                 "rounded-xl border p-4 backdrop-blur-xl h-full flex flex-col",
                 "bg-gradient-to-br",
-                spreadPositive
+                profileTone === 'positive'
                     ? "border-emerald-500/20 from-emerald-950/20 via-slate-900/90 to-slate-950"
-                    : "border-rose-500/20 from-rose-950/20 via-slate-900/90 to-slate-950"
+                    : profileTone === 'mixed'
+                        ? "border-amber-500/20 from-amber-950/20 via-slate-900/90 to-slate-950"
+                        : "border-rose-500/20 from-rose-950/20 via-slate-900/90 to-slate-950"
             )}>
                 <div className="flex items-center gap-2 mb-3">
                     <div className={cn("flex items-center justify-center w-7 h-7 rounded-lg",
-                        spreadPositive ? "bg-emerald-500/15 text-emerald-400" : "bg-rose-500/15 text-rose-400"
+                        profileTone === 'positive' ? "bg-emerald-500/15 text-emerald-400" : profileTone === 'mixed' ? "bg-amber-500/15 text-amber-400" : "bg-rose-500/15 text-rose-400"
                     )}><Activity className="h-4 w-4" /></div>
                     <span className="text-[11px] text-gray-400 uppercase tracking-[0.15em] font-semibold">Convexity Profile</span>
                 </div>
@@ -300,7 +304,14 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, com
                     <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">Capture Spread</span>
                     <div className="flex items-end gap-2 mt-1">
                         <span className={cn("text-3xl font-black tracking-tighter leading-none", spreadPositive ? "text-emerald-400" : "text-rose-400")}>{fmtSignedPct(captureSpread)}</span>
-                        <span className={cn("text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border mb-0.5", spreadPositive ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "bg-rose-500/10 text-rose-400 border-rose-500/20")}>{spreadPositive ? 'Convex' : 'Concave'}</span>
+                        <span className={cn(
+                            "text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded border mb-0.5",
+                            profileTone === 'positive'
+                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"
+                                : profileTone === 'mixed'
+                                    ? "bg-amber-500/10 text-amber-400 border-amber-500/20"
+                                    : "bg-rose-500/10 text-rose-400 border-rose-500/20"
+                        )}>{profileLabel}</span>
                     </div>
                 </div>
                 <div className="space-y-2 flex-1">
@@ -324,7 +335,14 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, com
                     <div className="w-px h-3 bg-white/20" />
                     <div className="flex-1 h-2 rounded-r-full bg-rose-500/20 overflow-hidden flex justify-end"><div className="h-full bg-rose-500/60 rounded-r-full transition-all duration-700" style={{ width: `${Math.min((downsideCapture ?? 0) * 50, 100)}%` }} /></div>
                 </div>
-                <p className="text-[10px] text-gray-600 mt-3 leading-relaxed"><strong className="text-gray-500">Convex payoff:</strong> Upside capture &gt; Downside capture.</p>
+                <p className="text-[10px] text-gray-600 mt-3 leading-relaxed">
+                    <strong className="text-gray-500">{profileLabel} profile:</strong>{' '}
+                    {profileTone === 'mixed'
+                        ? 'Capture spread and regression beta disagree.'
+                        : profileTone === 'positive'
+                            ? 'Upside capture beats downside and beta2 is positive.'
+                            : 'Capture spread and beta2 do not confirm convexity.'}
+                </p>
                 <div className="mt-2 flex items-center justify-between">
                     <span className="text-[9px] text-gray-500 uppercase tracking-wider font-medium">Regression</span>
                     <span className={cn("text-[9px] font-mono px-2 py-0.5 rounded border", isConvex ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20")}>β₂={fmtNum(quadraticCoeffs?.[0], 4)} · R²={fmtNum(rSquared, 3)}</span>

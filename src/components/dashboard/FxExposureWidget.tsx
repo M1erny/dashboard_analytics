@@ -12,9 +12,10 @@ export const FxExposureWidget: React.FC<FxExposureWidgetProps> = React.memo(({ v
     const [isOpen, setIsOpen] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
 
-    // Check if we have exposure data
-    const exposure = vitals.currencyExposure || {};
-    const entries = Object.entries(exposure).sort(([, a], [, b]) => b - a);
+    // Net exposure is signed by long/short direction; gross exposure is absolute book size.
+    const exposure = vitals.currencyExposureNet || vitals.currencyExposure || {};
+    const grossExposure = vitals.currencyExposureGross || {};
+    const entries = Object.entries(exposure).sort(([, a], [, b]) => Math.abs(b) - Math.abs(a));
 
     // Close on click outside
     useEffect(() => {
@@ -42,13 +43,13 @@ export const FxExposureWidget: React.FC<FxExposureWidgetProps> = React.memo(({ v
             >
                 <div className="flex items-center gap-2 text-gray-400 text-xs uppercase tracking-wide font-medium">
                     <Banknote className="h-3 w-3" />
-                    <span>FX Exposure</span>
+                    <span>Net FX</span>
                     <ChevronDown className={cn("h-3 w-3 transition-transform", isOpen && "rotate-180")} />
                 </div>
                 <div className="font-mono text-emerald-400 text-sm font-bold flex gap-2 mt-0.5">
                     {entries.slice(0, 2).map(([curr, share]) => (
-                        <span key={curr}>
-                            {curr} <span className="opacity-80">{(share * 100).toFixed(0)}%</span>
+                        <span key={curr} className={cn(share >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                            {curr} <span className="opacity-80">{share >= 0 ? '+' : ''}{(share * 100).toFixed(0)}%</span>
                         </span>
                     ))}
                     {entries.length > 2 && <span className="text-gray-400 text-xs self-center">+{entries.length - 2}</span>}
@@ -60,22 +61,41 @@ export const FxExposureWidget: React.FC<FxExposureWidgetProps> = React.memo(({ v
                 <div className="absolute right-0 top-full mt-2 w-full md:w-72 bg-[#0f172a] border border-white/10 rounded-xl shadow-2xl p-4 z-50 backdrop-blur-xl animate-in fade-in zoom-in-95 origin-top-right">
 
                     {/* Portfolio Currency Exposure */}
-                    <h4 className="text-white font-medium mb-3 text-xs uppercase tracking-wider border-b border-white/5 pb-2">Portfolio Exposure</h4>
+                    <h4 className="text-white font-medium mb-3 text-xs uppercase tracking-wider border-b border-white/5 pb-2">Currency Exposure</h4>
                     <div className="space-y-2 mb-6">
-                        {entries.map(([curr, share]) => (
+                        {entries.map(([curr, share]) => {
+                            const gross = grossExposure[curr];
+                            const isLong = share >= 0;
+                            return (
                             <div key={curr} className="flex flex-col gap-1">
                                 <div className="flex items-center justify-between">
                                     <span className="text-gray-300 font-bold text-sm font-mono">{curr}</span>
-                                    <span className="font-mono text-white text-sm font-semibold">{(share * 100).toFixed(1)}%</span>
+                                    <div className="flex items-baseline gap-2">
+                                        {typeof gross === 'number' && (
+                                            <span className="font-mono text-[10px] text-gray-500">
+                                                gross {(gross * 100).toFixed(1)}%
+                                            </span>
+                                        )}
+                                        <span className={cn("font-mono text-sm font-semibold", isLong ? "text-emerald-400" : "text-rose-400")}>
+                                            {isLong ? '+' : ''}{(share * 100).toFixed(1)}%
+                                        </span>
+                                    </div>
                                 </div>
                                 <div className="w-full h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
                                     <div
-                                        className="h-full rounded-full bg-gradient-to-r from-emerald-500/70 to-emerald-400/50 transition-all duration-700"
-                                        style={{ width: `${Math.min(share * 100, 100)}%` }}
+                                        className={cn(
+                                            "h-full rounded-full transition-all duration-700",
+                                            isLong ? "bg-gradient-to-r from-emerald-500/70 to-emerald-400/50" : "bg-gradient-to-r from-rose-400/50 to-rose-500/70"
+                                        )}
+                                        style={{
+                                            width: `${Math.min(Math.abs(share) * 100, 100)}%`,
+                                            marginLeft: isLong ? 0 : 'auto',
+                                            marginRight: isLong ? 'auto' : 0
+                                        }}
                                     />
                                 </div>
                             </div>
-                        ))}
+                        )})}
                     </div>
 
                     {/* NEW: FX Market Matrix */}

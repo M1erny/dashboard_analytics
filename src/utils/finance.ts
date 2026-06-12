@@ -48,6 +48,9 @@ export interface Vitals {
     ytdFinancingCost: number;
     annualFinancingCost: number;
     currencyExposure: Record<string, number>;
+    currencyExposureNet?: Record<string, number>;
+    currencyExposureGross?: Record<string, number>;
+    currencyExposureGrossShare?: Record<string, number>;
     fxWatchlist: Record<string, number>;
     periodInfo: PeriodInfo;
     periodLabel?: string;
@@ -73,6 +76,8 @@ export interface StressTest {
     impact: number;
     linearImpact?: number;
     marketMove?: number;
+    stressDays?: number;
+    dailyMarketMove?: number;
 }
 
 export interface ScatterContributor {
@@ -219,6 +224,9 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                         ...data.vitals,
                         // Ensure defaults for critical nested objects if missing from partial server response
                         currencyExposure: data.vitals.currencyExposure || {},
+                        currencyExposureNet: data.vitals.currencyExposureNet || data.vitals.currencyExposure || {},
+                        currencyExposureGross: data.vitals.currencyExposureGross || {},
+                        currencyExposureGrossShare: data.vitals.currencyExposureGrossShare || {},
                         fxWatchlist: data.vitals.fxWatchlist || {},
                         periodInfo: data.vitals.periodInfo || { Start_Date: "N/A", End_Date: "N/A", Years: 0 }
                     },

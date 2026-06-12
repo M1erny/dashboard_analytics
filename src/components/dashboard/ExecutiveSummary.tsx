@@ -445,7 +445,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                         </div>
                         <span
                             className="text-[9px] text-gray-600 bg-white/[0.03] border border-white/[0.06] px-2 py-0.5 rounded cursor-help"
-                            title="Each scenario simulates a sudden SPY market move. The portfolio impact is estimated using a quadratic regression model fitted to YTD daily returns: Portfolio Return = α + β₁·(market move) + β₂·(market move)². This non-linear model accounts for long/short convexity. The linear baseline is simply β × market move."
+                            title="Each scenario compounds daily-sized SPY shocks through a quadratic model fitted to YTD daily returns. This avoids plugging a large multi-day move directly into a one-day regression. The beta-only line uses the same compounding approach."
                         >
                             ƒ(x) model ?
                         </span>
@@ -472,14 +472,21 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                     <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">
                                         {st.scenario.replace(/\(.*?\)/, '').trim()}
                                     </span>
-                                    <span className={cn(
-                                        "font-mono text-[10px] font-black px-1.5 py-0.5 rounded border whitespace-nowrap",
-                                        isDown
-                                            ? "text-rose-300 bg-rose-900/30 border-rose-500/30"
-                                            : "text-emerald-300 bg-emerald-900/30 border-emerald-500/30"
-                                    )}>
-                                        SPY {mktMove > 0 ? '+' : ''}{(mktMove * 100).toFixed(0)}%
-                                    </span>
+                                    <div className="flex items-center gap-1.5">
+                                        {st.stressDays && (
+                                            <span className="font-mono text-[9px] font-bold px-1.5 py-0.5 rounded border border-white/[0.08] bg-white/[0.03] text-gray-500 whitespace-nowrap">
+                                                {st.stressDays}d
+                                            </span>
+                                        )}
+                                        <span className={cn(
+                                            "font-mono text-[10px] font-black px-1.5 py-0.5 rounded border whitespace-nowrap",
+                                            isDown
+                                                ? "text-rose-300 bg-rose-900/30 border-rose-500/30"
+                                                : "text-emerald-300 bg-emerald-900/30 border-emerald-500/30"
+                                        )}>
+                                            SPY {mktMove > 0 ? '+' : ''}{(mktMove * 100).toFixed(0)}%
+                                        </span>
+                                    </div>
                                 </div>
 
                                 {/* Row 2: Two numbers side-by-side */}
@@ -539,10 +546,10 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     <div className="mt-1 rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2">
                         <p className="text-[9px] text-gray-600 leading-relaxed">
                             <span className="text-gray-500 font-semibold">How it works: </span>
-                            Each scenario applies a sudden SPY move (−10%, −5%, +5%, +10%). Your estimated portfolio impact uses the{' '}
+                            Each scenario applies a SPY move (−10%, −5%, +5%, +10%) as daily-sized shocks, then compounds the{' '}
                             <span className="text-violet-400/80">quadratic model</span> fit to YTD daily data:{' '}
                             <span className="font-mono text-[8px] text-gray-500">P = α + β₁·x + β₂·x²</span>.
-                            The <span className="text-gray-400">β only</span> line is the naive linear estimate (β × move).
+                            The <span className="text-gray-400">β only</span> line compounds beta-scaled daily shocks.
                             A positive pp edge means your portfolio loses <em>less</em> in crashes or gains <em>more</em> in rallies than a pure-beta position.
                         </p>
                     </div>
