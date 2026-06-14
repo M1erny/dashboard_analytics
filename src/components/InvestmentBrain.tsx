@@ -167,6 +167,9 @@ const schemaRows = [
 ];
 
 const MEMORY_STORAGE_KEY = 'investment-brain-memories-v1';
+const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+
+const brainApiUrl = (path: string) => `${API_BASE}${path}`;
 const memoryTypeValues: MemoryType[] = ['liked', 'passed', 'trend', 'framework', 'question'];
 
 const formatTags = (value: string) =>
@@ -249,10 +252,10 @@ export const InvestmentBrain: React.FC = () => {
 
         const loadBackendMemories = async () => {
             try {
-                const statusResponse = await fetch('/api/brain/status');
+                const statusResponse = await fetch(brainApiUrl('/api/brain/status'));
                 if (!statusResponse.ok) throw new Error('Brain status unavailable');
 
-                const memoriesResponse = await fetch('/api/brain/memories?limit=200');
+                const memoriesResponse = await fetch(brainApiUrl('/api/brain/memories?limit=200'));
                 if (!memoriesResponse.ok) throw new Error('Brain memories unavailable');
 
                 const payload = await memoriesResponse.json() as { memories?: unknown };
@@ -298,7 +301,7 @@ export const InvestmentBrain: React.FC = () => {
 
         if (backendState === 'ready') {
             try {
-                const response = await fetch('/api/brain/memories', {
+                const response = await fetch(brainApiUrl('/api/brain/memories'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(nextMemory),
@@ -326,7 +329,7 @@ export const InvestmentBrain: React.FC = () => {
     const deleteMemory = async (id: number) => {
         if (backendState === 'ready') {
             try {
-                await fetch(`/api/brain/memories/${id}`, { method: 'DELETE' });
+                await fetch(brainApiUrl(`/api/brain/memories/${id}`), { method: 'DELETE' });
             } catch {
                 // Keep the UI responsive; local removal still reflects the user's intent.
             }
@@ -356,7 +359,7 @@ export const InvestmentBrain: React.FC = () => {
         setSearchMessage('');
         try {
             const params = new URLSearchParams({ q: cleanedQuery, limit: '50' });
-            const response = await fetch(`/api/brain/search?${params.toString()}`);
+            const response = await fetch(brainApiUrl(`/api/brain/search?${params.toString()}`));
             if (!response.ok) throw new Error('Search failed');
 
             const payload = await response.json() as { results?: SearchResult[] };
