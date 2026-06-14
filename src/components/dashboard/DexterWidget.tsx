@@ -7,7 +7,7 @@ interface AgentEvent {
     message?: string;
     tool?: string;
     answer?: string;
-    args?: any;
+    args?: Record<string, unknown>;
     result?: string;
 }
 
@@ -81,12 +81,12 @@ export const DexterWidget: React.FC = () => {
             };
 
             setMessages(prev => [...prev, agentMsg]);
-        } catch (err: any) {
+        } catch (err: unknown) {
             const errorMsg: ChatMessage = {
                 id: (Date.now() + 1).toString(),
                 sender: 'agent',
                 text: "Sorry, I encountered an error processing your request.",
-                error: err.message
+                error: err instanceof Error ? err.message : 'Unknown error'
             };
             setMessages(prev => [...prev, errorMsg]);
         } finally {

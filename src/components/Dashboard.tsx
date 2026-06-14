@@ -5,7 +5,7 @@ import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
-import { LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign, Store, Building2, Ban, type LucideIcon } from 'lucide-react';
+import { LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign, Store, Building2, Ban, BrainCircuit, type LucideIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 // ─── Lazy-loaded below-the-fold widgets ──────────────────────
@@ -81,13 +81,10 @@ export const Dashboard: React.FC = () => {
     const [isSwitchingTier, setIsSwitchingTier] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [costTier, setCostTier] = useState<CostTier>('none');
+    const [lastUpdated, setLastUpdated] = useState(() => new Date());
     const portfolioName: string = 'main';
 
     useEffect(() => {
-        const isInitialLoad = !data;
-        if (isInitialLoad) setLoading(true);
-        else setIsSwitchingTier(true);
-
         fetchDashboardData(5, 3000, false, costTier, portfolioName).then(res => {
             if (res) {
                 if (res.error) {
@@ -114,7 +111,6 @@ export const Dashboard: React.FC = () => {
         []
     );
 
-    const [lastUpdated, setLastUpdated] = useState(() => new Date());
     const [quoteIdx, setQuoteIdx] = useState(() => Math.floor(Math.random() * QUOTES.length));
     const [quoteVisible, setQuoteVisible] = useState(true);
 
@@ -309,7 +305,12 @@ export const Dashboard: React.FC = () => {
                                     return (
                                         <button
                                             key={option.value}
-                                            onClick={() => setCostTier(option.value)}
+                                            onClick={() => {
+                                                if (!active) {
+                                                    setIsSwitchingTier(true);
+                                                    setCostTier(option.value);
+                                                }
+                                            }}
                                             aria-pressed={active}
                                             aria-label={option.label}
                                             className={cn(
@@ -346,9 +347,17 @@ export const Dashboard: React.FC = () => {
                                 }}
                                 className="bg-white/5 hover:bg-white/10 w-[40px] h-[40px] rounded-lg border border-white/10 transition-colors flex items-center justify-center shrink-0"
                                 title="Force Refresh Data"
-                             >
+                            >
                                 <RefreshCw className={cn("h-4 w-4 text-emerald-400", isSwitchingTier ? "animate-spin" : "")} />
                             </button>
+                            <a
+                                href="/dashboard/brain"
+                                className="bg-white/5 hover:bg-white/10 h-[40px] rounded-lg border border-white/10 transition-colors inline-flex items-center justify-center gap-2 px-3 shrink-0 text-[11px] font-bold uppercase tracking-[0.08em] text-gray-300"
+                                title="Open Investment Brain"
+                            >
+                                <BrainCircuit className="h-4 w-4 text-violet-300" />
+                                <span className="hidden md:inline">Brain</span>
+                            </a>
                         </div>
                     </div>
                 </div>

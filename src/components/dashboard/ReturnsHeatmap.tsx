@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { cn } from '../../lib/utils';
 import type { PeriodicReturn, RiskAttribution } from '../../utils/finance';
 import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap, Target, Trophy, TrendingDown, Activity } from 'lucide-react';
@@ -260,7 +260,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
         }
     };
 
-    const getValue = (row: PeriodicReturn, key: SortKey): number | null => {
+    const getValue = useCallback((row: PeriodicReturn, key: SortKey): number | null => {
         switch (key) {
             case 'ticker': return null;
             case 'ytd': return row.ytd ?? null;
@@ -280,7 +280,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             case 'rSinceEntry': return (row.lastPrice && row.entryPrice) ? ((row.lastPrice - row.entryPrice) / row.entryPrice) : null;
             default: return null;
         }
-    };
+    }, [riskMap]);
 
     const sortedData = useMemo(() => {
         return [...periodicReturns].sort((a, b) => {
@@ -294,7 +294,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             if (bVal === null) return -1;
             return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
         });
-    }, [periodicReturns, sortKey, sortDir]);
+    }, [getValue, periodicReturns, sortKey, sortDir]);
 
     // Compute max absolute contribution for bar scaling
     const maxAbsContrib = useMemo(() => {

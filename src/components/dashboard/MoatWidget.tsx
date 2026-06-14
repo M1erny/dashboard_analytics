@@ -368,7 +368,7 @@ export const MoatWidget = ({ portfolioName = 'main' }: { portfolioName?: string 
     const [sort,    setSort]    = useState<'score' | 'weight'>('score');
 
 
-    const BASE_URL = (import.meta as any).env?.VITE_API_URL || '';
+    const BASE_URL = import.meta.env?.VITE_API_URL || '';
 
     const fetch_ = useCallback(async () => {
         setLoading(true);
@@ -378,7 +378,7 @@ export const MoatWidget = ({ portfolioName = 'main' }: { portfolioName?: string 
             const json = await res.json();
             if (json.error) setError(json.error);
             else { setData(json); }
-        } catch (e: any) {
+        } catch {
             setError('Failed to connect to backend.');
         } finally {
             setLoading(false);

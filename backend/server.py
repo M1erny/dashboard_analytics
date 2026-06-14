@@ -3,8 +3,9 @@ import os
 
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 import pandas as pd
 import numpy as np
 import time
@@ -17,6 +18,12 @@ try:
 except ImportError as e:
     print(f"Error importing risk.py: {e}")
     risk = None
+
+try:
+    from brain_store import BrainStore
+except ImportError as e:
+    print(f"Error importing brain_store.py: {e}")
+    BrainStore = None
 
 app = FastAPI()
 
@@ -31,6 +38,32 @@ app.add_middleware(
 # Response cache (mapped by costTier, 5 minute TTL)
 _cache = {}
 _data_cache = {}  # Shared raw market data cache keyed by portfolio
+brain_store = BrainStore() if BrainStore else None
+
+
+class BrainMemoryRequest(BaseModel):
+    type: str = Field(..., min_length=1)
+    title: str = Field(..., min_length=1, max_length=240)
+    body: str = Field(..., min_length=1)
+    tags: list[str] = Field(default_factory=list)
+    source: str = "manual"
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class BrainSourceRequest(BaseModel):
+    kind: str = "note"
+    title: str = Field(..., min_length=1, max_length=300)
+    body: str = Field(..., min_length=1)
+    author: str | None = None
+    sourceDate: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
+
+
+def _brain_or_503():
+    if not brain_store:
+        raise HTTPException(status_code=503, detail="Investment Brain store is not available")
+    return brain_store
 
 def _get_cached_market_data(force: bool = False, portfolio_name: str = "main"):
     """Fetch and cache raw market data for a portfolio."""
@@ -61,6 +94,88 @@ async def get_status():
         return {"state": "ready", "message": "Ready"}
     else:
         return {"state": "error", "message": "Risk module failed to load"}
+
+
+# ==========================================
+# Investment Brain API (SQLite + unified FTS)
+# ==========================================
+
+@app.get("/api/brain/status")
+async def get_brain_status():
+    store = _brain_or_503()
+    return {
+        "state": "ready",
+        "database": str(store.db_path),
+        "search": "sqlite_fts5",
+        "counts": store.counts(),
+    }
+
+
+@app.get("/api/brain/memories")
+async def list_brain_memories(
+    q: str | None = None,
+    memory_type: str | None = Query(default=None, alias="type"),
+    limit: int = 100,
+):
+    store = _brain_or_503()
+    try:
+        return {"memories": store.list_memories(query=q, memory_type=memory_type, limit=limit)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/brain/memories")
+async def add_brain_memory(memory: BrainMemoryRequest):
+    store = _brain_or_503()
+    try:
+        saved = store.add_memory(
+            memory_type=memory.type,
+            title=memory.title,
+            body=memory.body,
+            tags=memory.tags,
+            source=memory.source,
+            confidence=memory.confidence,
+        )
+        return {"memory": saved}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/brain/memories/{memory_id}")
+async def delete_brain_memory(memory_id: int):
+    store = _brain_or_503()
+    deleted = store.delete_memory(memory_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"status": "deleted", "id": memory_id}
+
+
+@app.post("/api/brain/sources")
+async def add_brain_source(source: BrainSourceRequest):
+    store = _brain_or_503()
+    try:
+        saved = store.add_source(
+            kind=source.kind,
+            title=source.title,
+            body=source.body,
+            author=source.author,
+            source_date=source.sourceDate,
+            tags=source.tags,
+            metadata=source.metadata,
+        )
+        return {"source": saved}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/brain/search")
+async def search_brain(q: str, limit: int = 50, entity_type: str | None = None):
+    store = _brain_or_503()
+    return {
+        "query": q,
+        "results": store.search(query=q, limit=limit, entity_type=entity_type),
+        "counts": store.counts(),
+    }
 
 @app.get("/api/metrics")
 async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: str = 'main'):
@@ -588,8 +703,6 @@ async def get_portfolio_allocation(portfolio: str = 'main'):
     }
 
 
-# ... existing imports ...
-from pydantic import BaseModel
 try:
     from portfolio_tracker import PortfolioTracker
 except ImportError:

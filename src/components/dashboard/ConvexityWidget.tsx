@@ -107,7 +107,11 @@ const ScatterPlot: React.FC<{
         for (let i = 0; i <= 120; i++) {
             const xv = -maxAbsX + (2 * maxAbsX * i) / 120;
             const yv = a + b1 * xv + b2 * xv * xv;
-            i === 0 ? ctx.moveTo(sx(xv), sy(yv)) : ctx.lineTo(sx(xv), sy(yv));
+            if (i === 0) {
+                ctx.moveTo(sx(xv), sy(yv));
+            } else {
+                ctx.lineTo(sx(xv), sy(yv));
+            }
         }
         ctx.stroke();
 
