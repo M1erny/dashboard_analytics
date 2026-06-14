@@ -223,9 +223,7 @@ const loadStoredMemories = () => {
 
     try {
         const parsed = JSON.parse(raw) as unknown;
-        const normalized = normalizeMemoryArray(parsed);
-
-        return normalized.length > 0 ? normalized : seedMemories;
+        return normalizeMemoryArray(parsed);
     } catch {
         return seedMemories;
     }
@@ -263,9 +261,7 @@ export const InvestmentBrain: React.FC = () => {
 
                 if (!cancelled) {
                     setBackendState('ready');
-                    if (backendMemories.length > 0) {
-                        setMemories(backendMemories);
-                    }
+                    setMemories(backendMemories);
                 }
             } catch {
                 if (!cancelled) {
@@ -327,6 +323,9 @@ export const InvestmentBrain: React.FC = () => {
     };
 
     const deleteMemory = async (id: number) => {
+        setMemories(current => current.filter(memory => memory.id !== id));
+        setSearchResults(current => current.filter(result => result.entityType !== 'memory' || result.entityId !== id));
+
         if (backendState === 'ready') {
             try {
                 await fetch(brainApiUrl(`/api/brain/memories/${id}`), { method: 'DELETE' });
@@ -334,7 +333,6 @@ export const InvestmentBrain: React.FC = () => {
                 // Keep the UI responsive; local removal still reflects the user's intent.
             }
         }
-        setMemories(current => current.filter(memory => memory.id !== id));
     };
 
     const resetMemories = () => {
@@ -711,6 +709,13 @@ export const InvestmentBrain: React.FC = () => {
                                 </div>
                             </div>
                             <div className="mt-4 grid grid-cols-1 gap-3">
+                                {memories.length === 0 && (
+                                    <div className="rounded-lg border border-dashed border-white/[0.12] bg-white/[0.025] p-5 text-center">
+                                        <Archive className="mx-auto h-5 w-5 text-gray-500" />
+                                        <p className="mt-3 text-sm font-bold text-gray-300">No saved memories yet</p>
+                                        <p className="mt-1 text-xs leading-5 text-gray-500">Add a thesis, pass reason, framework, or megatrend to start building the brain.</p>
+                                    </div>
+                                )}
                                 {memories.map(memory => {
                                     const tone = memoryTone[memory.type];
                                     const Icon = tone.Icon;
