@@ -5,7 +5,7 @@ import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
-import { LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign } from 'lucide-react';
+import { LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign, Store, Building2, Ban, type LucideIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 // ─── Lazy-loaded below-the-fold widgets ──────────────────────
@@ -69,10 +69,10 @@ const getAuthorColors = (author: string) => {
     }
 };
 
-const COST_TIER_OPTIONS: { value: CostTier; label: string; short: string }[] = [
-    { value: 'retail', label: 'Retail', short: 'Ret.' },
-    { value: 'institutional', label: 'Institutional', short: 'Inst.' },
-    { value: 'none', label: 'No Drag', short: 'None' },
+const COST_TIER_OPTIONS: { value: CostTier; label: string; short: string; Icon: LucideIcon; title: string }[] = [
+    { value: 'retail', label: 'Retail', short: 'Ret.', Icon: Store, title: 'Retail financing assumptions' },
+    { value: 'institutional', label: 'Institutional', short: 'Inst.', Icon: Building2, title: 'Institutional financing assumptions' },
+    { value: 'none', label: 'No Drag', short: 'No Drag', Icon: Ban, title: 'No financing drag scenario' },
 ];
 
 export const Dashboard: React.FC = () => {
@@ -80,7 +80,7 @@ export const Dashboard: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [isSwitchingTier, setIsSwitchingTier] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [costTier, setCostTier] = useState<CostTier>('retail');
+    const [costTier, setCostTier] = useState<CostTier>('none');
     const portfolioName: string = 'main';
 
     useEffect(() => {
@@ -301,22 +301,30 @@ export const Dashboard: React.FC = () => {
                         {/* Cost Tier Toggle & Refresh Wrapper */}
                         <div className="flex w-full sm:w-auto items-center gap-3">
 
-                            <div className="flex flex-1 sm:flex-none items-center rounded-lg border border-white/10 bg-white/[0.04] p-1 h-[38px] min-w-0">
+                            <div className="flex flex-1 sm:flex-none items-center rounded-lg border border-white/10 bg-white/[0.04] p-1 h-[40px] min-w-0">
                                 <CircleDollarSign className="h-4 w-4 text-amber-400 mx-2 hidden sm:block" />
                                 {COST_TIER_OPTIONS.map(option => {
                                     const active = costTier === option.value;
+                                    const Icon = option.Icon;
                                     return (
                                         <button
                                             key={option.value}
                                             onClick={() => setCostTier(option.value)}
+                                            aria-pressed={active}
+                                            aria-label={option.label}
                                             className={cn(
-                                                "h-7 flex-1 sm:flex-none px-2.5 rounded-md text-[11px] font-bold uppercase tracking-[0.08em] transition-colors whitespace-nowrap",
+                                                "group h-8 flex-1 sm:flex-none px-2 sm:px-2.5 rounded-md text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.08em] transition-colors whitespace-nowrap",
+                                                "inline-flex items-center justify-center gap-1.5",
                                                 active
                                                     ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
                                                     : "text-gray-500 hover:text-gray-300 hover:bg-white/[0.04]"
                                             )}
-                                            title={`${option.label} financing assumptions`}
+                                            title={option.title}
                                         >
+                                            <Icon className={cn(
+                                                "h-3.5 w-3.5 shrink-0 transition-colors",
+                                                active ? "text-amber-300" : "text-gray-500 group-hover:text-gray-300"
+                                            )} />
                                             <span className="hidden sm:inline">{option.label}</span>
                                             <span className="sm:hidden">{option.short}</span>
                                         </button>
@@ -336,7 +344,7 @@ export const Dashboard: React.FC = () => {
                                         }
                                     }).finally(() => setIsSwitchingTier(false));
                                 }}
-                                className="bg-white/5 hover:bg-white/10 w-[38px] h-[38px] rounded-lg border border-white/10 transition-colors flex items-center justify-center shrink-0"
+                                className="bg-white/5 hover:bg-white/10 w-[40px] h-[40px] rounded-lg border border-white/10 transition-colors flex items-center justify-center shrink-0"
                                 title="Force Refresh Data"
                              >
                                 <RefreshCw className={cn("h-4 w-4 text-emerald-400", isSwitchingTier ? "animate-spin" : "")} />
