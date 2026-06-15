@@ -5,6 +5,10 @@ The **Institutional Portfolio Dashboard** is a high-performance risk analytics p
 
 The application features a robust **Python/FastAPI backend** for heavy quantitative lifting (VaR, CVaR, Monte Carlo) and a sleek **React/TypeScript frontend** for data visualization.
 
+## Investment Brain Roadmap
+
+The long-term architecture notes for the synthetic investment brain are saved in [`docs/investment-brain-architecture.md`](docs/investment-brain-architecture.md).
+
 ## Key Features
 
 ### 📊 Performance & Risk Analytics
