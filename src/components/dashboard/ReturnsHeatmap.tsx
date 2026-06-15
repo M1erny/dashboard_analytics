@@ -347,12 +347,13 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
         const best = sorted[0];
         const worst = sorted[sorted.length - 1];
 
-        // Top-5 Concentration: sum of top 5 weights / total gross
+        // Top-5 concentration uses gross current exposure: longs and shorts both consume risk budget.
         const withWeights = positions.filter(r => r.currentWeight != null);
-        const sortedByWeight = [...withWeights].sort((a, b) => (b.currentWeight ?? 0) - (a.currentWeight ?? 0));
-        const top5Weight = sortedByWeight.slice(0, 5).reduce((s, r) => s + (r.currentWeight ?? 0), 0);
-        const totalGrossWeight = withWeights.reduce((s, r) => s + (r.currentWeight ?? 0), 0);
-        const top5Concentration = totalGrossWeight > 0 ? top5Weight / totalGrossWeight : 0;
+        const exposureWeight = (row: PeriodicReturn) => Math.abs(row.currentWeight ?? 0);
+        const sortedByWeight = [...withWeights].sort((a, b) => exposureWeight(b) - exposureWeight(a));
+        const top5GrossWeight = sortedByWeight.slice(0, 5).reduce((s, r) => s + exposureWeight(r), 0);
+        const totalGrossWeight = withWeights.reduce((s, r) => s + exposureWeight(r), 0);
+        const top5GrossShare = totalGrossWeight > 0 ? top5GrossWeight / totalGrossWeight : 0;
 
         return {
             battingAvg,
@@ -360,7 +361,8 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             winLossRatio,
             best: best ? { ticker: best.ticker, value: best.ytdContribution! } : null,
             worst: worst ? { ticker: worst.ticker, value: worst.ytdContribution! } : null,
-            top5Concentration,
+            top5GrossWeight,
+            top5GrossShare,
             winnersCount: winners.length,
             losersCount: losers.length,
         };
@@ -594,10 +596,10 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                         />
                         <StatCard
                             icon={<Flame className="h-3.5 w-3.5 text-orange-400" />}
-                            label="Top 5 Conc."
-                            value={`${(bookAnalytics.top5Concentration * 100).toFixed(0)}%`}
-                            subtext="of gross exposure"
-                            color={bookAnalytics.top5Concentration >= 0.80 ? "text-rose-400" : bookAnalytics.top5Concentration >= 0.60 ? "text-amber-400" : "text-emerald-400"}
+                            label="Top 5 Gross"
+                            value={`${(bookAnalytics.top5GrossWeight * 100).toFixed(0)}%`}
+                            subtext={`${(bookAnalytics.top5GrossShare * 100).toFixed(0)}% of gross book`}
+                            color={bookAnalytics.top5GrossWeight >= 1.0 || bookAnalytics.top5GrossShare >= 0.75 ? "text-rose-400" : bookAnalytics.top5GrossWeight >= 0.75 || bookAnalytics.top5GrossShare >= 0.55 ? "text-amber-400" : "text-emerald-400"}
                         />
                         {bookAnalytics.best && (
                             <StatCard
