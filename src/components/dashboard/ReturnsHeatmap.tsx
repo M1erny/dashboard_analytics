@@ -363,6 +363,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             worst: worst ? { ticker: worst.ticker, value: worst.ytdContribution! } : null,
             top5GrossWeight,
             top5GrossShare,
+            totalGrossWeight,
             winnersCount: winners.length,
             losersCount: losers.length,
         };
@@ -598,7 +599,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                             icon={<Flame className="h-3.5 w-3.5 text-orange-400" />}
                             label="Top 5 Gross"
                             value={`${(bookAnalytics.top5GrossWeight * 100).toFixed(0)}%`}
-                            subtext={`${(bookAnalytics.top5GrossShare * 100).toFixed(0)}% of gross book`}
+                            subtext={`${(bookAnalytics.top5GrossShare * 100).toFixed(0)}% of ${(bookAnalytics.totalGrossWeight * 100).toFixed(0)}% gross`}
                             color={bookAnalytics.top5GrossWeight >= 1.0 || bookAnalytics.top5GrossShare >= 0.75 ? "text-rose-400" : bookAnalytics.top5GrossWeight >= 0.75 || bookAnalytics.top5GrossShare >= 0.55 ? "text-amber-400" : "text-emerald-400"}
                         />
                         {bookAnalytics.best && (
