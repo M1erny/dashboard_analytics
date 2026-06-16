@@ -68,6 +68,27 @@ class BrainStore:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER NOT NULL,
+                    ordinal INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    summary TEXT,
+                    token_count INTEGER NOT NULL DEFAULT 0,
+                    page_start INTEGER,
+                    page_end INTEGER,
+                    tags TEXT NOT NULL DEFAULT '[]',
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    content_hash TEXT NOT NULL,
+                    embedding_model TEXT,
+                    embedding TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(source_id, content_hash),
+                    FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
+                );
+
                 CREATE TABLE IF NOT EXISTS ideas (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     source_id INTEGER,
@@ -116,6 +137,8 @@ class BrainStore:
 
                 CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
                 CREATE INDEX IF NOT EXISTS idx_sources_kind ON sources(kind);
+                CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_id);
+                CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash);
                 CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind);
                 CREATE INDEX IF NOT EXISTS idx_theses_company ON theses(company);
                 """
@@ -169,6 +192,42 @@ class BrainStore:
             "tags": BrainStore._json_loads(row["tags"], []),
             "source": row["source"],
             "confidence": row["confidence"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _source_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "title": row["title"],
+            "body": row["body"],
+            "author": row["author"],
+            "sourceDate": row["source_date"],
+            "tags": BrainStore._json_loads(row["tags"], []),
+            "metadata": BrainStore._json_loads(row["metadata"], {}),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+
+    @staticmethod
+    def _chunk_from_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "id": row["id"],
+            "sourceId": row["source_id"],
+            "ordinal": row["ordinal"],
+            "title": row["title"],
+            "body": row["body"],
+            "summary": row["summary"],
+            "tokenCount": row["token_count"],
+            "pageStart": row["page_start"],
+            "pageEnd": row["page_end"],
+            "tags": BrainStore._json_loads(row["tags"], []),
+            "metadata": BrainStore._json_loads(row["metadata"], {}),
+            "contentHash": row["content_hash"],
+            "embeddingModel": row["embedding_model"],
+            "hasEmbedding": bool(row["embedding"]),
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
@@ -314,18 +373,168 @@ class BrainStore:
             )
             source_id = int(cur.lastrowid)
             self._replace_index(conn, "source", source_id, title, body, clean_tags)
-            return {
-                "id": source_id,
-                "kind": kind,
-                "title": title,
-                "body": body,
-                "author": author,
-                "sourceDate": source_date,
-                "tags": clean_tags,
-                "metadata": clean_metadata,
-                "createdAt": now,
-                "updatedAt": now,
-            }
+            row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+            return self._source_from_row(row)
+
+    def list_sources(
+        self,
+        query: str | None = None,
+        kind: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        fts_query = self._safe_fts_query(query)
+        with self._lock, self._connect() as conn:
+            params: list[Any] = []
+            if fts_query:
+                sql = """
+                    SELECT DISTINCT s.*
+                    FROM sources s
+                    JOIN brain_index i
+                      ON i.entity_type = 'source'
+                     AND i.entity_id = CAST(s.id AS TEXT)
+                    WHERE brain_index MATCH ?
+                """
+                params.append(fts_query)
+                if kind:
+                    sql += " AND s.kind = ?"
+                    params.append(kind.strip().lower())
+                sql += " ORDER BY s.created_at DESC LIMIT ?"
+                params.append(limit)
+            else:
+                sql = "SELECT * FROM sources"
+                if kind:
+                    sql += " WHERE kind = ?"
+                    params.append(kind.strip().lower())
+                sql += " ORDER BY created_at DESC LIMIT ?"
+                params.append(limit)
+
+            return [self._source_from_row(row) for row in conn.execute(sql, params).fetchall()]
+
+    def add_chunks(self, source_id: int, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not chunks:
+            return []
+
+        now = self._now()
+        saved: list[dict[str, Any]] = []
+        with self._lock, self._connect() as conn:
+            source = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+            if not source:
+                raise ValueError(f"Source {source_id} does not exist")
+
+            for index, chunk in enumerate(chunks):
+                title = str(chunk.get("title") or f"{source['title']} - chunk {index + 1}").strip()
+                body = str(chunk.get("body") or "").strip()
+                if not body:
+                    continue
+
+                tags = self._clean_tags(chunk.get("tags") or self._json_loads(source["tags"], []))
+                metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+                content_hash = str(chunk.get("contentHash") or chunk.get("content_hash") or "").strip()
+                if not content_hash:
+                    raise ValueError("Chunk contentHash is required")
+
+                conn.execute(
+                    """
+                    INSERT INTO chunks(
+                        source_id, ordinal, title, body, summary, token_count, page_start, page_end,
+                        tags, metadata, content_hash, embedding_model, embedding, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(source_id, content_hash) DO UPDATE SET
+                        ordinal = excluded.ordinal,
+                        title = excluded.title,
+                        body = excluded.body,
+                        summary = excluded.summary,
+                        token_count = excluded.token_count,
+                        page_start = excluded.page_start,
+                        page_end = excluded.page_end,
+                        tags = excluded.tags,
+                        metadata = excluded.metadata,
+                        embedding_model = excluded.embedding_model,
+                        embedding = excluded.embedding,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        source_id,
+                        int(chunk.get("ordinal") or index),
+                        title,
+                        body,
+                        chunk.get("summary"),
+                        int(chunk.get("tokenCount") or chunk.get("token_count") or 0),
+                        chunk.get("pageStart") or chunk.get("page_start"),
+                        chunk.get("pageEnd") or chunk.get("page_end"),
+                        self._json_dumps(tags),
+                        self._json_dumps(metadata),
+                        content_hash,
+                        chunk.get("embeddingModel") or chunk.get("embedding_model"),
+                        self._json_dumps(chunk.get("embedding")) if chunk.get("embedding") is not None else None,
+                        now,
+                        now,
+                    ),
+                )
+                row = conn.execute(
+                    "SELECT * FROM chunks WHERE source_id = ? AND content_hash = ?",
+                    (source_id, content_hash),
+                ).fetchone()
+                indexed_body = f"{body}\n\n{row['summary'] or ''}".strip()
+                self._replace_index(conn, "chunk", int(row["id"]), title, indexed_body, tags)
+                saved.append(self._chunk_from_row(row))
+
+        return saved
+
+    def list_chunks(
+        self,
+        source_id: int | None = None,
+        query: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        fts_query = self._safe_fts_query(query)
+        with self._lock, self._connect() as conn:
+            params: list[Any] = []
+            if fts_query:
+                sql = """
+                    SELECT DISTINCT c.*
+                    FROM chunks c
+                    JOIN brain_index i
+                      ON i.entity_type = 'chunk'
+                     AND i.entity_id = CAST(c.id AS TEXT)
+                    WHERE brain_index MATCH ?
+                """
+                params.append(fts_query)
+                if source_id is not None:
+                    sql += " AND c.source_id = ?"
+                    params.append(source_id)
+                sql += " ORDER BY c.source_id, c.ordinal LIMIT ?"
+                params.append(limit)
+            else:
+                sql = "SELECT * FROM chunks"
+                if source_id is not None:
+                    sql += " WHERE source_id = ?"
+                    params.append(source_id)
+                sql += " ORDER BY source_id, ordinal LIMIT ?"
+                params.append(limit)
+
+            return [self._chunk_from_row(row) for row in conn.execute(sql, params).fetchall()]
+
+    def delete_source(self, source_id: int) -> bool:
+        with self._lock, self._connect() as conn:
+            chunk_ids = [
+                str(row["id"])
+                for row in conn.execute("SELECT id FROM chunks WHERE source_id = ?", (source_id,)).fetchall()
+            ]
+            cur = conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+            conn.execute(
+                "DELETE FROM brain_index WHERE entity_type = 'source' AND entity_id = ?",
+                (str(source_id),),
+            )
+            for chunk_id in chunk_ids:
+                conn.execute(
+                    "DELETE FROM brain_index WHERE entity_type = 'chunk' AND entity_id = ?",
+                    (chunk_id,),
+                )
+            return cur.rowcount > 0
 
     def search(self, query: str, limit: int = 50, entity_type: str | None = None) -> list[dict[str, Any]]:
         fts_query = self._safe_fts_query(query)
@@ -360,7 +569,7 @@ class BrainStore:
 
     def counts(self) -> dict[str, int]:
         with self._lock, self._connect() as conn:
-            tables = ["memories", "sources", "ideas", "theses", "edges"]
+            tables = ["memories", "sources", "chunks", "ideas", "theses", "edges"]
             result = {
                 table: int(conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()["c"])
                 for table in tables

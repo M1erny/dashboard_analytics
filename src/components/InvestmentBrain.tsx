@@ -48,6 +48,22 @@ type SearchResult = {
     rank?: number;
 };
 
+type BrainCounts = {
+    memories?: number;
+    sources?: number;
+    chunks?: number;
+    ideas?: number;
+    theses?: number;
+    edges?: number;
+    indexed?: number;
+};
+
+type BrainStatus = {
+    state?: string;
+    counts?: BrainCounts;
+    capabilities?: string[];
+};
+
 type BackendState = 'checking' | 'ready' | 'offline';
 
 const memoryTypes: {
@@ -150,16 +166,18 @@ const databaseChoices = [
 ];
 
 const futureEndpoints = [
+    'POST /api/brain/ingest/text',
     'POST /api/brain/sources',
+    'POST /api/brain/sources/:id/chunks',
     'POST /api/brain/memories',
+    'GET /api/brain/chunks',
     'GET /api/brain/company/:ticker/context',
     'POST /api/brain/analyze-company',
-    'POST /api/brain/thesis-journal',
 ];
 
 const schemaRows = [
     ['sources', 'Uploaded books, PDFs, filings, notes, links, and metadata'],
-    ['chunks', 'Searchable excerpts with source, page, tags, and embeddings'],
+    ['chunks', 'Searchable excerpts with source, page, tags, hashes, and future embeddings'],
     ['ideas', 'Principles, warnings, frameworks, trend claims, and valuation lenses'],
     ['memories', 'Why you liked, passed, bought, sold, or paused a company'],
     ['theses', 'Living company writeups with assumptions and change-my-mind triggers'],
@@ -240,6 +258,12 @@ export const InvestmentBrain: React.FC = () => {
     const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
     const [searchMessage, setSearchMessage] = useState('');
     const [isSearching, setIsSearching] = useState(false);
+    const [backendCounts, setBackendCounts] = useState<BrainCounts | null>(null);
+    const [sourceTitle, setSourceTitle] = useState('Urbanization source note');
+    const [sourceBody, setSourceBody] = useState('Urbanization can support long-duration demand for logistics, city infrastructure, elevators, payments, energy resilience, utilities, and housing quality. The investment risk is that many obvious beneficiaries are capital intensive or regulated, so the framework should favor pricing power, balance-sheet durability, and reinvestment runway.');
+    const [sourceTags, setSourceTags] = useState('urbanization, infrastructure, source');
+    const [ingestMessage, setIngestMessage] = useState('');
+    const [isIngesting, setIsIngesting] = useState(false);
 
     useEffect(() => {
         window.localStorage.setItem(MEMORY_STORAGE_KEY, JSON.stringify(memories));
@@ -252,6 +276,7 @@ export const InvestmentBrain: React.FC = () => {
             try {
                 const statusResponse = await fetch(brainApiUrl('/api/brain/status'));
                 if (!statusResponse.ok) throw new Error('Brain status unavailable');
+                const status = await statusResponse.json() as BrainStatus;
 
                 const memoriesResponse = await fetch(brainApiUrl('/api/brain/memories?limit=200'));
                 if (!memoriesResponse.ok) throw new Error('Brain memories unavailable');
@@ -261,6 +286,7 @@ export const InvestmentBrain: React.FC = () => {
 
                 if (!cancelled) {
                     setBackendState('ready');
+                    setBackendCounts(status.counts ?? null);
                     setMemories(backendMemories);
                 }
             } catch {
@@ -372,6 +398,43 @@ export const InvestmentBrain: React.FC = () => {
         }
     };
 
+    const ingestSourceText = async () => {
+        const cleanedTitle = sourceTitle.trim();
+        const cleanedBody = sourceBody.trim();
+        if (!cleanedTitle || !cleanedBody || backendState !== 'ready') return;
+
+        setIsIngesting(true);
+        setIngestMessage('');
+        try {
+            const response = await fetch(brainApiUrl('/api/brain/ingest/text'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    kind: 'note',
+                    title: cleanedTitle,
+                    body: cleanedBody,
+                    tags: formatTags(sourceTags),
+                    chunkWords: 450,
+                    overlapWords: 60,
+                    metadata: {
+                        origin: 'investment-brain-ui',
+                        rawStorage: 'inline-text-for-now',
+                    },
+                }),
+            });
+            if (!response.ok) throw new Error('Ingestion failed');
+
+            const payload = await response.json() as { chunks?: unknown[]; counts?: BrainCounts };
+            setBackendCounts(payload.counts ?? null);
+            setIngestMessage(`Indexed ${Array.isArray(payload.chunks) ? payload.chunks.length : 0} chunk(s). Try searching this source now.`);
+            setSearchQuery(cleanedTitle);
+        } catch {
+            setIngestMessage('Ingestion is unavailable. Check that the backend is running and VITE_API_URL points to it.');
+        } finally {
+            setIsIngesting(false);
+        }
+    };
+
     const ActiveIcon = activeType.Icon;
     const storageLabel = backendState === 'ready'
         ? 'SQLite backend'
@@ -419,6 +482,11 @@ export const InvestmentBrain: React.FC = () => {
                                     {label}
                                 </span>
                             ))}
+                            {backendCounts && (
+                                <span className="inline-flex min-h-[34px] items-center justify-center rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-sky-200">
+                                    {backendCounts.sources ?? 0} sources / {backendCounts.chunks ?? 0} chunks
+                                </span>
+                            )}
                         </div>
                     </header>
 
@@ -558,6 +626,100 @@ export const InvestmentBrain: React.FC = () => {
                         })}
                     </section>
 
+                    <section className="grid grid-cols-1 gap-4 xl:grid-cols-12 xl:gap-5">
+                        <div className="xl:col-span-7 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
+                            <div className="flex items-center gap-2">
+                                <FileText className="h-4 w-4 text-cyan-300" />
+                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Indexer Intake</h2>
+                            </div>
+                            <p className="mt-2 text-sm leading-6 text-gray-500">
+                                Paste text here today. Later the local indexer will call the same API after extracting PDFs, filings, books, and synced-folder notes.
+                            </p>
+
+                            <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-5">
+                                <label className="lg:col-span-2">
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Source title</span>
+                                    <input
+                                        value={sourceTitle}
+                                        onChange={event => setSourceTitle(event.target.value)}
+                                        className="mt-1 h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
+                                        placeholder="Book, filing, note, transcript..."
+                                    />
+                                </label>
+                                <label className="lg:col-span-3">
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Source tags</span>
+                                    <input
+                                        value={sourceTags}
+                                        onChange={event => setSourceTags(event.target.value)}
+                                        className="mt-1 h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
+                                        placeholder="framework, filing, urbanization"
+                                    />
+                                </label>
+                                <label className="lg:col-span-5">
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Extracted text</span>
+                                    <textarea
+                                        value={sourceBody}
+                                        onChange={event => setSourceBody(event.target.value)}
+                                        className="mt-1 min-h-[150px] w-full resize-y rounded-lg border border-white/10 bg-white/[0.04] px-3 py-3 text-sm leading-6 text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
+                                        placeholder="Paste source text. The backend will store it, chunk it, hash chunks, and add them to search."
+                                    />
+                                </label>
+                            </div>
+
+                            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <p className="text-xs leading-5 text-gray-500">
+                                    Embeddings are intentionally not connected yet. The schema already has a slot for them.
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={ingestSourceText}
+                                    disabled={isIngesting || backendState !== 'ready'}
+                                    className={cn(
+                                        'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
+                                        backendState === 'ready'
+                                            ? 'border-cyan-500/30 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/20'
+                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                    )}
+                                >
+                                    <Plus className="h-4 w-4" />
+                                    {isIngesting ? 'Indexing' : 'Index Text'}
+                                </button>
+                            </div>
+                            {ingestMessage && (
+                                <p className="mt-3 text-xs font-semibold text-gray-400">{ingestMessage}</p>
+                            )}
+                        </div>
+
+                        <div className="xl:col-span-5 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
+                            <div className="flex items-center gap-2">
+                                <Database className="h-4 w-4 text-emerald-300" />
+                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Backend Index</h2>
+                            </div>
+                            <div className="mt-4 grid grid-cols-2 gap-2">
+                                {[
+                                    ['sources', backendCounts?.sources ?? 0],
+                                    ['chunks', backendCounts?.chunks ?? 0],
+                                    ['memories', backendCounts?.memories ?? memories.length],
+                                    ['indexed', backendCounts?.indexed ?? 0],
+                                ].map(([label, value]) => (
+                                    <div key={label} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
+                                        <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-gray-500">{label}</p>
+                                        <p className="mt-2 font-mono text-2xl font-black text-white">{value}</p>
+                                    </div>
+                                ))}
+                            </div>
+                            <div className="mt-4 rounded-lg border border-white/[0.08] bg-black/20 p-3">
+                                <div className="flex items-center gap-2">
+                                    <Network className="h-4 w-4 text-gray-300" />
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">Local indexer contract</span>
+                                </div>
+                                <p className="mt-2 text-xs leading-5 text-gray-500">
+                                    Watch a folder, extract text, call `/api/brain/ingest/text` or send prebuilt chunks to `/api/brain/sources/:id/chunks`.
+                                </p>
+                            </div>
+                        </div>
+                    </section>
+
                     <section className="rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
                         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                             <div>
@@ -566,7 +728,7 @@ export const InvestmentBrain: React.FC = () => {
                                     <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Search All Indexed Data</h2>
                                 </div>
                                 <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-500">
-                                    This calls the backend SQLite FTS index. It searches memories, sources, and future idea/thesis records through one retrieval layer.
+                                    This calls the backend SQLite FTS index. It searches memories, sources, chunks, and future idea/thesis records through one retrieval layer.
                                 </p>
                             </div>
                             <span className={cn(

@@ -196,6 +196,9 @@ Current capability:
 
 - manual memories
 - memory types: liked, passed, megatrend, framework, question
+- source ingestion through `POST /api/brain/ingest/text`
+- deterministic chunking with stable content hashes
+- searchable `chunks` table prepared for future embeddings
 - SQLite FTS keyword search
 - local browser fallback
 - Vercel frontend routing
@@ -207,6 +210,23 @@ Current limitations:
 - no embeddings yet
 - no Postgres/pgvector yet
 - SQLite on Render is not enough for permanent production memory unless backed by persistent disk
+
+Current API spine:
+
+```text
+GET    /api/brain/status
+POST   /api/brain/memories
+GET    /api/brain/memories
+DELETE /api/brain/memories/:id
+POST   /api/brain/sources
+GET    /api/brain/sources
+DELETE /api/brain/sources/:id
+POST   /api/brain/ingest/text
+POST   /api/brain/sources/:id/chunks
+GET    /api/brain/chunks
+GET    /api/brain/sources/:id/chunks
+GET    /api/brain/search
+```
 
 ## Next Build Steps
 

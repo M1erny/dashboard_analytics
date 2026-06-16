@@ -11,6 +11,7 @@ import numpy as np
 import time
 import yfinance as yf
 from datetime import datetime
+from typing import Any
 
 # Import risk.py (Now local)
 try:
@@ -21,8 +22,9 @@ except ImportError as e:
 
 try:
     from brain_store import BrainStore
+    from brain_ingestion import chunk_text, normalize_text, stable_hash
 except ImportError as e:
-    print(f"Error importing brain_store.py: {e}")
+    print(f"Error importing Investment Brain modules: {e}")
     BrainStore = None
 
 app = FastAPI()
@@ -58,6 +60,33 @@ class BrainSourceRequest(BaseModel):
     sourceDate: str | None = None
     tags: list[str] = Field(default_factory=list)
     metadata: dict = Field(default_factory=dict)
+
+
+class BrainChunkRequest(BaseModel):
+    ordinal: int = 0
+    title: str = Field(..., min_length=1, max_length=300)
+    body: str = Field(..., min_length=1)
+    summary: str | None = None
+    tokenCount: int = 0
+    pageStart: int | None = None
+    pageEnd: int | None = None
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    contentHash: str | None = None
+    embeddingModel: str | None = None
+    embedding: list[float] | None = None
+
+
+class BrainTextIngestRequest(BaseModel):
+    kind: str = "document"
+    title: str = Field(..., min_length=1, max_length=300)
+    body: str = Field(..., min_length=1)
+    author: str | None = None
+    sourceDate: str | None = None
+    tags: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    chunkWords: int = Field(default=900, ge=150, le=2500)
+    overlapWords: int = Field(default=120, ge=0, le=800)
 
 
 def _brain_or_503():
@@ -107,6 +136,16 @@ async def get_brain_status():
         "state": "ready",
         "database": str(store.db_path),
         "search": "sqlite_fts5",
+        "vectorSearch": "not_configured",
+        "embeddingProvider": "not_configured",
+        "capabilities": [
+            "manual_memories",
+            "source_storage",
+            "text_ingestion",
+            "chunk_indexing",
+            "keyword_search",
+            "embedding_ready_schema",
+        ],
         "counts": store.counts(),
     }
 
@@ -166,6 +205,105 @@ async def add_brain_source(source: BrainSourceRequest):
         return {"source": saved}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/brain/sources")
+async def list_brain_sources(
+    q: str | None = None,
+    kind: str | None = None,
+    limit: int = 100,
+):
+    store = _brain_or_503()
+    return {"sources": store.list_sources(query=q, kind=kind, limit=limit)}
+
+
+@app.delete("/api/brain/sources/{source_id}")
+async def delete_brain_source(source_id: int):
+    store = _brain_or_503()
+    deleted = store.delete_source(source_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Source not found")
+    return {"status": "deleted", "id": source_id, "counts": store.counts()}
+
+
+@app.post("/api/brain/ingest/text")
+async def ingest_brain_text(payload: BrainTextIngestRequest):
+    store = _brain_or_503()
+    body = normalize_text(payload.body)
+    if not body:
+        raise HTTPException(status_code=400, detail="body is required")
+
+    metadata = {
+        **payload.metadata,
+        "sourceHash": stable_hash(payload.title, body),
+        "ingestion": {
+            "mode": "text",
+            "chunkWords": payload.chunkWords,
+            "overlapWords": payload.overlapWords,
+            "embeddingProvider": "not_configured",
+        },
+    }
+
+    try:
+        source = store.add_source(
+            kind=payload.kind,
+            title=payload.title,
+            body=body,
+            author=payload.author,
+            source_date=payload.sourceDate,
+            tags=payload.tags,
+            metadata=metadata,
+        )
+        chunks = chunk_text(
+            body,
+            source_title=payload.title,
+            tags=payload.tags,
+            chunk_words=payload.chunkWords,
+            overlap_words=payload.overlapWords,
+        )
+        saved_chunks = store.add_chunks(source["id"], chunks)
+        return {
+            "source": source,
+            "chunks": saved_chunks,
+            "counts": store.counts(),
+            "message": "Text stored, chunked, and indexed. Embeddings can be attached later.",
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/brain/sources/{source_id}/chunks")
+async def add_brain_chunks(source_id: int, chunks: list[BrainChunkRequest]):
+    store = _brain_or_503()
+    prepared = []
+    for chunk in chunks:
+        data = chunk.dict()
+        body = normalize_text(data["body"])
+        data["body"] = body
+        data["contentHash"] = data["contentHash"] or stable_hash(str(source_id), str(data["ordinal"]), body)
+        prepared.append(data)
+
+    try:
+        saved = store.add_chunks(source_id, prepared)
+        return {"chunks": saved, "counts": store.counts()}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/brain/chunks")
+async def list_brain_chunks(
+    source_id: int | None = None,
+    q: str | None = None,
+    limit: int = 100,
+):
+    store = _brain_or_503()
+    return {"chunks": store.list_chunks(source_id=source_id, query=q, limit=limit)}
+
+
+@app.get("/api/brain/sources/{source_id}/chunks")
+async def list_brain_source_chunks(source_id: int, limit: int = 100):
+    store = _brain_or_503()
+    return {"chunks": store.list_chunks(source_id=source_id, limit=limit)}
 
 
 @app.get("/api/brain/search")
