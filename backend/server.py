@@ -491,8 +491,14 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             if isinstance(result, dict):
                 response["stressTests"].append({
                     "scenario": scenario,
-                    "impact": to_float(result.get('nonlinear', 0)),
+                    "impact": to_float(result.get('alpha_neutral', result.get('nonlinear', 0))),
                     "linearImpact": to_float(result.get('linear', 0)),
+                    "fittedImpact": to_float(result.get('fitted_with_alpha', result.get('nonlinear', 0))),
+                    "shapeEffect": to_float(result.get('shape_effect', 0)),
+                    "alphaEffect": to_float(result.get('alpha_effect', 0)),
+                    "modelCurve": to_float(result.get('model_curve', 0)),
+                    "modelSlope": to_float(result.get('model_slope', 0)),
+                    "modelIntercept": to_float(result.get('model_intercept', 0)),
                     "marketMove": to_float(result.get('market_move', 0)),
                     "stressDays": result.get('stress_days'),
                     "dailyMarketMove": to_float(result.get('daily_market_move')),
@@ -740,7 +746,20 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
 
         # Sanitize stress tests
         for st in response["stressTests"]:
-            st["impact"] = to_float(st["impact"])
+            for key in (
+                "impact",
+                "linearImpact",
+                "fittedImpact",
+                "shapeEffect",
+                "alphaEffect",
+                "modelCurve",
+                "modelSlope",
+                "modelIntercept",
+                "marketMove",
+                "dailyMarketMove",
+            ):
+                if key in st:
+                    st[key] = to_float(st[key])
         
         # Sanitize risk attribution
         for ra in response["riskAttribution"]:

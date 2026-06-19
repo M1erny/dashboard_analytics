@@ -286,6 +286,7 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, com
     const spreadPositive = (captureSpread ?? 0) > 0;
     const profileLabel = spreadPositive && isConvex ? 'Convex' : spreadPositive || isConvex ? 'Mixed' : 'Concave';
     const profileTone = profileLabel === 'Convex' ? 'positive' : profileLabel === 'Mixed' ? 'mixed' : 'negative';
+    const curveLabel = isConvex ? 'Convex curve' : 'Concave curve';
 
     if (compact) {
         return (
@@ -342,14 +343,16 @@ export const ConvexityWidget: React.FC<ConvexityWidgetProps> = ({ convexity, com
                 <p className="text-[10px] text-gray-600 mt-3 leading-relaxed">
                     <strong className="text-gray-500">{profileLabel}:</strong>{' '}
                     {profileTone === 'mixed'
-                        ? 'Capture spread is strong, but the curve does not confirm convexity.'
+                        ? spreadPositive
+                            ? 'Realized capture is favorable, but the curve shape is concave.'
+                            : 'Curve shape is positive, but realized capture has not confirmed it.'
                         : profileTone === 'positive'
-                            ? 'Upside capture beats downside and the curve is positive.'
-                            : 'Capture spread and curve shape do not confirm convexity.'}
+                            ? 'Upside capture beats downside and the curve shape is positive.'
+                            : 'Realized capture and curve shape do not confirm convexity.'}
                 </p>
                 <div className="mt-2 flex items-center justify-between">
                     <span className="text-[9px] text-gray-500 uppercase tracking-wider font-medium">Model Fit</span>
-                    <span className={cn("text-[9px] font-mono px-2 py-0.5 rounded border", isConvex ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20")}>Curve {fmtNum(quadraticCoeffs?.[0], 4)} | Fit {fmtNum(rSquared, 3)}</span>
+                    <span className={cn("text-[9px] font-mono px-2 py-0.5 rounded border", isConvex ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/20" : "text-rose-400 bg-rose-500/10 border-rose-500/20")}>{curveLabel} {fmtNum(quadraticCoeffs?.[0], 4)} | Fit {fmtNum(rSquared, 3)}</span>
                 </div>
             </div>
         );

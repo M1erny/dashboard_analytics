@@ -75,6 +75,12 @@ export interface StressTest {
     scenario: string;
     impact: number;
     linearImpact?: number;
+    fittedImpact?: number;
+    shapeEffect?: number;
+    alphaEffect?: number;
+    modelCurve?: number;
+    modelSlope?: number;
+    modelIntercept?: number;
     marketMove?: number;
     stressDays?: number;
     dailyMarketMove?: number;

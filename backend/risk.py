@@ -1293,11 +1293,13 @@ def calculate_convexity_metrics(portfolio_ret, benchmark_ret):
 
 
 def stress_test_portfolio(metrics):
-    """Non-linear stress test using a compounded quadratic daily model.
+    """Stress test with beta-only, alpha-neutral, and alpha-included lenses.
 
-    The convexity regression is fit on daily observations. To avoid extreme
-    extrapolation, each scenario is split into daily-sized benchmark moves and
-    compounded instead of plugging a +/-10% move directly into a one-day model.
+    Risk stress should not treat recent intercept/alpha as structural downside
+    protection. The primary non-linear impact is therefore alpha-neutral:
+    daily portfolio move = beta_1 * market + beta_2 * market^2. The fitted
+    model including alpha is still returned as context, but it is not the
+    headline risk number.
     """
     print("--- 4b. Running Non-Linear Stress Tests ---")
     if metrics is None: return {}
@@ -1320,6 +1322,8 @@ def stress_test_portfolio(metrics):
                      convexity.get('Quadratic_Coeffs') and
                      convexity['R_Squared'] > 0.01)
     
+    coeffs = None
+
     if has_quadratic:
         coeffs = convexity['Quadratic_Coeffs']  # [β₂, β₁, α]
 
@@ -1337,18 +1341,36 @@ def stress_test_portfolio(metrics):
         linear_daily = beta * daily_market_move
         linear_est = compound_daily_return(linear_daily, stress_days)
         
-        if has_quadratic:
-            nonlinear_daily = np.polyval(coeffs, daily_market_move)
-            nonlinear_est = compound_daily_return(nonlinear_daily, stress_days)
+        if has_quadratic and coeffs is not None:
+            curve_coeff, slope_coeff, intercept = coeffs
+            alpha_neutral_daily = (curve_coeff * daily_market_move ** 2) + (slope_coeff * daily_market_move)
+            fitted_with_alpha_daily = alpha_neutral_daily + intercept
+            alpha_neutral_est = compound_daily_return(alpha_neutral_daily, stress_days)
+            fitted_with_alpha_est = compound_daily_return(fitted_with_alpha_daily, stress_days)
         else:
-            nonlinear_est = linear_est
+            curve_coeff = 0.0
+            slope_coeff = beta
+            intercept = 0.0
+            alpha_neutral_daily = linear_daily
+            fitted_with_alpha_daily = linear_daily
+            alpha_neutral_est = linear_est
+            fitted_with_alpha_est = linear_est
         
         results[name] = {
             'linear': linear_est,
-            'nonlinear': nonlinear_est,
+            'nonlinear': alpha_neutral_est,
+            'alpha_neutral': alpha_neutral_est,
+            'fitted_with_alpha': fitted_with_alpha_est,
+            'shape_effect': alpha_neutral_est - linear_est,
+            'alpha_effect': fitted_with_alpha_est - alpha_neutral_est,
             'market_move': mkt_move,
             'stress_days': stress_days,
-            'daily_market_move': daily_market_move
+            'daily_market_move': daily_market_move,
+            'alpha_neutral_daily': alpha_neutral_daily,
+            'fitted_with_alpha_daily': fitted_with_alpha_daily,
+            'model_curve': curve_coeff,
+            'model_slope': slope_coeff,
+            'model_intercept': intercept
         }
     
     return results

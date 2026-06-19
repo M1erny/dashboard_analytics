@@ -31,6 +31,12 @@ const fmtSigned = (val: number | undefined, decimals = 2) => {
     return `${sign}${(val * 100).toFixed(decimals)}%`;
 };
 
+const fmtSignedPp = (val: number | undefined, decimals = 1) => {
+    if (typeof val !== 'number') return 'N/A';
+    const sign = val > 0 ? '+' : '';
+    return `${sign}${(val * 100).toFixed(decimals)}pp`;
+};
+
 const fmtNum = (val: number | undefined) =>
     typeof val === 'number' ? val.toFixed(2) : 'N/A';
 
@@ -445,17 +451,20 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                         </div>
                         <span
                             className="text-[9px] text-gray-500 bg-white/[0.03] border border-white/[0.06] px-2 py-0.5 rounded cursor-help whitespace-nowrap"
-                            title="Each scenario converts the SPY shock into daily-sized moves, then compounds the fitted YTD model. Beta-only uses the portfolio beta for comparison."
+                            title="Headline stress removes the fitted intercept/alpha, then compounds the curve response. Recent alpha is shown separately as context."
                         >
-                            Stress model
+                            Ex-alpha stress
                         </span>
                     </div>
 
                     {stressTests?.map(st => {
                         const mktMove = st.marketMove ?? 0;
-                        const diff = st.linearImpact != null ? st.impact - st.linearImpact : 0;
-                        const hasBoth = st.linearImpact != null && Math.abs(diff) > 0.0001;
-                        const convexBenefit = diff > 0;
+                        const shapeEffect = st.shapeEffect ?? (st.linearImpact != null ? st.impact - st.linearImpact : 0);
+                        const alphaEffect = st.alphaEffect ?? (st.fittedImpact != null ? st.fittedImpact - st.impact : 0);
+                        const hasShapeEffect = st.linearImpact != null && Math.abs(shapeEffect) > 0.0001;
+                        const hasFittedImpact = st.fittedImpact != null && Math.abs(st.fittedImpact - st.impact) > 0.0001;
+                        const shapeHelps = shapeEffect > 0;
+                        const alphaHelps = alphaEffect > 0;
                         const isCrash = mktMove < -0.07;
                         const isDown = mktMove < 0;
 
@@ -494,7 +503,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                     {/* Quadratic model — dominant */}
                                     <div className="flex flex-col gap-0.5">
                                         <span className="text-[8px] text-gray-600 uppercase tracking-widest font-semibold">
-                                            Model
+                                            Ex-alpha
                                         </span>
                                         <span
                                             className={cn(
@@ -516,7 +525,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                         <span className="text-[8px] text-gray-600 uppercase tracking-widest font-semibold">
                                             Beta only
                                         </span>
-                                        <div className="flex items-end gap-1.5">
+                                        <div className="flex flex-wrap items-end gap-1.5">
                                             <span className={cn(
                                                 "font-mono text-xl font-black tracking-tight leading-none",
                                                 st.linearImpact != null
@@ -525,19 +534,45 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                             )}>
                                                 {st.linearImpact != null ? fmtSigned(st.linearImpact) : 'N/A'}
                                             </span>
-                                            {hasBoth && (
+                                            {hasShapeEffect && (
                                                 <span className={cn(
                                                     "font-mono text-[9px] font-bold px-1 py-0.5 rounded mb-0.5 leading-none",
-                                                    convexBenefit
+                                                    shapeHelps
                                                         ? "text-emerald-400 bg-emerald-900/40"
                                                         : "text-rose-400 bg-rose-900/40"
                                                 )}>
-                                                    {convexBenefit ? '+' : '-'}{Math.abs(diff * 100).toFixed(1)}pp
+                                                    Shape {fmtSignedPp(shapeEffect)}
                                                 </span>
                                             )}
                                         </div>
                                     </div>
                                 </div>
+
+                                {hasFittedImpact && (
+                                    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-white/[0.05] bg-white/[0.025] px-2.5 py-2">
+                                        <span className="text-[8px] text-gray-600 uppercase tracking-widest font-semibold">
+                                            Recent alpha
+                                        </span>
+                                        <div className="flex flex-wrap items-center justify-end gap-1.5">
+                                            <span className={cn(
+                                                "font-mono text-[10px] font-black tracking-tight",
+                                                (st.fittedImpact ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                                            )}>
+                                                {fmtSigned(st.fittedImpact)}
+                                            </span>
+                                            {Math.abs(alphaEffect) > 0.0001 && (
+                                                <span className={cn(
+                                                    "font-mono text-[9px] font-bold px-1 py-0.5 rounded leading-none",
+                                                    alphaHelps
+                                                        ? "text-emerald-400 bg-emerald-900/30"
+                                                        : "text-rose-400 bg-rose-900/30"
+                                                )}>
+                                                    Alpha {fmtSignedPp(alphaEffect)}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         );
                     })}
@@ -546,8 +581,8 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     <div className="mt-1 rounded-lg bg-white/[0.02] border border-white/[0.04] px-3 py-2.5">
                         <p className="text-[10px] text-gray-600 leading-relaxed">
                             <span className="text-gray-500 font-semibold">How it works: </span>
-                            Each scenario converts the SPY shock into daily-sized moves, then compounds the fitted YTD model.
-                            Beta-only shows the same shock using portfolio beta, so the pp edge is the model impact minus the pure-beta impact.
+                            Headline stress removes the fitted intercept/alpha and compounds the curve response.
+                            Beta-only is the market-beta baseline; recent alpha is shown separately as context.
                         </p>
                     </div>
                 </div>
