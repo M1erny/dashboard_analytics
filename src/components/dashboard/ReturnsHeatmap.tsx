@@ -162,7 +162,21 @@ const WeightBar = ({ current, initial }: { current: number | null; initial: numb
 };
 
 // ─── Direction Badge ─────────────────────────────────────────
-const DirectionBadge = ({ direction }: { direction: 'Long' | 'Short' | null }) => {
+const DirectionBadge = ({ direction, status }: { direction: 'Long' | 'Short' | null; status?: 'Active' | 'Exited' | 'Planned' }) => {
+    if (status === 'Planned') {
+        return (
+            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-sky-500/10 text-sky-300 border border-sky-500/20">
+                PLAN
+            </span>
+        );
+    }
+    if (status === 'Exited') {
+        return (
+            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-slate-700/25 text-slate-400 border border-white/[0.08]">
+                EXIT
+            </span>
+        );
+    }
     if (!direction) return null;
     return direction === 'Long' ? (
         <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
@@ -314,8 +328,8 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             if (r.ytdContribution != null) ytdC += r.ytdContribution;
             if (r.r7dContribution != null) r7dC += r.r7dContribution;
             if (r.r1dContribution != null) r1dC += r.r1dContribution;
-            if (r.direction === 'Long') longCount++;
-            if (r.direction === 'Short') shortCount++;
+            if ((r.status === undefined || r.status === 'Active') && r.direction === 'Long') longCount++;
+            if ((r.status === undefined || r.status === 'Active') && r.direction === 'Short') shortCount++;
         }
         return { ytdC, r7dC, r1dC, longCount, shortCount, total: longCount + shortCount };
     }, [periodicReturns]);
@@ -399,7 +413,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                             )}>
                                 {row.ticker}
                             </span>
-                            <DirectionBadge direction={row.direction} />
+                            <DirectionBadge direction={row.direction} status={row.status} />
                         </div>
                     </td>
                 );

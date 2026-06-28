@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "mode": "dated_snapshots",
+  "description": "YTD accounting ledger. Snapshots before activeConfigEffectiveDate preserve realized performance so a later rebalance does not rewrite H1 results.",
+  "activeConfigEffectiveDate": "2026-07-01",
+  "activeConfigLabel": "Post-rebalance target book from main.json",
+  "snapshots": [
+    {
+      "date": "2026-01-01",
+      "label": "Opening 2026 / H1 book",
+      "source": "frozen_snapshot",
+      "positions": {
+        "AFRM":      {"weight": 0.20, "type": "Long", "currency": "USD", "country": "USA", "sector": "Financials"},
+        "INPST.AS":  {"weight": 0.15, "type": "Long", "currency": "EUR", "country": "NLD", "sector": "Industrials"},
+        "HARVIA.HE": {"weight": 0.15, "type": "Long", "currency": "EUR", "country": "FIN", "sector": "Cons. Cyclical"},
+        "BFT.WA":    {"weight": 0.15, "type": "Long", "currency": "PLN", "country": "POL", "sector": "Financials"},
+        "NBIS":      {"weight": 0.05, "type": "Long", "currency": "USD", "country": "USA", "sector": "Health Care"},
+        "CDR.WA":    {"weight": 0.10, "type": "Long", "currency": "PLN", "country": "POL", "sector": "Comm. Services"},
+        "3659.T":    {"weight": 0.05, "type": "Long", "currency": "JPY", "country": "JPN", "sector": "Comm. Services"},
+        "XTB.WA":    {"weight": 0.10, "type": "Long", "currency": "PLN", "country": "POL", "sector": "Financials"},
+        "BRK-B":     {"weight": 0.10, "type": "Long", "currency": "USD", "country": "USA", "sector": "Financials"},
+        "EQT":       {"weight": 0.10, "type": "Long", "currency": "USD", "country": "USA", "sector": "Energy"},
+        "META":      {"weight": 0.10, "type": "Long", "currency": "USD", "country": "USA", "sector": "Comm. Services"},
+        "PSKY":      {"weight": 0.05, "type": "Long", "currency": "USD", "country": "USA", "sector": "Technology"},
+        "SWM.WA":    {"weight": 0.05, "type": "Long", "currency": "PLN", "country": "POL", "sector": "Energy"},
+        "RBLX":      {"weight": 0.05, "type": "Long", "currency": "USD", "country": "USA", "sector": "Comm. Services"},
+        "SNAP":      {"weight": 0.05, "type": "Long", "currency": "USD", "country": "USA", "sector": "Comm. Services"},
+        "MU":        {"weight": 0.02, "type": "Long", "currency": "USD", "country": "USA", "sector": "Technology"},
+        "000660.KS": {"weight": 0.02, "type": "Long", "currency": "KRW", "country": "KOR", "sector": "Technology"},
+        "MSFT":      {"weight": 0.20, "type": "Short", "currency": "USD", "country": "USA", "sector": "Technology"},
+        "7974.T":    {"weight": 0.10, "type": "Short", "currency": "JPY", "country": "JPN", "sector": "Comm. Services"},
+        "JMT.LS":    {"weight": 0.075, "type": "Short", "currency": "EUR", "country": "PRT", "sector": "Cons. Defensive"},
+        "CARL-B.CO": {"weight": 0.075, "type": "Short", "currency": "DKK", "country": "DNK", "sector": "Cons. Defensive"},
+        "F":         {"weight": 0.075, "type": "Short", "currency": "USD", "country": "USA", "sector": "Cons. Cyclical"},
+        "ABI.BR":    {"weight": 0.075, "type": "Short", "currency": "EUR", "country": "BEL", "sector": "Cons. Defensive"},
+        "BDX.WA":    {"weight": 0.05, "type": "Short", "currency": "PLN", "country": "POL", "sector": "Financials"},
+        "STLA":      {"weight": 0.05, "type": "Short", "currency": "USD", "country": "USA", "sector": "Cons. Cyclical"}
+      }
+    }
+  ]
+}

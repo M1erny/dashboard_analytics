@@ -511,8 +511,18 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                     "linearImpact": to_float(result),
                     "marketMove": None,
                 })
-        # Get portfolio config for weights and direction (Used for Currency & Periodic Returns)
-        portfolio_config = risk.load_portfolio_config(portfolio)
+        # Current exposure book is separate from historical snapshots used for YTD contribution.
+        portfolio_config = risk.get_effective_portfolio_config(portfolio)
+        all_position_config = risk.get_all_position_configs(portfolio)
+        target_config = risk.load_portfolio_config(portfolio)
+        ytd_position_contributions = metrics.get('YTD_Position_Contributions', {}) or {}
+        ytd_current_weights = metrics.get('YTD_Current_Weights', {}) or {}
+        rebalance_events = metrics.get('Rebalance_Events', []) or []
+        response["rebalance"] = {
+            "mode": metrics.get('Rebalance_Mode', 'static'),
+            "events": rebalance_events,
+            "eventCount": len(rebalance_events),
+        }
 
         # Calculate Currency Exposure using portfolio_config.
         # Net exposure is the signed currency risk as a share of equity;
@@ -543,29 +553,33 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
 
         # Calculate Country Allocation for World Map
         country_allocation = {}
-        if portfolio_config:
-            for ticker, info in portfolio_config.items():
+        if all_position_config:
+            for ticker, info in all_position_config.items():
                 country = info.get('country', 'USA')  # Default to USA if not specified
-                weight = info.get('weight', 0)
+                current_info = portfolio_config.get(ticker)
+                weight = current_info.get('weight', 0) if current_info else 0
                 pos_type = info.get('type', 'Long')
                 direction = 1 if pos_type == 'Long' else -1
                 
-                # Get YTD Return for contribution
-                ytd_ret = 0
-                if ticker in periodic_rets.index:
-                    val = periodic_rets.loc[ticker, 'YTD']
-                    if not pd.isna(val):
-                        ytd_ret = val
-
-                contribution = weight * ytd_ret * direction
+                if ticker in ytd_position_contributions:
+                    contribution = ytd_position_contributions.get(ticker) or 0
+                else:
+                    # Get YTD Return for active-book contribution fallback
+                    ytd_ret = 0
+                    if ticker in periodic_rets.index:
+                        val = periodic_rets.loc[ticker, 'YTD']
+                        if not pd.isna(val):
+                            ytd_ret = val
+                    contribution = weight * ytd_ret * direction
 
                 if country not in country_allocation:
                     country_allocation[country] = {'long': 0, 'short': 0, 'contribution': 0, 'tickers': []}
                 
-                if pos_type == 'Long':
-                    country_allocation[country]['long'] += weight
-                else:
-                    country_allocation[country]['short'] += weight
+                if current_info:
+                    if pos_type == 'Long':
+                        country_allocation[country]['long'] += weight
+                    else:
+                        country_allocation[country]['short'] += weight
                 
                 country_allocation[country]['contribution'] += contribution
                 
@@ -573,7 +587,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                     'ticker': ticker,
                     'weight': weight,
                     'type': pos_type,
-                    'contribution': contribution
+                    'contribution': contribution,
+                    'status': "Active" if current_info else ("Planned" if ticker in target_config else "Exited")
                 })
         
         response["countryAllocation"] = country_allocation
@@ -583,9 +598,19 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
         # We need to add 1M returns and YTD contribution
         portfolio_ytd = to_float(metrics.get('YTD_Return')) or 0.0
         
-        for ticker, ticker_config in portfolio_config.items():
-            weight = ticker_config.get('weight', 0) if ticker_config else 0
+        display_tickers = list(all_position_config.keys())
+        for ticker in ytd_position_contributions.keys():
+            if ticker not in all_position_config:
+                display_tickers.append(ticker)
+
+        for ticker in display_tickers:
+            ticker_config = all_position_config.get(ticker, {})
+            current_config = portfolio_config.get(ticker)
+            is_planned = current_config is None and ticker in target_config
+            weight = current_config.get('weight', 0) if current_config else 0
             direction = ticker_config.get('type', None)  # 'Long' or 'Short'
+            is_active = current_config is not None
+            status = "Active" if is_active else ("Planned" if is_planned else "Exited")
             
             # Check if this ticker is in periodic_rets
             has_rets = (periodic_rets is not None) and (ticker in periodic_rets.index)
@@ -594,10 +619,20 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             # Calculate YTD contribution: weight * ytd_return * direction
             ytd_ret = row['YTD'] if (row is not None and 'YTD' in row and not pd.isna(row['YTD'])) else None
             dir_multiplier = 1 if direction == 'Long' else (-1 if direction == 'Short' else 0)
-            ytd_contribution = weight * ytd_ret * dir_multiplier if weight and ytd_ret is not None else None
+            if ticker in ytd_position_contributions:
+                ytd_contribution = ytd_position_contributions.get(ticker)
+            else:
+                ytd_contribution = weight * ytd_ret * dir_multiplier if weight and ytd_ret is not None else None
             
             # Calculate current drifted weight
-            current_weight = float(weight * (1 + ytd_ret) / (1 + portfolio_ytd)) if weight and ytd_ret is not None else None
+            if ticker in ytd_current_weights:
+                current_weight = ytd_current_weights.get(ticker)
+            elif is_active and weight and ytd_ret is not None:
+                current_weight = float(weight * (1 + ytd_ret) / (1 + portfolio_ytd))
+            elif not is_active:
+                current_weight = 0.0
+            else:
+                current_weight = None
             
             # Calculate Returns and Contributions
             r1d = None
@@ -658,8 +693,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                         volatility = float(daily_returns.std() * np.sqrt(252))
             
             # Daily/Weekly contribution uses CURRENT (drifted) weight, not initial.
-            r1d_contribution = current_weight * r1d * dir_multiplier if current_weight and r1d is not None else None
-            r7d_contribution = current_weight * r7d * dir_multiplier if current_weight and r7d is not None else None
+            r1d_contribution = current_weight * r1d * dir_multiplier if is_active and current_weight and r1d is not None else None
+            r7d_contribution = current_weight * r7d * dir_multiplier if is_active and current_weight and r7d is not None else None
 
             item = {
                 "ticker": ticker,
@@ -675,6 +710,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "weight": to_float(weight) if weight else None,
                 "currentWeight": to_float(current_weight) if current_weight is not None else to_float(weight),
                 "direction": direction,
+                "status": status,
                 "lastPrice": last_price,
                 "entryPrice": ticker_config.get('entry_price', None) if ticker_config else None,
                 "currency": currency,
@@ -789,7 +825,7 @@ async def get_portfolio(portfolio: str = 'main'):
     if not risk:
         return {"error": "Risk module not loaded"}
 
-    portfolio_config = risk.load_portfolio_config(portfolio)
+    portfolio_config = risk.get_effective_portfolio_config(portfolio)
     benchmark = getattr(risk, 'BENCHMARK', 'SPY')
 
     positions = []
@@ -833,7 +869,7 @@ async def get_portfolio_allocation(portfolio: str = 'main'):
     if not risk:
         return {"error": "Risk module not loaded"}
 
-    portfolio_config = risk.load_portfolio_config(portfolio)
+    portfolio_config = risk.get_effective_portfolio_config(portfolio)
 
     by_sector = {}
     by_country = {}
@@ -1108,7 +1144,7 @@ async def get_quality(portfolio: str = 'main'):
     if not risk:
         return {"error": "Risk module not loaded"}
 
-    portfolio_config = risk.load_portfolio_config(portfolio)
+    portfolio_config = risk.get_effective_portfolio_config(portfolio)
 
     def sf(val):
         """Safe float – returns None for NaN/Inf/missing."""

@@ -25,6 +25,85 @@ def load_portfolio_config(name="main"):
         with open(default_path, 'r', encoding='utf-8') as f:
             return json.load(f)
 
+
+def load_rebalance_plan(name="main"):
+    """Load optional dated portfolio snapshots used for rebalanced YTD accounting."""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    plan_path = os.path.join(base_dir, "portfolios", f"{name}.rebalances.json")
+    if not os.path.exists(plan_path):
+        return None
+
+    with open(plan_path, 'r', encoding='utf-8') as f:
+        plan = json.load(f)
+
+    if not isinstance(plan, dict):
+        print(f"Warning: Rebalance plan {name}.rebalances.json is not an object. Ignoring.")
+        return None
+
+    return plan
+
+
+def get_rebalance_snapshots(name="main", active_config=None):
+    """Return sorted dated snapshots, including the live config if it has an effective date."""
+    plan = load_rebalance_plan(name)
+    if not plan:
+        return []
+
+    snapshots = []
+    for snap in plan.get("snapshots", []):
+        if not isinstance(snap, dict):
+            continue
+        date = snap.get("date")
+        positions = snap.get("positions")
+        if not date or not isinstance(positions, dict) or not positions:
+            continue
+        snapshots.append({
+            "date": str(date),
+            "label": snap.get("label", "Portfolio snapshot"),
+            "source": snap.get("source", "snapshot"),
+            "positions": positions,
+        })
+
+    active_date = plan.get("activeConfigEffectiveDate")
+    if active_date and active_config:
+        snapshots.append({
+            "date": str(active_date),
+            "label": plan.get("activeConfigLabel", "Current target book"),
+            "source": "active_config",
+            "positions": active_config,
+        })
+
+    return sorted(snapshots, key=lambda snap: pd.Timestamp(snap["date"]))
+
+
+def get_all_position_configs(name="main"):
+    """Union current config and all rebalance snapshots so exited names still download."""
+    active_config = load_portfolio_config(name)
+    combined = {}
+    for snap in get_rebalance_snapshots(name, active_config):
+        combined.update(snap["positions"])
+    combined.update(active_config)
+    return combined
+
+
+def get_effective_portfolio_config(name="main", as_of=None):
+    """Return the book active on a given date. Defaults to today."""
+    active_config = load_portfolio_config(name)
+    snapshots = get_rebalance_snapshots(name, active_config)
+    if not snapshots:
+        return active_config
+
+    as_of_ts = pd.Timestamp(as_of if as_of is not None else datetime.now()).tz_localize(None)
+    effective = None
+    for snap in snapshots:
+        if pd.Timestamp(snap["date"]) <= as_of_ts:
+            effective = snap
+        else:
+            break
+
+    return (effective or snapshots[0])["positions"]
+
+
 PORTFOLIO_CONFIG = load_portfolio_config("main")
 
 # Global constants for the engine
@@ -48,7 +127,7 @@ BORROW_FEE = 0.025  # 2.5% estimated retail hard-to-borrow blended fee
 # 2. DATA ENGINE: Fetch & Normalize
 # ==========================================
 def fetch_data(portfolio_name="main"):
-    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
+    PORTFOLIO_CONFIG = get_all_position_configs(portfolio_name)
     print("--- 1. Initializing Data Download ---")
     
     tickers = list(PORTFOLIO_CONFIG.keys())
@@ -258,7 +337,7 @@ def fetch_data(portfolio_name="main"):
 
 
 def normalize_to_base_currency(stock_df, fx_df, portfolio_name="main"):
-    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
+    PORTFOLIO_CONFIG = get_all_position_configs(portfolio_name)
     print("--- 2. Normalizing Currencies to USD ---")
     normalized_df = stock_df.copy()
     
@@ -293,11 +372,207 @@ def get_period_params(portfolio_name):
     current_year = datetime.now().year
     return "YTD", f"{current_year}-01-01"
 
+
+def calculate_exposure_stats(portfolio_config):
+    total_long_weight = 0.0
+    total_short_weight = 0.0
+
+    for info in portfolio_config.values():
+        weight = float(info.get('weight', 0) or 0)
+        if info.get('type', 'Long') == 'Long':
+            total_long_weight += weight
+        else:
+            total_short_weight += weight
+
+    return {
+        'long': total_long_weight,
+        'short': total_short_weight,
+        'gross': total_long_weight + total_short_weight,
+        'net': total_long_weight - total_short_weight,
+    }
+
+
+def calculate_daily_financing_drag(portfolio_config, margin_rate, borrow_fee):
+    exposure = calculate_exposure_stats(portfolio_config)
+    net_debit = max(0, exposure['long'] - 1.0)
+    daily_margin_cost = (net_debit * margin_rate) / 360
+    daily_borrow_cost = (exposure['short'] * borrow_fee) / 360
+    return daily_margin_cost + daily_borrow_cost
+
+
+def calculate_segmented_ytd(
+    ytd_prices_filled,
+    portfolio_name,
+    active_config,
+    ytd_calc_start,
+    margin_rate,
+    borrow_fee,
+):
+    """Chain YTD performance across dated portfolio snapshots.
+
+    Each rebalance date uses the prior close as its base. That preserves the
+    already-realized first-half result and only applies the new book from its
+    effective date forward.
+    """
+    snapshots = get_rebalance_snapshots(portfolio_name, active_config)
+    if not snapshots or ytd_prices_filled.empty:
+        return None
+
+    price_index = ytd_prices_filled.index
+    last_date = price_index[-1]
+    ytd_start_ts = pd.Timestamp(ytd_calc_start)
+
+    active_snapshots = []
+    for snap in snapshots:
+        snap_ts = pd.Timestamp(snap["date"])
+        if snap_ts <= last_date:
+            active_snapshots.append({**snap, "ts": snap_ts})
+
+    if not active_snapshots:
+        return None
+
+    if active_snapshots[0]["ts"] > ytd_start_ts:
+        active_snapshots.insert(0, {
+            "date": ytd_calc_start,
+            "label": "YTD opening book",
+            "source": "fallback",
+            "positions": active_config,
+            "ts": ytd_start_ts,
+        })
+
+    portfolio_val_series_gross = pd.Series(index=price_index, dtype=float)
+    portfolio_val_series_net = pd.Series(index=price_index, dtype=float)
+    long_daily_ret = pd.Series(0.0, index=price_index)
+    short_daily_ret = pd.Series(0.0, index=price_index)
+
+    gross_start_value = 1.0
+    net_start_value = 1.0
+    position_contributions = {}
+    ytd_longs_contrib = 0.0
+    ytd_shorts_contrib = 0.0
+    current_weights = {}
+    rebalance_events = []
+
+    for idx, snap in enumerate(active_snapshots):
+        start_loc = price_index.searchsorted(snap["ts"])
+        start_idx = max(0, start_loc - 1)
+
+        if idx + 1 < len(active_snapshots):
+            next_loc = price_index.searchsorted(active_snapshots[idx + 1]["ts"])
+            end_idx = max(start_idx, max(0, next_loc - 1))
+        else:
+            end_idx = len(price_index) - 1
+
+        segment_index = price_index[start_idx:end_idx + 1]
+        if len(segment_index) == 0:
+            continue
+
+        positions = snap["positions"]
+        base_prices = ytd_prices_filled.loc[segment_index[0]]
+        rel_prices = ytd_prices_filled.loc[segment_index].divide(base_prices).replace([np.inf, -np.inf], np.nan)
+
+        segment_contrib_curve = pd.Series(0.0, index=segment_index)
+        segment_long_curve = pd.Series(0.0, index=segment_index)
+        segment_short_curve = pd.Series(0.0, index=segment_index)
+
+        for ticker, info in positions.items():
+            if ticker not in rel_prices.columns:
+                continue
+
+            weight = float(info.get('weight', 0) or 0)
+            if weight == 0:
+                continue
+
+            direction = 1 if info.get('type', 'Long') == 'Long' else -1
+            asset_cum_ret = (rel_prices[ticker] - 1.0).fillna(0.0)
+            position_curve = weight * direction * asset_cum_ret
+            segment_contrib_curve += position_curve
+
+            if direction == 1:
+                segment_long_curve += position_curve
+            else:
+                segment_short_curve += position_curve
+
+            final_contrib = float(gross_start_value * position_curve.iloc[-1])
+            position_contributions[ticker] = position_contributions.get(ticker, 0.0) + final_contrib
+            if direction == 1:
+                ytd_longs_contrib += final_contrib
+            else:
+                ytd_shorts_contrib += final_contrib
+
+        segment_gross_curve = (1.0 + segment_contrib_curve).clip(lower=0.000001)
+        segment_gross_values = gross_start_value * segment_gross_curve
+        segment_gross_daily_ret = segment_gross_values.pct_change().fillna(0.0)
+
+        segment_days_elapsed = segment_gross_values.index.to_series().diff().dt.days.fillna(1).clip(lower=1)
+        segment_drag = calculate_daily_financing_drag(positions, margin_rate, borrow_fee)
+        segment_drag_series = segment_drag * segment_days_elapsed
+        segment_drag_series.iloc[0] = 0.0
+        segment_net_daily_ret = segment_gross_daily_ret - segment_drag_series
+        segment_net_daily_ret.iloc[0] = 0.0
+        segment_net_values = net_start_value * (1.0 + segment_net_daily_ret).cumprod()
+
+        portfolio_val_series_gross.loc[segment_index] = segment_gross_values
+        portfolio_val_series_net.loc[segment_index] = segment_net_values
+        previous_segment_value = segment_gross_curve.shift(1).replace(0, np.nan)
+        long_daily_ret.loc[segment_index] = (segment_long_curve.diff() / previous_segment_value).fillna(0.0)
+        short_daily_ret.loc[segment_index] = (segment_short_curve.diff() / previous_segment_value).fillna(0.0)
+
+        exposure = calculate_exposure_stats(positions)
+        rebalance_events.append({
+            "date": segment_index[0].strftime('%Y-%m-%d'),
+            "effectiveDate": snap["date"],
+            "label": snap.get("label", "Portfolio snapshot"),
+            "source": snap.get("source", "snapshot"),
+            "longExposure": exposure['long'],
+            "shortExposure": exposure['short'],
+            "grossExposure": exposure['gross'],
+            "netExposure": exposure['net'],
+            "positionCount": len(positions),
+        })
+
+        if idx == len(active_snapshots) - 1:
+            current_weights = {}
+            final_curve = float(segment_gross_curve.iloc[-1])
+            for ticker, info in positions.items():
+                weight = float(info.get('weight', 0) or 0)
+                if ticker in rel_prices.columns and final_curve != 0:
+                    rel_final = rel_prices[ticker].iloc[-1]
+                    current_weights[ticker] = float(weight * rel_final / final_curve) if not pd.isna(rel_final) else weight
+                else:
+                    current_weights[ticker] = weight
+
+        gross_start_value = float(segment_gross_values.iloc[-1])
+        net_start_value = float(segment_net_values.iloc[-1])
+
+    portfolio_val_series_gross = portfolio_val_series_gross.ffill().dropna()
+    portfolio_val_series_net = portfolio_val_series_net.ffill().dropna()
+
+    if portfolio_val_series_gross.empty or portfolio_val_series_net.empty:
+        return None
+
+    current_config = active_snapshots[-1]["positions"]
+    return {
+        "portfolio_val_series_gross": portfolio_val_series_gross,
+        "portfolio_val_series": portfolio_val_series_net,
+        "ytd_return_gross": float(portfolio_val_series_gross.iloc[-1] - 1.0),
+        "ytd_return": float(portfolio_val_series_net.iloc[-1] - 1.0),
+        "ytd_financing_cost": float(portfolio_val_series_gross.iloc[-1] - portfolio_val_series_net.iloc[-1]),
+        "annual_financing_cost": float(calculate_daily_financing_drag(current_config, margin_rate, borrow_fee) * 360),
+        "ytd_longs_contrib": ytd_longs_contrib,
+        "ytd_shorts_contrib": ytd_shorts_contrib,
+        "position_contributions": position_contributions,
+        "current_weights": current_weights,
+        "rebalance_events": rebalance_events,
+        "long_daily_ret": long_daily_ret.reindex(portfolio_val_series_net.index).fillna(0.0),
+        "short_daily_ret": short_daily_ret.reindex(portfolio_val_series_net.index).fillna(0.0),
+    }
+
 # ==========================================
 # 3. RISK CALCULATOR (ADVANCED)
 # ==========================================
 def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MARGIN_RATE, borrow_fee=BORROW_FEE, portfolio_name="main"):
-    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
+    PORTFOLIO_CONFIG = get_effective_portfolio_config(portfolio_name)
     print("--- 3. Calculating Advanced Risk Metrics ---")
     
     # Defensive copy to avoid mutating shared cached data
@@ -598,73 +873,110 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_prices_filled = ytd_prices.ffill() 
         ytd_rel_prices = ytd_prices_filled / ytd_prices_filled.iloc[0]
         
-        # Calculate Value Series
-        portfolio_val_series = pd.Series(0.0, index=ytd_rel_prices.index)
-        
-        ytd_longs_contrib = 0
-        ytd_shorts_contrib = 0
-        
-        # NOTE: If ytd_prices includes Dec 31, then ytd_rel_prices[0] is 1.0 by definition.
-        # The code below calculates contribution based on (Price_t / Price_0 - 1).
-        # At t=0 (Dec 31), Price_t=Price_0 => Contrib = 0.
-        # This correctly starts the chart at 0% (Value 1.0) on Dec 31.
-        
-        for ticker in active_tickers:
-            info = PORTFOLIO_CONFIG[ticker]
-            weight = info['weight'] 
-            direction = 1 if info['type'] == 'Long' else -1
-            
-            # Check if ticker exists
-            if ticker in ytd_rel_prices.columns:
-                asset_cum_ret = ytd_rel_prices[ticker] - 1
-                
-                # Position Contribution
-                position_contrib = weight * direction * asset_cum_ret
-                portfolio_val_series += position_contrib.fillna(0)
-                
-                # Final Contribution (for summary)
-                final_contrib = position_contrib.iloc[-1]
-                if not pd.isna(final_contrib):
-                    if direction == 1:
-                        ytd_longs_contrib += final_contrib
-                    else:
-                        ytd_shorts_contrib += final_contrib
+        segmented_ytd = calculate_segmented_ytd(
+            ytd_prices_filled,
+            portfolio_name,
+            PORTFOLIO_CONFIG,
+            ytd_calc_start,
+            margin_rate,
+            borrow_fee,
+        )
 
-        # Add initial base (1.0) to raw gross curve
-        portfolio_val_series_gross = portfolio_val_series + 1.0
-        ytd_trading_days = max(0, len(portfolio_val_series_gross) - 1)
-        ytd_return_gross = portfolio_val_series_gross.iloc[-1] - 1.0 if not portfolio_val_series_gross.empty else 0.0
-
-        if total_daily_drag != 0:
-            # Calculate calendar days elapsed
-            if len(portfolio_val_series_gross) > 1:
-                ytd_calendar_days = (portfolio_val_series_gross.index[-1] - portfolio_val_series_gross.index[0]).days
-            else:
-                ytd_calendar_days = ytd_trading_days
-
-            ytd_financing_cost = ytd_calendar_days * total_daily_drag
-            annual_financing_cost = total_daily_drag * 360
-            
-            # Derive gross daily returns from the Buy & Hold curve
-            ytd_portfolio_daily_ret_gross = portfolio_val_series_gross.pct_change().fillna(0)
-            
-            # Create exact Net Portfolio Curve by subtracting daily drag (calendar adjusted) and compounding
-            ytd_days_elapsed = ytd_portfolio_daily_ret_gross.index.to_series().diff().dt.days.fillna(1).clip(lower=1)
-            ytd_daily_drag_series = total_daily_drag * ytd_days_elapsed
-            ytd_portfolio_daily_ret_net = ytd_portfolio_daily_ret_gross - ytd_daily_drag_series
-            
-            # Override to start at 0.0 (returns series padding)
-            ytd_portfolio_daily_ret_net.iloc[0] = 0.0
-            
-            portfolio_val_series = (1 + ytd_portfolio_daily_ret_net).cumprod()
-            ytd_return = portfolio_val_series.iloc[-1] - 1.0
-            
+        if segmented_ytd:
+            portfolio_val_series_gross = segmented_ytd["portfolio_val_series_gross"]
+            portfolio_val_series = segmented_ytd["portfolio_val_series"]
+            ytd_return_gross = segmented_ytd["ytd_return_gross"]
+            ytd_return = segmented_ytd["ytd_return"]
+            ytd_financing_cost = segmented_ytd["ytd_financing_cost"]
+            annual_financing_cost = segmented_ytd["annual_financing_cost"]
+            ytd_longs_contrib = segmented_ytd["ytd_longs_contrib"]
+            ytd_shorts_contrib = segmented_ytd["ytd_shorts_contrib"]
+            ytd_position_contributions = segmented_ytd["position_contributions"]
+            ytd_current_weights = segmented_ytd["current_weights"]
+            rebalance_events = segmented_ytd["rebalance_events"]
         else:
-            # NO DRAG SCENARIO
-            ytd_financing_cost = 0.0
-            annual_financing_cost = 0.0
-            portfolio_val_series = portfolio_val_series_gross
-            ytd_return = ytd_return_gross
+            # Calculate Value Series
+            portfolio_val_series = pd.Series(0.0, index=ytd_rel_prices.index)
+            ytd_position_contributions = {}
+            ytd_current_weights = {}
+            rebalance_events = []
+
+            ytd_longs_contrib = 0
+            ytd_shorts_contrib = 0
+
+            # NOTE: If ytd_prices includes Dec 31, then ytd_rel_prices[0] is 1.0 by definition.
+            # The code below calculates contribution based on (Price_t / Price_0 - 1).
+            # At t=0 (Dec 31), Price_t=Price_0 => Contrib = 0.
+            # This correctly starts the chart at 0% (Value 1.0) on Dec 31.
+
+            for ticker in active_tickers:
+                info = PORTFOLIO_CONFIG[ticker]
+                weight = info['weight']
+                direction = 1 if info['type'] == 'Long' else -1
+
+                # Check if ticker exists
+                if ticker in ytd_rel_prices.columns:
+                    asset_cum_ret = ytd_rel_prices[ticker] - 1
+
+                    # Position Contribution
+                    position_contrib = weight * direction * asset_cum_ret
+                    portfolio_val_series += position_contrib.fillna(0)
+
+                    # Final Contribution (for summary)
+                    final_contrib = position_contrib.iloc[-1]
+                    if not pd.isna(final_contrib):
+                        ytd_position_contributions[ticker] = float(final_contrib)
+                        if direction == 1:
+                            ytd_longs_contrib += final_contrib
+                        else:
+                            ytd_shorts_contrib += final_contrib
+
+            # Add initial base (1.0) to raw gross curve
+            portfolio_val_series_gross = portfolio_val_series + 1.0
+            ytd_trading_days = max(0, len(portfolio_val_series_gross) - 1)
+            ytd_return_gross = portfolio_val_series_gross.iloc[-1] - 1.0 if not portfolio_val_series_gross.empty else 0.0
+
+            if total_daily_drag != 0:
+                # Calculate calendar days elapsed
+                if len(portfolio_val_series_gross) > 1:
+                    ytd_calendar_days = (portfolio_val_series_gross.index[-1] - portfolio_val_series_gross.index[0]).days
+                else:
+                    ytd_calendar_days = ytd_trading_days
+
+                ytd_financing_cost = ytd_calendar_days * total_daily_drag
+                annual_financing_cost = total_daily_drag * 360
+
+                # Derive gross daily returns from the Buy & Hold curve
+                ytd_portfolio_daily_ret_gross = portfolio_val_series_gross.pct_change().fillna(0)
+
+                # Create exact Net Portfolio Curve by subtracting daily drag (calendar adjusted) and compounding
+                ytd_days_elapsed = ytd_portfolio_daily_ret_gross.index.to_series().diff().dt.days.fillna(1).clip(lower=1)
+                ytd_daily_drag_series = total_daily_drag * ytd_days_elapsed
+                ytd_portfolio_daily_ret_net = ytd_portfolio_daily_ret_gross - ytd_daily_drag_series
+
+                # Override to start at 0.0 (returns series padding)
+                ytd_portfolio_daily_ret_net.iloc[0] = 0.0
+
+                portfolio_val_series = (1 + ytd_portfolio_daily_ret_net).cumprod()
+                ytd_return = portfolio_val_series.iloc[-1] - 1.0
+
+            else:
+                # NO DRAG SCENARIO
+                ytd_financing_cost = 0.0
+                annual_financing_cost = 0.0
+                portfolio_val_series = portfolio_val_series_gross
+                ytd_return = ytd_return_gross
+
+            final_gross_value = float(portfolio_val_series_gross.iloc[-1]) if not portfolio_val_series_gross.empty else 1.0
+            ytd_current_weights = {}
+            for ticker in active_tickers:
+                if ticker not in ytd_rel_prices.columns:
+                    continue
+                info = PORTFOLIO_CONFIG[ticker]
+                weight = float(info.get('weight', 0) or 0)
+                final_rel = ytd_rel_prices[ticker].iloc[-1]
+                if not pd.isna(final_rel) and final_gross_value != 0:
+                    ytd_current_weights[ticker] = float(weight * final_rel / final_gross_value)
 
         benchmark_ytd = (1 + ytd_benchmark).prod() - 1.0
 
@@ -700,10 +1012,15 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_short_only_beta = 0
         
         if not ytd_benchmark_aligned.empty and np.var(ytd_benchmark_aligned, ddof=1) > 0:
-            ytd_long_aligned = long_only_ret.reindex(ytd_benchmark_aligned.index).fillna(0)
+            segmented_long_ret = segmented_ytd.get("long_daily_ret") if segmented_ytd else None
+            segmented_short_ret = segmented_ytd.get("short_daily_ret") if segmented_ytd else None
+            ytd_long_source = segmented_long_ret if segmented_long_ret is not None else long_only_ret
+            ytd_short_source = segmented_short_ret if segmented_short_ret is not None else short_only_ret
+
+            ytd_long_aligned = ytd_long_source.reindex(ytd_benchmark_aligned.index).fillna(0)
             ytd_long_only_beta = np.cov(ytd_long_aligned, ytd_benchmark_aligned)[0][1] / np.var(ytd_benchmark_aligned, ddof=1)
             
-            ytd_short_aligned = short_only_ret.reindex(ytd_benchmark_aligned.index).fillna(0)
+            ytd_short_aligned = ytd_short_source.reindex(ytd_benchmark_aligned.index).fillna(0)
             ytd_short_only_beta = np.cov(ytd_short_aligned, ytd_benchmark_aligned)[0][1] / np.var(ytd_benchmark_aligned, ddof=1)
             
         # Risk Efficiency -> YTD Sharpe (sample std)
@@ -864,6 +1181,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         portfolio_val_series = pd.Series(dtype=float)
         ytd_benchmark_aligned = pd.Series(dtype=float)
         ytd_trading_days = 0
+        ytd_position_contributions = {}
+        ytd_current_weights = {}
+        rebalance_events = []
 
     # --- 6. VOLUME WEIGHTED CORRELATION (Past 1 Year) ---
     vol_weighted_corr = pd.DataFrame()
@@ -1013,7 +1333,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
                 date_ts = pd.Timestamp(date_str)
                 if date_ts in ret_idx_set:
                     contrib_list = []
-                    portfolio_config = load_portfolio_config(portfolio_name)
+                    portfolio_config = get_effective_portfolio_config(portfolio_name, date_ts)
                     for tkr, cfg in portfolio_config.items():
                         if tkr not in returns_df.columns:
                             continue
@@ -1110,13 +1430,17 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Stream': portfolio_val_series if 'portfolio_val_series' in locals() else None,
         'YTD_Benchmark_Stream': ytd_benchmark if 'ytd_benchmark' in locals() else None,
         'YTD_Beta_History': ytd_beta_history if 'ytd_beta_history' in locals() else None,
+        'YTD_Position_Contributions': ytd_position_contributions if 'ytd_position_contributions' in locals() else {},
+        'YTD_Current_Weights': ytd_current_weights if 'ytd_current_weights' in locals() else {},
+        'Rebalance_Events': rebalance_events if 'rebalance_events' in locals() else [],
+        'Rebalance_Mode': 'dated_snapshots' if rebalance_events else 'static',
         'Convexity_Metrics': convexity_metrics,
         'Momentum_Metrics': momentum_metrics
     }
 
 def calculate_momentum_metrics(returns_df, portfolio_name="main"):
     """Calculate Relative Strength vs regional benchmarks and 1-month vs 1-year Correlation surges."""
-    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
+    PORTFOLIO_CONFIG = get_effective_portfolio_config(portfolio_name)
     try:
         # Timeframes
         recent_21d = returns_df.iloc[-21:] if len(returns_df) >= 21 else returns_df
@@ -1406,7 +1730,7 @@ def run_monte_carlo(metrics, num_sims=1000, days=60):
     return price_paths
 
 def calculate_periodic_returns(data, portfolio_name="main"):
-    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
+    PORTFOLIO_CONFIG = get_all_position_configs(portfolio_name)
     print("--- 6. Calculating Periodic Returns (YTD, 1Y, 3Y, 5Y) ---")
     periods = {
         '1Y': 252,
@@ -1470,7 +1794,7 @@ def calculate_periodic_returns(data, portfolio_name="main"):
 # 4. VISUALIZATION & REPORTING
 # ==========================================
 def generate_report(metrics, data, portfolio_name="main"):
-    PORTFOLIO_CONFIG = load_portfolio_config(portfolio_name)
+    PORTFOLIO_CONFIG = get_effective_portfolio_config(portfolio_name)
     if metrics is None: return
 
     print("\n" + "="*50)

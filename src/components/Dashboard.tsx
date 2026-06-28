@@ -5,7 +5,7 @@ import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
-import { LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign, Store, Building2, Ban, BrainCircuit, type LucideIcon } from 'lucide-react';
+import { LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign, Store, Building2, Ban, BrainCircuit, GitBranch, type LucideIcon } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 // ─── Lazy-loaded below-the-fold widgets ──────────────────────
@@ -243,7 +243,9 @@ export const Dashboard: React.FC = () => {
         )
     }
 
-    const { vitals, leverage, periodicReturns, activeRisks, countryAllocation, stressTests, convexity, ytdHistory } = data;
+    const { vitals, leverage, periodicReturns, activeRisks, countryAllocation, stressTests, convexity, ytdHistory, rebalance } = data;
+    const rebalanceActive = rebalance?.mode === 'dated_snapshots';
+    const latestRebalanceEvent = rebalance?.events?.[rebalance.events.length - 1];
 
     const portfolioLabel = 'My Portfolio';
 
@@ -266,9 +268,20 @@ export const Dashboard: React.FC = () => {
                                 <span className="bg-gradient-to-r from-white via-white to-gray-400 bg-clip-text text-transparent leading-none truncate">
                                     {portfolioLabel}
                                 </span>
-                                <span className="text-[11px] font-normal text-gray-500 tracking-[0.12em] uppercase mt-1 flex items-center gap-1.5 whitespace-nowrap">
-                                    <Clock className="h-3 w-3" />
-                                    Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                <span className="text-[11px] font-normal text-gray-500 tracking-[0.12em] uppercase mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                                    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                                        <Clock className="h-3 w-3" />
+                                        Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                    </span>
+                                    {rebalanceActive && (
+                                        <span
+                                            className="inline-flex items-center gap-1.5 whitespace-nowrap text-sky-300/80"
+                                            title={`Dated accounting active. Latest event: ${latestRebalanceEvent?.label ?? 'snapshot'} (${latestRebalanceEvent?.effectiveDate ?? 'n/a'}).`}
+                                        >
+                                            <GitBranch className="h-3 w-3" />
+                                            Dated book {rebalance?.eventCount ?? 0}
+                                        </span>
+                                    )}
                                 </span>
                             </div>
                         </h1>

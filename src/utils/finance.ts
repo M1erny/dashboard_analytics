@@ -125,11 +125,30 @@ export interface PeriodicReturn {
     weight: number | null;
     currentWeight: number | null;
     direction: 'Long' | 'Short' | null;
+    status?: 'Active' | 'Exited' | 'Planned';
     lastPrice: number | null;  // Last fetched price (original currency)
     entryPrice?: number | null;
     currency: string;  // Original currency (USD, EUR, etc.)
     volatility: number | null;  // Annualized volatility (std dev)
     volumeIndicator: number | null;  // 7d avg volume / YTD avg volume
+}
+
+export interface RebalanceEvent {
+    date: string;
+    effectiveDate: string;
+    label: string;
+    source: string;
+    longExposure: number;
+    shortExposure: number;
+    grossExposure: number;
+    netExposure: number;
+    positionCount: number;
+}
+
+export interface RebalanceState {
+    mode: 'static' | 'dated_snapshots';
+    events: RebalanceEvent[];
+    eventCount: number;
 }
 
 export interface HistoryPoint {
@@ -188,6 +207,7 @@ export interface FullRiskReport {
     convexity: ConvexityMetrics | null;
     momentum: MomentumMetrics | null;
     fxExposures: Record<string, FxExposure>;
+    rebalance?: RebalanceState;
     error?: string;
 }
 
@@ -247,6 +267,7 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     convexity: data.convexity || null,
                     momentum: data.momentum || null,
                     fxExposures: data.fxExposures || {},
+                    rebalance: data.rebalance,
                     error: data.error
                 };
             }
