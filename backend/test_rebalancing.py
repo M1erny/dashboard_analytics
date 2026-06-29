@@ -171,6 +171,59 @@ class RebalanceAccountingTests(unittest.TestCase):
         self.assertEqual(result["rebalance_events"][1]["date"], "2026-01-05")
         self.assertEqual(result["rebalance_events"][1]["executionTiming"], "post_session")
 
+    def test_same_ticker_rebalance_adds_contribution_once(self):
+        dates = pd.to_datetime(["2025-12-31", "2026-01-02", "2026-01-05", "2026-01-06"])
+        prices = pd.DataFrame(
+            {
+                "KEEP": [100.0, 110.0, 110.0, 121.0],
+            },
+            index=dates,
+        )
+
+        old_get_snapshots = risk.get_rebalance_snapshots
+        try:
+            risk.get_rebalance_snapshots = lambda _name, _active: [
+                {
+                    "date": "2026-01-01",
+                    "label": "Opening book",
+                    "source": "test",
+                    "positions": {
+                        "KEEP": {"weight": 1.0, "type": "Long", "currency": "USD"}
+                    },
+                },
+                {
+                    "date": "2026-01-05",
+                    "label": "Increase same name after close",
+                    "source": "test",
+                    "executionTiming": "post_session",
+                    "positions": {
+                        "KEEP": {"weight": 2.0, "type": "Long", "currency": "USD"}
+                    },
+                },
+            ]
+
+            result = risk.calculate_segmented_ytd(
+                prices,
+                "main",
+                {"KEEP": {"weight": 2.0, "type": "Long", "currency": "USD"}},
+                "2026-01-01",
+                0.0,
+                0.0,
+            )
+        finally:
+            risk.get_rebalance_snapshots = old_get_snapshots
+
+        self.assertIsNotNone(result)
+        expected_first_segment = 0.10
+        expected_second_segment = 1.10 * 2.0 * 0.10
+        self.assertAlmostEqual(
+            result["position_contributions"]["KEEP"],
+            expected_first_segment + expected_second_segment,
+            places=8,
+        )
+        self.assertAlmostEqual(result["ytd_return"], 0.32, places=8)
+        self.assertEqual(list(result["position_contributions"].keys()), ["KEEP"])
+
 
 if __name__ == "__main__":
     unittest.main()
