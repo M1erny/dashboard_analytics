@@ -115,6 +115,135 @@ def _get_cached_market_data(force: bool = False, portfolio_name: str = "main"):
     cache_entry["timestamp"] = now
     return cache_entry["data"]
 
+
+def _nearest_price(raw_prices, ticker: str, effective_date: str):
+    """Return the latest original-currency price available at or before a change date."""
+    if raw_prices is None or ticker not in raw_prices.columns:
+        return None, None
+
+    series = raw_prices[ticker].dropna()
+    if series.empty:
+        return None, None
+
+    price_date = pd.Timestamp(effective_date).tz_localize(None)
+    index = series.index
+    if getattr(index, "tz", None) is not None:
+        index = index.tz_localize(None)
+    series = pd.Series(series.values, index=index)
+
+    prior = series[series.index <= price_date]
+    if prior.empty:
+        nearest_date = series.index[0]
+        nearest_price = series.iloc[0]
+    else:
+        nearest_date = prior.index[-1]
+        nearest_price = prior.iloc[-1]
+
+    return nearest_date.strftime("%Y-%m-%d"), float(nearest_price)
+
+
+def _position_summary(info: dict | None):
+    if not info:
+        return {
+            "weight": 0.0,
+            "direction": None,
+            "currency": None,
+            "sector": None,
+            "country": None,
+        }
+    return {
+        "weight": float(info.get("weight", 0) or 0),
+        "direction": info.get("type", "Long"),
+        "currency": info.get("currency"),
+        "sector": info.get("sector"),
+        "country": info.get("country"),
+    }
+
+
+def _build_rebalance_change_history(portfolio: str, raw_prices, ytd_position_contributions: dict):
+    """Compare dated books and expose a readable rebalance ledger for the UI."""
+    target_config = risk.load_portfolio_config(portfolio)
+    snapshots = risk.get_rebalance_snapshots(portfolio, target_config)
+    if not snapshots:
+        return []
+
+    today = pd.Timestamp(datetime.now()).tz_localize(None).normalize()
+    history = []
+    previous_positions = {}
+
+    for idx, snapshot in enumerate(snapshots):
+        positions = snapshot.get("positions", {}) or {}
+        effective_date = str(snapshot.get("date"))
+        effective_ts = pd.Timestamp(effective_date).tz_localize(None).normalize()
+        all_tickers = sorted(set(previous_positions.keys()) | set(positions.keys()))
+        changes = []
+
+        for ticker in all_tickers:
+            before = _position_summary(previous_positions.get(ticker))
+            after = _position_summary(positions.get(ticker))
+            before_weight = before["weight"]
+            after_weight = after["weight"]
+            before_direction = before["direction"]
+            after_direction = after["direction"]
+
+            if idx == 0 and after_weight > 0:
+                action = "opening"
+            elif before_weight == 0 and after_weight > 0:
+                action = "added"
+            elif before_weight > 0 and after_weight == 0:
+                action = "removed"
+            elif before_weight > 0 and after_weight > 0 and before_direction != after_direction:
+                action = "flipped"
+            elif after_weight > before_weight + 1e-9:
+                action = "increased"
+            elif after_weight < before_weight - 1e-9:
+                action = "reduced"
+            else:
+                continue
+
+            price_date, price = _nearest_price(raw_prices, ticker, effective_date)
+            metadata = after if after_weight > 0 else before
+            contribution = ytd_position_contributions.get(ticker)
+            if contribution is not None:
+                try:
+                    contribution = float(contribution)
+                    if pd.isna(contribution):
+                        contribution = None
+                except Exception:
+                    contribution = None
+
+            changes.append({
+                "ticker": ticker,
+                "action": action,
+                "beforeWeight": before_weight if before_weight > 0 else None,
+                "afterWeight": after_weight if after_weight > 0 else None,
+                "weightDelta": after_weight - before_weight,
+                "beforeDirection": before_direction,
+                "afterDirection": after_direction,
+                "currency": metadata.get("currency"),
+                "sector": metadata.get("sector"),
+                "country": metadata.get("country"),
+                "priceAtChange": price,
+                "priceDate": price_date,
+                "ytdContribution": contribution,
+            })
+
+        before_exposure = risk.calculate_exposure_stats(previous_positions) if previous_positions else None
+        after_exposure = risk.calculate_exposure_stats(positions)
+        history.append({
+            "date": effective_date,
+            "label": snapshot.get("label", "Portfolio snapshot"),
+            "source": snapshot.get("source", "snapshot"),
+            "status": "active" if effective_ts <= today else "planned",
+            "changeCount": len(changes),
+            "beforeExposure": before_exposure,
+            "afterExposure": after_exposure,
+            "changes": changes,
+        })
+        previous_positions = positions
+
+    return history
+
 CACHE_TTL = 300  # seconds
 
 @app.get("/api/status")
@@ -522,6 +651,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             "mode": metrics.get('Rebalance_Mode', 'static'),
             "events": rebalance_events,
             "eventCount": len(rebalance_events),
+            "history": _build_rebalance_change_history(portfolio, raw_prices, ytd_position_contributions),
         }
 
         # Calculate Currency Exposure using portfolio_config.

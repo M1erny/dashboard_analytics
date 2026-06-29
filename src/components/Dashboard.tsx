@@ -1,11 +1,15 @@
 import React, { useEffect, useState, useCallback, Suspense, lazy } from 'react';
 import { fetchDashboardData } from '../utils/finance';
-import type { FullRiskReport, CostTier } from '../utils/finance';
+import type { FullRiskReport, CostTier, RebalanceChangeAction, RebalancePositionChange, RebalanceState } from '../utils/finance';
 import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
-import { LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign, Store, Building2, Ban, BrainCircuit, GitBranch, type LucideIcon } from 'lucide-react';
+import {
+    LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign, Store,
+    Building2, Ban, BrainCircuit, GitBranch, X, CalendarDays, Plus, Minus,
+    Trash2, ArrowRightLeft, type LucideIcon
+} from 'lucide-react';
 import { cn } from '../lib/utils';
 
 // ─── Lazy-loaded below-the-fold widgets ──────────────────────
@@ -75,6 +79,205 @@ const COST_TIER_OPTIONS: { value: CostTier; label: string; short: string; Icon: 
     { value: 'none', label: 'No Drag', short: 'No Drag', Icon: Ban, title: 'No financing drag scenario' },
 ];
 
+const formatBookPercent = (value: number | null | undefined, decimals = 1) =>
+    typeof value === 'number' ? `${(value * 100).toFixed(decimals)}%` : '--';
+
+const formatBookDelta = (value: number | null | undefined) => {
+    if (typeof value !== 'number') return '--';
+    const sign = value > 0 ? '+' : '';
+    return `${sign}${(value * 100).toFixed(1)}pp`;
+};
+
+const exposureDeltaClass = (value: number) => {
+    if (Math.abs(value) < 0.0005) return 'text-gray-500';
+    return value > 0 ? 'text-amber-300' : 'text-sky-300';
+};
+
+const formatBookContribution = (value: number | null | undefined) => {
+    if (typeof value !== 'number') return '--';
+    const sign = value > 0 ? '+' : '';
+    return `${sign}${(value * 100).toFixed(2)}%`;
+};
+
+const formatBookPrice = (change: RebalancePositionChange) => {
+    if (typeof change.priceAtChange !== 'number') return '--';
+    const decimals = Math.abs(change.priceAtChange) >= 1000 ? 0 : 2;
+    return `${change.currency ?? ''} ${change.priceAtChange.toLocaleString(undefined, {
+        minimumFractionDigits: decimals,
+        maximumFractionDigits: decimals,
+    })}`.trim();
+};
+
+const actionMeta: Record<RebalanceChangeAction, { label: string; Icon: LucideIcon; className: string }> = {
+    opening: { label: 'Opening', Icon: GitBranch, className: 'border-sky-500/20 bg-sky-500/10 text-sky-300' },
+    added: { label: 'Added', Icon: Plus, className: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' },
+    increased: { label: 'Increased', Icon: Plus, className: 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' },
+    reduced: { label: 'Reduced', Icon: Minus, className: 'border-amber-500/20 bg-amber-500/10 text-amber-300' },
+    removed: { label: 'Deleted', Icon: Trash2, className: 'border-rose-500/20 bg-rose-500/10 text-rose-300' },
+    flipped: { label: 'Flipped', Icon: ArrowRightLeft, className: 'border-violet-500/20 bg-violet-500/10 text-violet-300' },
+};
+
+const RebalanceHistoryModal = ({ rebalance, open, onClose }: {
+    rebalance?: RebalanceState;
+    open: boolean;
+    onClose: () => void;
+}) => {
+    if (!open) return null;
+
+    const history = rebalance?.history ?? [];
+    const activeCount = history.filter(event => event.status === 'active').length;
+    const plannedCount = history.filter(event => event.status === 'planned').length;
+    const activeLabel = activeCount === 1 ? 'active book' : 'active books';
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 px-3 py-5 backdrop-blur-md sm:px-5 md:py-8">
+            <div className="flex max-h-[calc(100vh-40px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-slate-950 shadow-2xl shadow-black/60">
+                <div className="flex flex-col gap-4 border-b border-white/[0.08] bg-white/[0.035] px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                    <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                            <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-sky-500/20 bg-sky-500/10">
+                                <GitBranch className="h-4 w-4 text-sky-300" />
+                            </span>
+                            <div>
+                                <h2 className="text-base font-black tracking-tight text-white">Dated Book History</h2>
+                                <p className="text-[11px] uppercase tracking-[0.12em] text-gray-500">
+                                    {activeCount} {activeLabel} / {plannedCount} planned
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-gray-400 transition-colors hover:bg-white/[0.08] hover:text-white"
+                        aria-label="Close dated book history"
+                    >
+                        <X className="h-4 w-4" />
+                    </button>
+                </div>
+
+                <div className="overflow-y-auto px-4 py-4 sm:px-5">
+                    {history.length === 0 ? (
+                        <div className="rounded-xl border border-white/[0.08] bg-white/[0.03] p-5 text-sm text-gray-400">
+                            No dated-book history is available yet.
+                        </div>
+                    ) : (
+                        <div className="space-y-4">
+                            {history.map((event, eventIndex) => (
+                                <section key={`${event.date}-${event.label}`} className="rounded-xl border border-white/[0.08] bg-white/[0.025]">
+                                    <div className="flex flex-col gap-3 border-b border-white/[0.06] px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+                                        <div className="flex min-w-0 items-start gap-3">
+                                            <span className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.04] text-gray-300">
+                                                <CalendarDays className="h-4 w-4" />
+                                            </span>
+                                            <div className="min-w-0">
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <h3 className="truncate text-sm font-bold text-white">{event.label}</h3>
+                                                    <span className={cn(
+                                                        "rounded-md border px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.12em]",
+                                                        event.status === 'active'
+                                                            ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-300"
+                                                            : "border-amber-500/20 bg-amber-500/10 text-amber-300"
+                                                    )}>
+                                                        {event.status}
+                                                    </span>
+                                                </div>
+                                                <p className="mt-1 text-[11px] text-gray-500">
+                                                    Moment of change: <span className="font-mono text-gray-300">{event.date}</span>
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4">
+                                            <div className="rounded-lg bg-white/[0.035] px-3 py-2">
+                                                <p className="uppercase tracking-[0.12em] text-gray-600">Long</p>
+                                                <p className="font-mono font-bold text-emerald-300">{formatBookPercent(event.afterExposure.long)}</p>
+                                            </div>
+                                            <div className="rounded-lg bg-white/[0.035] px-3 py-2">
+                                                <p className="uppercase tracking-[0.12em] text-gray-600">Short</p>
+                                                <p className="font-mono font-bold text-rose-300">{formatBookPercent(event.afterExposure.short)}</p>
+                                            </div>
+                                            <div className="rounded-lg bg-white/[0.035] px-3 py-2">
+                                                <p className="uppercase tracking-[0.12em] text-gray-600">Gross</p>
+                                                <p className="font-mono font-bold text-gray-200">{formatBookPercent(event.afterExposure.gross)}</p>
+                                            </div>
+                                            <div className="rounded-lg bg-white/[0.035] px-3 py-2">
+                                                <p className="uppercase tracking-[0.12em] text-gray-600">Changes</p>
+                                                <p className="font-mono font-bold text-sky-300">{event.changeCount}</p>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div className="divide-y divide-white/[0.045]">
+                                        {event.changes.length === 0 ? (
+                                            <div className="px-4 py-4 text-sm text-gray-500">
+                                                No position-level changes versus the previous dated book.
+                                            </div>
+                                        ) : event.changes.map(change => {
+                                            const meta = actionMeta[change.action];
+                                            const Icon = meta.Icon;
+                                            const directionText = change.beforeDirection && change.afterDirection && change.beforeDirection !== change.afterDirection
+                                                ? `${change.beforeDirection} -> ${change.afterDirection}`
+                                                : (change.afterDirection ?? change.beforeDirection ?? '--');
+
+                                            return (
+                                                <div key={`${event.date}-${change.ticker}-${change.action}`} className="grid grid-cols-1 gap-3 px-4 py-3 text-sm md:grid-cols-[150px_1fr_150px_170px_140px] md:items-center">
+                                                    <div className={cn("inline-flex w-fit items-center gap-1.5 rounded-lg border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.1em]", meta.className)}>
+                                                        <Icon className="h-3 w-3" />
+                                                        {meta.label}
+                                                    </div>
+                                                    <div className="min-w-0">
+                                                        <div className="flex flex-wrap items-baseline gap-2">
+                                                            <span className="font-mono text-sm font-black tracking-wide text-white">{change.ticker}</span>
+                                                            <span className="text-[11px] text-gray-500">{directionText}</span>
+                                                        </div>
+                                                        <p className="mt-0.5 truncate text-[11px] text-gray-600">{change.sector ?? 'Unknown'} / {change.country ?? 'n/a'}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] uppercase tracking-[0.12em] text-gray-600">Size</p>
+                                                        <p className="font-mono text-[12px] font-bold text-gray-300">
+                                                            {formatBookPercent(change.beforeWeight)} &rarr; {formatBookPercent(change.afterWeight)}
+                                                        </p>
+                                                        <p className={cn(
+                                                            "font-mono text-[11px]",
+                                                            change.weightDelta > 0 ? "text-emerald-400" : change.weightDelta < 0 ? "text-rose-400" : "text-gray-500"
+                                                        )}>
+                                                            {formatBookDelta(change.weightDelta)}
+                                                        </p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] uppercase tracking-[0.12em] text-gray-600">Price</p>
+                                                        <p className="font-mono text-[12px] font-bold text-gray-300">{formatBookPrice(change)}</p>
+                                                        <p className="font-mono text-[10px] text-gray-600">{change.priceDate ?? event.date}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-[10px] uppercase tracking-[0.12em] text-gray-600">Contribution</p>
+                                                        <p className={cn(
+                                                            "font-mono text-[12px] font-bold",
+                                                            (change.ytdContribution ?? 0) > 0 ? "text-emerald-400" : (change.ytdContribution ?? 0) < 0 ? "text-rose-400" : "text-gray-500"
+                                                        )}>
+                                                            {formatBookContribution(change.ytdContribution)}
+                                                        </p>
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+
+                                    {event.status === 'planned' && eventIndex > 0 && (
+                                        <div className="border-t border-amber-500/10 bg-amber-500/[0.035] px-4 py-2 text-[11px] text-amber-200/70">
+                                            Planned book: contribution starts counting from this effective date, so previous YTD stays chained to the earlier book.
+                                        </div>
+                                    )}
+                                </section>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 export const Dashboard: React.FC = () => {
     const [data, setData] = useState<FullRiskReport | null>(null);
     const [loading, setLoading] = useState(true);
@@ -82,6 +285,7 @@ export const Dashboard: React.FC = () => {
     const [error, setError] = useState<string | null>(null);
     const [costTier, setCostTier] = useState<CostTier>('none');
     const [lastUpdated, setLastUpdated] = useState(() => new Date());
+    const [showRebalanceHistory, setShowRebalanceHistory] = useState(false);
     const portfolioName: string = 'main';
 
     useEffect(() => {
@@ -246,6 +450,42 @@ export const Dashboard: React.FC = () => {
     const { vitals, leverage, periodicReturns, activeRisks, countryAllocation, stressTests, convexity, ytdHistory, rebalance } = data;
     const rebalanceActive = rebalance?.mode === 'dated_snapshots';
     const latestRebalanceEvent = rebalance?.events?.[rebalance.events.length - 1];
+    const januaryExposure = rebalance?.history?.[0]?.afterExposure;
+    const sumCurrentBookExposure = (direction: 'Long' | 'Short') => {
+        let total = 0;
+        let hasRows = false;
+        for (const row of periodicReturns) {
+            if (row.direction !== direction) continue;
+            if (row.status && row.status !== 'Active') continue;
+            const weight = typeof row.currentWeight === 'number' ? row.currentWeight : row.weight;
+            if (typeof weight !== 'number') continue;
+            total += Math.abs(weight);
+            hasRows = true;
+        }
+        return hasRows ? total : undefined;
+    };
+    const currentLongExposure = sumCurrentBookExposure('Long') ?? leverage.Long_Exp;
+    const currentShortExposure = sumCurrentBookExposure('Short') ?? leverage.Short_Exp;
+    const januaryLongExposure = januaryExposure?.long ?? leverage.Long_Exp;
+    const januaryShortExposure = januaryExposure?.short ?? leverage.Short_Exp;
+    const longExposureDelta = currentLongExposure - januaryLongExposure;
+    const shortExposureDelta = currentShortExposure - januaryShortExposure;
+    const currentNetExposure = currentLongExposure - currentShortExposure;
+    const januaryNetExposure = januaryLongExposure - januaryShortExposure;
+    const netExposureDelta = currentNetExposure - januaryNetExposure;
+    const currentGrossExposure = currentLongExposure + currentShortExposure;
+    const januaryGrossExposure = januaryLongExposure + januaryShortExposure;
+    const grossExposureDelta = currentGrossExposure - januaryGrossExposure;
+    const netStanceLabel = netExposureDelta > 0.005
+        ? 'More net long'
+        : netExposureDelta < -0.005
+            ? 'Less net long'
+            : 'Net stance flat';
+    const leverageStanceLabel = grossExposureDelta > 0.005
+        ? 'more levered'
+        : grossExposureDelta < -0.005
+            ? 'less levered'
+            : 'same leverage';
 
     const portfolioLabel = 'My Portfolio';
 
@@ -274,13 +514,15 @@ export const Dashboard: React.FC = () => {
                                         Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                     </span>
                                     {rebalanceActive && (
-                                        <span
-                                            className="inline-flex items-center gap-1.5 whitespace-nowrap text-sky-300/80"
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowRebalanceHistory(true)}
+                                            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-sky-500/10 bg-sky-500/[0.04] px-1.5 py-0.5 text-sky-300/90 transition-colors hover:border-sky-500/25 hover:bg-sky-500/[0.1] hover:text-sky-200"
                                             title={`Dated accounting active. Latest event: ${latestRebalanceEvent?.label ?? 'snapshot'} (${latestRebalanceEvent?.effectiveDate ?? 'n/a'}).`}
                                         >
                                             <GitBranch className="h-3 w-3" />
                                             Dated book {rebalance?.eventCount ?? 0}
-                                        </span>
+                                        </button>
                                     )}
                                 </span>
                             </div>
@@ -291,17 +533,67 @@ export const Dashboard: React.FC = () => {
                     <div className="flex flex-col sm:flex-row sm:flex-wrap xl:flex-nowrap items-stretch sm:items-center gap-3 text-sm w-full xl:w-auto">
 
                         {/* Exposure Pills */}
-                        <div className="grid grid-cols-2 sm:flex items-stretch gap-2 w-full xl:w-auto">
+                        <div className="grid grid-cols-2 items-stretch gap-2 w-full sm:grid-cols-[minmax(150px,auto)_minmax(132px,1fr)_minmax(132px,1fr)] xl:w-auto">
                             <div className="col-span-2 sm:col-span-1">
                                 <FxExposureWidget vitals={vitals} periodLabel={vitals?.periodLabel ?? "YTD"} />
                             </div>
-                            <div className="flex min-h-[56px] bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-3 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-emerald-500/5 transition-all hover:scale-[1.02] hover:border-emerald-500/40">
-                                <p className="text-[9px] uppercase tracking-wider text-emerald-500/70 font-bold mb-0.5">Long Exposure</p>
-                                <p className="font-mono text-emerald-400 font-black text-sm leading-none">{formatPercent(leverage.Long_Exp)}</p>
+                            <div
+                                className="flex min-h-[68px] min-w-[132px] bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-3 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-emerald-500/5 transition-all hover:scale-[1.02] hover:border-emerald-500/40"
+                                title="Current drifted long book weight vs January starting long exposure"
+                            >
+                                <p className="text-[9px] uppercase tracking-wider text-emerald-500/70 font-bold mb-0.5">Long Book</p>
+                                <p className="font-mono text-emerald-400 font-black text-base leading-none">{formatPercent(currentLongExposure)}</p>
+                                <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[9px] leading-none">
+                                    <span className="text-emerald-300/55">Jan {formatPercent(januaryLongExposure)}</span>
+                                    <span className={cn("font-mono font-bold", exposureDeltaClass(longExposureDelta))}>
+                                        {formatBookDelta(longExposureDelta)}
+                                    </span>
+                                </p>
                             </div>
-                            <div className="flex min-h-[56px] bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-3 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-rose-500/5 transition-all hover:scale-[1.02] hover:border-rose-500/40">
-                                <p className="text-[9px] uppercase tracking-wider text-rose-500/70 font-bold mb-0.5">Short Exposure</p>
-                                <p className="font-mono text-rose-400 font-black text-sm leading-none">{formatPercent(leverage.Short_Exp)}</p>
+                            <div
+                                className="flex min-h-[68px] min-w-[132px] bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-3 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-rose-500/5 transition-all hover:scale-[1.02] hover:border-rose-500/40"
+                                title="Current drifted short book weight vs January starting short exposure"
+                            >
+                                <p className="text-[9px] uppercase tracking-wider text-rose-500/70 font-bold mb-0.5">Short Book</p>
+                                <p className="font-mono text-rose-400 font-black text-base leading-none">{formatPercent(currentShortExposure)}</p>
+                                <p className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[9px] leading-none">
+                                    <span className="text-rose-300/55">Jan {formatPercent(januaryShortExposure)}</span>
+                                    <span className={cn("font-mono font-bold", exposureDeltaClass(shortExposureDelta))}>
+                                        {formatBookDelta(shortExposureDelta)}
+                                    </span>
+                                </p>
+                            </div>
+                            <div
+                                className="col-span-2 sm:col-span-3 rounded-xl border border-white/[0.07] bg-white/[0.035] px-3 py-2 text-[10px] shadow-lg shadow-black/10"
+                                title="Net exposure is long minus short. Gross exposure is long plus short."
+                            >
+                                <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+                                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                                        <span className={cn(
+                                            "font-bold uppercase tracking-[0.12em]",
+                                            netExposureDelta > 0.005 ? "text-emerald-300" : netExposureDelta < -0.005 ? "text-sky-300" : "text-gray-400"
+                                        )}>
+                                            {netStanceLabel}
+                                        </span>
+                                        <span className="text-gray-500">/ {leverageStanceLabel}</span>
+                                    </div>
+                                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px]">
+                                        <span className="text-gray-300">
+                                            Net {formatBookPercent(currentNetExposure)}
+                                            <span className="ml-1 text-gray-600">Jan {formatBookPercent(januaryNetExposure)}</span>
+                                            <span className={cn("ml-1 font-bold", exposureDeltaClass(netExposureDelta))}>
+                                                {formatBookDelta(netExposureDelta)}
+                                            </span>
+                                        </span>
+                                        <span className="text-gray-300">
+                                            Gross {formatBookPercent(currentGrossExposure)}
+                                            <span className="ml-1 text-gray-600">Jan {formatBookPercent(januaryGrossExposure)}</span>
+                                            <span className={cn("ml-1 font-bold", exposureDeltaClass(grossExposureDelta))}>
+                                                {formatBookDelta(grossExposureDelta)}
+                                            </span>
+                                        </span>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -400,6 +692,12 @@ export const Dashboard: React.FC = () => {
                 </Suspense>
             </div>
             </div>
+
+            <RebalanceHistoryModal
+                rebalance={rebalance}
+                open={showRebalanceHistory}
+                onClose={() => setShowRebalanceHistory(false)}
+            />
         </div>
     );
 };

@@ -145,10 +145,47 @@ export interface RebalanceEvent {
     positionCount: number;
 }
 
+export interface RebalanceExposure {
+    long: number;
+    short: number;
+    gross: number;
+    net: number;
+}
+
+export type RebalanceChangeAction = 'opening' | 'added' | 'removed' | 'increased' | 'reduced' | 'flipped';
+
+export interface RebalancePositionChange {
+    ticker: string;
+    action: RebalanceChangeAction;
+    beforeWeight: number | null;
+    afterWeight: number | null;
+    weightDelta: number;
+    beforeDirection: 'Long' | 'Short' | null;
+    afterDirection: 'Long' | 'Short' | null;
+    currency: string | null;
+    sector?: string | null;
+    country?: string | null;
+    priceAtChange: number | null;
+    priceDate: string | null;
+    ytdContribution: number | null;
+}
+
+export interface RebalanceChangeEvent {
+    date: string;
+    label: string;
+    source: string;
+    status: 'active' | 'planned';
+    changeCount: number;
+    beforeExposure: RebalanceExposure | null;
+    afterExposure: RebalanceExposure;
+    changes: RebalancePositionChange[];
+}
+
 export interface RebalanceState {
     mode: 'static' | 'dated_snapshots';
     events: RebalanceEvent[];
     eventCount: number;
+    history?: RebalanceChangeEvent[];
 }
 
 export interface HistoryPoint {
