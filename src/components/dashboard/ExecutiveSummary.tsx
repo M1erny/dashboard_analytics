@@ -50,9 +50,9 @@ const returnColor = (val: number | undefined) => {
 const StatRow = ({ label, value, tooltip, valueClassName }: {
     label: string; value: string; tooltip?: string; valueClassName?: string;
 }) => (
-    <div className="flex justify-between items-center py-1.5" title={tooltip}>
-        <span className="text-[11px] text-gray-500 uppercase tracking-wider font-medium">{label}</span>
-        <span className={cn("font-mono text-[13px] font-bold tracking-tight", valueClassName || "text-gray-200")}>
+    <div className="flex min-w-0 items-center justify-between gap-2 py-1.5" title={tooltip}>
+        <span className="min-w-0 truncate text-[11px] text-gray-500 uppercase tracking-wider font-medium">{label}</span>
+        <span className={cn("shrink-0 whitespace-nowrap text-right font-mono text-[13px] font-bold tracking-tight tabular-nums", valueClassName || "text-gray-200")}>
             {value}
         </span>
     </div>
@@ -141,40 +141,40 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                 </div>
 
                 {/* ── RIGHT PANEL: 2x2 compact metrics ── */}
-                <div className="md:col-span-7 lg:col-span-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
+                <div className="md:col-span-7 lg:col-span-8 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 xl:gap-4">
 
                     {/* Alpha */}
-                    <div className="rounded-xl border border-amber-500/20 bg-gradient-to-br from-amber-950/30 to-slate-950/90 p-4 flex flex-col min-h-[150px]">
-                        <div className="flex items-center gap-1.5 mb-2">
-                            <Zap className="h-3.5 w-3.5 text-amber-400" />
-                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Alpha</span>
+                    <div className="rounded-xl border border-amber-500/20 bg-gradient-to-br from-amber-950/30 to-slate-950/90 p-3.5 sm:p-4 flex min-w-0 flex-col overflow-hidden min-h-[158px]">
+                        <div className="flex items-start gap-1.5 mb-2 min-h-[30px]">
+                            <Zap className="h-3.5 w-3.5 shrink-0 text-amber-400" />
+                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold leading-tight">Alpha</span>
                         </div>
-                        <div className="flex-1 flex items-center">
+                        <div className="flex-1 flex min-w-0 items-center">
                             <span className={cn(
-                                "text-2xl sm:text-3xl font-black tracking-tight leading-none",
+                                "block w-full whitespace-nowrap text-[clamp(1.55rem,7vw,2rem)] font-black leading-none tracking-[-0.045em] tabular-nums lg:text-[clamp(1.4rem,1.75vw,1.85rem)]",
                                 (vitals.ytdAlphaRaw ?? 0) >= 0 ? "text-amber-400" : "text-rose-400"
                             )}>
                                 {fmtSigned(vitals.ytdAlphaRaw)}
                             </span>
                         </div>
-                        <div className="mt-auto pt-3 border-t border-white/[0.06] min-h-[48px] flex flex-col justify-center">
+                        <div className="mt-auto pt-3 border-t border-white/[0.06] h-[62px] flex min-w-0 flex-col justify-center">
                             <StatRow label="Ann." value={fmtSigned(vitals.ytdAlpha)}
                                 valueClassName={(vitals.ytdAlpha ?? 0) >= 0 ? "text-amber-400/70" : "text-rose-400/70"} />
                         </div>
                     </div>
 
                     {/* Beta */}
-                    <div className="rounded-xl border border-blue-500/20 bg-gradient-to-br from-blue-950/20 to-slate-950/90 p-4 flex flex-col min-h-[150px]">
-                        <div className="flex items-center gap-1.5 mb-2">
-                            <Activity className="h-3.5 w-3.5 text-blue-400" />
-                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Beta</span>
+                    <div className="rounded-xl border border-blue-500/20 bg-gradient-to-br from-blue-950/20 to-slate-950/90 p-3.5 sm:p-4 flex min-w-0 flex-col overflow-hidden min-h-[158px]">
+                        <div className="flex items-start gap-1.5 mb-2 min-h-[30px]">
+                            <Activity className="h-3.5 w-3.5 shrink-0 text-blue-400" />
+                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold leading-tight">Beta</span>
                         </div>
-                        <div className="flex-1 flex items-center justify-between gap-3 w-full">
-                            <span className="text-2xl sm:text-3xl font-black tracking-tight text-white leading-none shrink-0">
+                        <div className="flex-1 flex min-w-0 items-center justify-between gap-2 w-full">
+                            <span className="block shrink-0 whitespace-nowrap text-[clamp(1.55rem,7vw,2rem)] font-black leading-none tracking-[-0.045em] text-white tabular-nums lg:text-[clamp(1.4rem,1.75vw,1.85rem)]">
                                 {fmtNum(vitals.ytdBeta)}
                             </span>
                             {ytdHistory && ytdHistory.length > 0 && (
-                                <div className="h-[36px] flex-1 opacity-80">
+                                <div className="h-[34px] min-w-[42px] flex-1 opacity-80">
                                     <ResponsiveContainer width="100%" height="100%">
                                         <LineChart data={ytdHistory}>
                                             <Tooltip
@@ -198,11 +198,11 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                 </div>
                             )}
                         </div>
-                        <div className="mt-auto pt-3 border-t border-white/[0.06] min-h-[48px] flex flex-col justify-center">
-                            <div className="flex justify-between items-center py-1.5">
-                                <span className="text-[11px] text-gray-500 uppercase tracking-wider font-medium">Regime</span>
+                        <div className="mt-auto pt-3 border-t border-white/[0.06] h-[62px] flex min-w-0 flex-col justify-center">
+                            <div className="flex min-w-0 flex-col items-start justify-center gap-1 py-1">
+                                <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium leading-none">Regime</span>
                                 <span className={cn(
-                                    "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
+                                    "inline-flex shrink-0 items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider whitespace-nowrap",
                                     vitals.ytdBeta > 1
                                         ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
                                         : "bg-blue-500/10 text-blue-400 border border-blue-500/20"
@@ -215,24 +215,24 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     </div>
 
                     {/* Correlation */}
-                    <div className="rounded-xl border border-cyan-500/20 bg-gradient-to-br from-cyan-950/20 to-slate-950/90 p-4 flex flex-col min-h-[150px]">
-                        <div className="flex items-center gap-1.5 mb-2">
-                            <Activity className="h-3.5 w-3.5 text-cyan-400" />
-                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Correlation</span>
+                    <div className="rounded-xl border border-cyan-500/20 bg-gradient-to-br from-cyan-950/20 to-slate-950/90 p-3.5 sm:p-4 flex min-w-0 flex-col overflow-hidden min-h-[158px]">
+                        <div className="flex items-start gap-1.5 mb-2 min-h-[30px]">
+                            <Activity className="h-3.5 w-3.5 shrink-0 text-cyan-400" />
+                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold leading-tight">Correlation</span>
                         </div>
-                        <div className="flex-1 flex items-center">
+                        <div className="flex-1 flex min-w-0 items-center">
                             <span className={cn(
-                                "text-2xl sm:text-3xl font-black tracking-tight leading-none",
+                                "block w-full whitespace-nowrap text-[clamp(1.55rem,7vw,2rem)] font-black leading-none tracking-[-0.045em] tabular-nums lg:text-[clamp(1.4rem,1.75vw,1.85rem)]",
                                 (vitals.ytdCorrelation ?? 0) > 0.7 ? "text-emerald-400" : (vitals.ytdCorrelation ?? 0) < 0 ? "text-rose-400" : "text-white"
                             )}>
                                 {fmtNum(vitals.ytdCorrelation)}
                             </span>
                         </div>
-                        <div className="mt-auto pt-3 border-t border-white/[0.06] min-h-[48px] flex flex-col justify-center">
-                            <div className="flex justify-between items-center py-1.5">
-                                <span className="text-[11px] text-gray-500 uppercase tracking-wider font-medium">vs SPY</span>
+                        <div className="mt-auto pt-3 border-t border-white/[0.06] h-[62px] flex min-w-0 flex-col justify-center">
+                            <div className="flex min-w-0 flex-col items-start justify-center gap-1 py-1">
+                                <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium leading-none">vs SPY</span>
                                 <span className={cn(
-                                    "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider",
+                                    "inline-flex shrink-0 items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider whitespace-nowrap",
                                     (vitals.ytdCorrelation ?? 0) > 0.7
                                         ? "bg-cyan-500/10 text-cyan-400 border border-cyan-500/20"
                                         : (vitals.ytdCorrelation ?? 0) >= 0.3
@@ -246,64 +246,64 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     </div>
 
                     {/* YTD Sharpe */}
-                    <div className="rounded-xl border border-violet-500/20 bg-gradient-to-br from-violet-950/20 to-slate-950/90 p-4 flex flex-col min-h-[150px]">
-                        <div className="flex items-center gap-1.5 mb-2">
-                            <Gauge className="h-3.5 w-3.5 text-violet-400" />
-                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Sharpe</span>
+                    <div className="rounded-xl border border-violet-500/20 bg-gradient-to-br from-violet-950/20 to-slate-950/90 p-3.5 sm:p-4 flex min-w-0 flex-col overflow-hidden min-h-[158px]">
+                        <div className="flex items-start gap-1.5 mb-2 min-h-[30px]">
+                            <Gauge className="h-3.5 w-3.5 shrink-0 text-violet-400" />
+                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold leading-tight">Sharpe</span>
                         </div>
-                        <div className="flex-1 flex items-center">
+                        <div className="flex-1 flex min-w-0 items-center">
                             <span className={cn(
-                                "text-2xl sm:text-3xl font-black tracking-tight leading-none",
+                                "block w-full whitespace-nowrap text-[clamp(1.55rem,7vw,2rem)] font-black leading-none tracking-[-0.045em] tabular-nums lg:text-[clamp(1.4rem,1.75vw,1.85rem)]",
                                 (vitals.ytdSharpe ?? 0) > 1 ? "text-emerald-400" : (vitals.ytdSharpe ?? 0) > 0.5 ? "text-white" : "text-gray-400"
                             )}>
                                 {fmtNum(vitals.ytdSharpe)}
                             </span>
                         </div>
-                        <div className="mt-auto pt-3 border-t border-white/[0.06] min-h-[48px] flex flex-col justify-center">
+                        <div className="mt-auto pt-3 border-t border-white/[0.06] h-[62px] flex min-w-0 flex-col justify-center">
                             <StatRow label="SPY" value={fmtNum(vitals.benchmarkYtdSharpe)} valueClassName="text-gray-400" />
                         </div>
                     </div>
 
                     {/* Max Drawdown */}
                     <div className={cn(
-                        "rounded-xl border p-4 flex flex-col bg-gradient-to-br min-h-[150px]",
+                        "rounded-xl border p-3.5 sm:p-4 flex min-w-0 flex-col overflow-hidden bg-gradient-to-br min-h-[158px]",
                         (vitals.ytdMaxDrawdown ?? 0) < -0.1
                             ? "border-rose-500/30 from-rose-950/30 to-slate-950/90"
                             : "border-white/10 from-slate-900/50 to-slate-950/90"
                     )}>
-                        <div className="flex items-center gap-1.5 mb-2">
-                            <TrendingDown className="h-3.5 w-3.5 text-rose-400" />
-                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Max Drawdown</span>
+                        <div className="flex items-start gap-1.5 mb-2 min-h-[30px]">
+                            <TrendingDown className="h-3.5 w-3.5 shrink-0 text-rose-400" />
+                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold leading-tight">Max Drawdown</span>
                         </div>
-                        <div className="flex-1 flex items-center">
+                        <div className="flex-1 flex min-w-0 items-center">
                             <span className={cn(
-                                "text-2xl sm:text-3xl font-black tracking-tight leading-none",
+                                "block w-full whitespace-nowrap text-[clamp(1.55rem,7vw,2rem)] font-black leading-none tracking-[-0.045em] tabular-nums lg:text-[clamp(1.4rem,1.75vw,1.85rem)]",
                                 (vitals.ytdMaxDrawdown ?? 0) < -0.1 ? "text-rose-400"
                                     : (vitals.ytdMaxDrawdown ?? 0) < -0.05 ? "text-amber-400" : "text-emerald-400"
                             )}>
                                 {fmt(vitals.ytdMaxDrawdown)}
                             </span>
                         </div>
-                        <div className="mt-auto pt-3 border-t border-white/[0.06] min-h-[48px] flex flex-col justify-center">
+                        <div className="mt-auto pt-3 border-t border-white/[0.06] h-[62px] flex min-w-0 flex-col justify-center">
                             <StatRow label="SPY" value={fmt(vitals.benchmarkYtdMaxDrawdown)} valueClassName="text-gray-400" />
                         </div>
                     </div>
 
                     {/* Volatility — Portfolio vs SPY */}
-                    <div className="rounded-xl border border-orange-500/20 bg-gradient-to-br from-orange-950/20 to-slate-950/90 p-4 flex flex-col min-h-[150px]">
-                        <div className="flex items-center gap-1.5 mb-2">
-                            <Activity className="h-3.5 w-3.5 text-orange-400" />
-                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold">Volatility</span>
+                    <div className="rounded-xl border border-orange-500/20 bg-gradient-to-br from-orange-950/20 to-slate-950/90 p-3.5 sm:p-4 flex min-w-0 flex-col overflow-hidden min-h-[158px]">
+                        <div className="flex items-start gap-1.5 mb-2 min-h-[30px]">
+                            <Activity className="h-3.5 w-3.5 shrink-0 text-orange-400" />
+                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold leading-tight">Volatility</span>
                         </div>
-                        <div className="flex-1 flex items-center">
+                        <div className="flex-1 flex min-w-0 items-center">
                             <span className={cn(
-                                "text-2xl sm:text-3xl font-black tracking-tight leading-none",
+                                "block w-full whitespace-nowrap text-[clamp(1.55rem,7vw,2rem)] font-black leading-none tracking-[-0.045em] tabular-nums lg:text-[clamp(1.4rem,1.75vw,1.85rem)]",
                                 (vitals.ytdVol ?? 0) > (vitals.benchmarkYtdVol ?? 0) ? "text-orange-400" : "text-emerald-400"
                             )}>
                                 {fmt(vitals.ytdVol)}
                             </span>
                         </div>
-                        <div className="mt-auto pt-3 border-t border-white/[0.06] min-h-[48px] flex flex-col justify-center space-y-1">
+                        <div className="mt-auto pt-3 border-t border-white/[0.06] h-[62px] flex min-w-0 flex-col justify-center space-y-1">
                             <StatRow label="SPY" value={fmt(vitals.benchmarkYtdVol)} valueClassName="text-gray-400" />
                             {/* Ratio bar */}
                             {(() => {
@@ -312,8 +312,8 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                 const ratio = bVol > 0 ? pVol / bVol : 1;
                                 const isHigher = ratio > 1;
                                 return (
-                                    <div className="flex flex-col gap-1">
-                                        <div className="flex items-center gap-1.5">
+                                    <div className="flex min-w-0 flex-col gap-1">
+                                        <div className="flex min-w-0 items-center gap-1.5">
                                             <div className="flex-1 h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
                                                 <div
                                                     className={cn(
