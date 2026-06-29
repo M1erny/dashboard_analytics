@@ -422,6 +422,24 @@ def calculate_drawdown_series(value_series):
     return drawdown.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
 
+def value_series_from_returns(returns_series, start_index=None, start_value=1.0):
+    """Compound returns into a value curve with an optional base value row."""
+    returns = returns_series.astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+    values = start_value * (1.0 + returns).cumprod()
+
+    if start_index is None:
+        return values
+
+    if isinstance(values.index, pd.DatetimeIndex) or isinstance(start_index, pd.Timestamp):
+        base_index = pd.DatetimeIndex([pd.Timestamp(start_index)])
+    else:
+        base_index = pd.Index([start_index])
+
+    base = pd.Series([float(start_value)], index=base_index)
+    combined = pd.concat([base, values])
+    return combined[~combined.index.duplicated(keep="first")]
+
+
 def calculate_beta(portfolio_returns, benchmark_returns):
     """OLS beta using sample covariance and sample benchmark variance."""
     aligned = pd.concat([portfolio_returns, benchmark_returns], axis=1).dropna()
@@ -898,7 +916,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
 
     
     # Max Drawdown
-    cum_ret = (1 + portfolio_daily_ret).cumprod()
+    cum_ret = value_series_from_returns(portfolio_daily_ret, start_index=price_df.index[0])
     drawdown = calculate_drawdown_series(cum_ret)
     max_drawdown = drawdown.min()
 
@@ -1216,8 +1234,10 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         # YTD Max Drawdown (Benchmark)
         # Note: ytd_benchmark is typically daily returns, construct value index first
         # We did this earlier for alignment? No, ytd_benchmark is the slice of returns.
-        if not ytd_benchmark.empty:
-            ytd_bench_idx = (1 + ytd_benchmark).cumprod()
+        if not ytd_benchmark.empty and not portfolio_val_series.empty:
+            ytd_benchmark_curve_returns = ytd_benchmark.reindex(portfolio_val_series.index).fillna(0.0)
+            ytd_benchmark_curve_returns.iloc[0] = 0.0
+            ytd_bench_idx = value_series_from_returns(ytd_benchmark_curve_returns)
             ytd_bench_drawdown = calculate_drawdown_series(ytd_bench_idx)
             ytd_bench_max_drawdown = ytd_bench_drawdown.min()
         else:

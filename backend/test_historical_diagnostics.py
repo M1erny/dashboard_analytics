@@ -18,6 +18,19 @@ class HistoricalDiagnosticsTests(unittest.TestCase):
         self.assertAlmostEqual(drawdown.min(), -0.20)
         self.assertAlmostEqual(drawdown.iloc[-1], 0.0)
 
+    def test_drawdown_from_returns_includes_initial_base_value(self):
+        dates = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-05"])
+        returns = pd.Series([-0.10, 0.0555555556], index=dates[1:])
+
+        values = risk.value_series_from_returns(returns, start_index=dates[0])
+        drawdown = risk.calculate_drawdown_series(values)
+
+        self.assertAlmostEqual(values.loc[dates[0]], 1.0)
+        self.assertAlmostEqual(values.loc[dates[1]], 0.90)
+        self.assertAlmostEqual(drawdown.loc[dates[1]], -0.10)
+        self.assertAlmostEqual(drawdown.loc[dates[2]], -0.05, places=8)
+        self.assertAlmostEqual(drawdown.min(), -0.10)
+
     def test_beta_matches_ols_sample_variance(self):
         np.random.seed(7)
         benchmark = pd.Series(np.random.normal(0.001, 0.012, 250))

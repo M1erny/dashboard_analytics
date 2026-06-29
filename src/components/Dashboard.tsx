@@ -671,10 +671,10 @@ export const Dashboard: React.FC = () => {
                 {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing, Stress Tests) */}
                 <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} momentum={data.momentum} convexity={convexity} />
 
-                <HistoricalDiagnostics data={analyticsHistory} periodLabel={vitals?.periodLabel ?? "YTD"} />
-
                 {/* ROW 1.5: Returns Heatmap & Portfolio Contribution (Full Width) */}
                 <ReturnsHeatmap periodicReturns={periodicReturns} activeRisks={activeRisks} periodLabel={vitals?.periodLabel ?? "YTD"} />
+
+                <HistoricalDiagnostics data={analyticsHistory} periodLabel={vitals?.periodLabel ?? "YTD"} />
 
                 {/* ROW 2: Convexity Analysis */}
                 <ConvexityWidget convexity={convexity} />
