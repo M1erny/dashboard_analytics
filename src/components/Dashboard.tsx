@@ -5,6 +5,7 @@ import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
 import { ConvexityWidget } from './dashboard/ConvexityWidget';
+import { HistoricalDiagnostics } from './dashboard/HistoricalDiagnostics';
 import {
     LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign, Store,
     Building2, Ban, BrainCircuit, GitBranch, X, CalendarDays, Plus, Minus,
@@ -447,7 +448,7 @@ export const Dashboard: React.FC = () => {
         )
     }
 
-    const { vitals, leverage, periodicReturns, activeRisks, countryAllocation, stressTests, convexity, ytdHistory, rebalance } = data;
+    const { vitals, leverage, periodicReturns, activeRisks, countryAllocation, stressTests, convexity, ytdHistory, analyticsHistory, rebalance } = data;
     const rebalanceActive = rebalance?.mode === 'dated_snapshots';
     const latestRebalanceEvent = rebalance?.events?.[rebalance.events.length - 1];
     const januaryExposure = rebalance?.history?.[0]?.afterExposure;
@@ -669,6 +670,8 @@ export const Dashboard: React.FC = () => {
 
                 {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing, Stress Tests) */}
                 <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} momentum={data.momentum} convexity={convexity} />
+
+                <HistoricalDiagnostics data={analyticsHistory} periodLabel={vitals?.periodLabel ?? "YTD"} />
 
                 {/* ROW 1.5: Returns Heatmap & Portfolio Contribution (Full Width) */}
                 <ReturnsHeatmap periodicReturns={periodicReturns} activeRisks={activeRisks} periodLabel={vitals?.periodLabel ?? "YTD"} />

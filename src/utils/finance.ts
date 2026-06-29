@@ -138,11 +138,20 @@ export interface RebalanceEvent {
     effectiveDate: string;
     label: string;
     source: string;
+    executionTiming?: string;
     longExposure: number;
     shortExposure: number;
     grossExposure: number;
     netExposure: number;
     positionCount: number;
+    dailyFinancingDrag?: number;
+    annualFinancingCost?: number;
+    segmentFinancingCost?: number;
+    cumulativeFinancingCost?: number;
+    grossStartValue?: number;
+    grossEndValue?: number;
+    netStartValue?: number;
+    netEndValue?: number;
 }
 
 export interface RebalanceExposure {
@@ -174,6 +183,7 @@ export interface RebalanceChangeEvent {
     date: string;
     label: string;
     source: string;
+    executionTiming?: string;
     status: 'active' | 'planned';
     changeCount: number;
     beforeExposure: RebalanceExposure | null;
@@ -194,6 +204,20 @@ export interface HistoryPoint {
     benchmark: number;
     drawdown: number;
     beta?: number;
+}
+
+export interface AnalyticsHistoryPoint {
+    date: string;
+    portfolio: number | null;
+    drawdown: number | null;
+    variance: number | null;
+    volatility: number | null;
+    beta: number | null;
+    battingAverage: number | null;
+    winnersCount: number;
+    losersCount: number;
+    positionsCount: number;
+    profitFactor: number | null;
 }
 
 
@@ -238,6 +262,7 @@ export interface FullRiskReport {
     stressTests: StressTest[];
     history: HistoryPoint[];
     ytdHistory: HistoryPoint[];
+    analyticsHistory: AnalyticsHistoryPoint[];
     periodicReturns: PeriodicReturn[];
     talebMetrics?: TalebMetrics;
     countryAllocation?: Record<string, CountryAllocation>;
@@ -295,6 +320,7 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     },
                     leverage: data.leverage || { Long_Exp: 0, Short_Exp: 0, Gross_Exp: 0, Net_Exp: 0, Daily_Drag: 0 },
                     history: data.history || [],
+                    analyticsHistory: data.analyticsHistory || [],
                     periodicReturns: data.periodicReturns || [],
                     activeRisks: data.riskAttribution || [], // Rename data.riskAttribution -> activeRisks
                     stressTests: data.stressTests || [],

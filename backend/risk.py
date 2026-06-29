@@ -61,6 +61,7 @@ def get_rebalance_snapshots(name="main", active_config=None):
             "date": str(date),
             "label": snap.get("label", "Portfolio snapshot"),
             "source": snap.get("source", "snapshot"),
+            "executionTiming": snap.get("executionTiming", "effective_open"),
             "positions": positions,
         })
 
@@ -70,6 +71,7 @@ def get_rebalance_snapshots(name="main", active_config=None):
             "date": str(active_date),
             "label": plan.get("activeConfigLabel", "Current target book"),
             "source": "active_config",
+            "executionTiming": plan.get("activeConfigExecutionTiming", "effective_open"),
             "positions": active_config,
         })
 
@@ -114,6 +116,7 @@ BENCHMARK_MSCI = 'URTH'     # iShares MSCI World ETF
 WATCHLIST_FX = ['USDPLN=X', 'EURPLN=X', 'EURUSD=X', 'DKKEUR=X', 'JPYUSD=X'] # Pairs to track
 BASE_CURRENCY = 'USD'
 LOOKBACK_YEARS = 5.2
+ANNUAL_FACTOR = 252
 
 # Cost of Carry Assumptions (Retail Broker Estimate)
 MARGIN_RATE = 0.12  # 12.0% typical retail margin rate (e.g., Schwab/Fidelity)
@@ -400,6 +403,122 @@ def calculate_daily_financing_drag(portfolio_config, margin_rate, borrow_fee):
     return daily_margin_cost + daily_borrow_cost
 
 
+def get_rebalance_start_index(price_index, snap_ts, execution_timing="effective_open"):
+    """Return the price row used as the base for a dated rebalance."""
+    timing = str(execution_timing or "effective_open").lower()
+    if timing in {"post_session", "after_close", "close"}:
+        return max(0, min(len(price_index) - 1, price_index.searchsorted(snap_ts, side="right") - 1))
+    return max(0, min(len(price_index) - 1, price_index.searchsorted(snap_ts) - 1))
+
+
+def calculate_drawdown_series(value_series):
+    """Running-peak drawdown. A new high resets drawdown to zero."""
+    values = value_series.astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+    if values.empty:
+        return pd.Series(dtype=float)
+
+    running_max = values.cummax().replace(0, np.nan)
+    drawdown = (values - running_max) / running_max
+    return drawdown.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
+def calculate_beta(portfolio_returns, benchmark_returns):
+    """OLS beta using sample covariance and sample benchmark variance."""
+    aligned = pd.concat([portfolio_returns, benchmark_returns], axis=1).dropna()
+    if len(aligned) < 2:
+        return np.nan
+
+    port = aligned.iloc[:, 0]
+    bench = aligned.iloc[:, 1]
+    benchmark_variance = np.var(bench, ddof=1)
+    if benchmark_variance <= 0 or pd.isna(benchmark_variance):
+        return np.nan
+
+    return float(np.cov(port, bench)[0][1] / benchmark_variance)
+
+
+def calculate_batting_stats(contribution_row):
+    """Ticker-level batting stats from cumulative contribution at a date."""
+    clean = contribution_row.dropna()
+    positions_count = int(len(clean))
+    winners_count = int((clean > 0).sum())
+    losers_count = int((clean < 0).sum())
+    total_gains = float(clean[clean > 0].sum()) if positions_count else 0.0
+    total_losses = float(abs(clean[clean < 0].sum())) if positions_count else 0.0
+
+    if positions_count == 0:
+        batting_average = np.nan
+    else:
+        batting_average = winners_count / positions_count
+
+    if total_losses > 0:
+        profit_factor = total_gains / total_losses
+    elif total_gains > 0:
+        profit_factor = np.inf
+    else:
+        profit_factor = 0.0
+
+    return {
+        "battingAverage": float(batting_average) if not pd.isna(batting_average) else np.nan,
+        "winnersCount": winners_count,
+        "losersCount": losers_count,
+        "positionsCount": positions_count,
+        "profitFactor": float(profit_factor) if not np.isinf(profit_factor) else np.inf,
+    }
+
+
+def build_historical_diagnostics(portfolio_value_series, benchmark_returns, contribution_history=None, min_beta_periods=14):
+    """Build per-date YTD diagnostics from the same value stream used for reported metrics."""
+    if portfolio_value_series is None or portfolio_value_series.empty:
+        return []
+
+    values = portfolio_value_series.astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+    if values.empty:
+        return []
+
+    portfolio_returns = values.pct_change().dropna()
+    benchmark_aligned = benchmark_returns.reindex(portfolio_returns.index).dropna() if benchmark_returns is not None else pd.Series(dtype=float)
+    portfolio_aligned = portfolio_returns.reindex(benchmark_aligned.index).dropna()
+    benchmark_aligned = benchmark_aligned.reindex(portfolio_aligned.index).dropna()
+    portfolio_aligned = portfolio_aligned.reindex(benchmark_aligned.index).dropna()
+    drawdown = calculate_drawdown_series(values)
+    rows = []
+
+    for date in values.index:
+        ret_slice = portfolio_returns.loc[portfolio_returns.index <= date]
+        variance = float(ret_slice.var(ddof=1)) if len(ret_slice) > 1 else np.nan
+        volatility = float(np.sqrt(variance * ANNUAL_FACTOR)) if not pd.isna(variance) and variance >= 0 else np.nan
+
+        beta = np.nan
+        if len(portfolio_aligned) >= min_beta_periods and date in portfolio_aligned.index:
+            port_slice = portfolio_aligned.loc[portfolio_aligned.index <= date]
+            bench_slice = benchmark_aligned.loc[benchmark_aligned.index <= date]
+            if len(port_slice) >= min_beta_periods:
+                beta = calculate_beta(port_slice, bench_slice)
+
+        batting = {
+            "battingAverage": np.nan,
+            "winnersCount": 0,
+            "losersCount": 0,
+            "positionsCount": 0,
+            "profitFactor": 0.0,
+        }
+        if contribution_history is not None and not contribution_history.empty and date in contribution_history.index:
+            batting = calculate_batting_stats(contribution_history.loc[date])
+
+        rows.append({
+            "date": date.strftime("%Y-%m-%d"),
+            "portfolio": float(values.loc[date]),
+            "drawdown": float(drawdown.loc[date]) if date in drawdown.index else 0.0,
+            "variance": variance,
+            "volatility": volatility,
+            "beta": beta,
+            **batting,
+        })
+
+    return rows
+
+
 def calculate_segmented_ytd(
     ytd_prices_filled,
     portfolio_name,
@@ -410,9 +529,10 @@ def calculate_segmented_ytd(
 ):
     """Chain YTD performance across dated portfolio snapshots.
 
-    Each rebalance date uses the prior close as its base. That preserves the
-    already-realized first-half result and only applies the new book from its
-    effective date forward.
+    By default, a rebalance date is treated as the first session where the new
+    book is live, so it uses the prior close as its base. If a snapshot has
+    executionTiming="post_session", the same date is treated as the close used
+    for the rebalance, and the new book begins earning returns after that close.
     """
     snapshots = get_rebalance_snapshots(portfolio_name, active_config)
     if not snapshots or ytd_prices_filled.empty:
@@ -436,9 +556,17 @@ def calculate_segmented_ytd(
             "date": ytd_calc_start,
             "label": "YTD opening book",
             "source": "fallback",
+            "executionTiming": "effective_open",
             "positions": active_config,
             "ts": ytd_start_ts,
         })
+
+    for snap in active_snapshots:
+        snap["start_idx"] = get_rebalance_start_index(
+            price_index,
+            snap["ts"],
+            snap.get("executionTiming", "effective_open"),
+        )
 
     portfolio_val_series_gross = pd.Series(index=price_index, dtype=float)
     portfolio_val_series_net = pd.Series(index=price_index, dtype=float)
@@ -452,14 +580,15 @@ def calculate_segmented_ytd(
     ytd_shorts_contrib = 0.0
     current_weights = {}
     rebalance_events = []
+    all_segment_tickers = sorted({ticker for snap in active_snapshots for ticker in snap.get("positions", {}).keys()})
+    contribution_history = pd.DataFrame(np.nan, index=price_index, columns=all_segment_tickers)
+    cumulative_position_contributions = {}
 
     for idx, snap in enumerate(active_snapshots):
-        start_loc = price_index.searchsorted(snap["ts"])
-        start_idx = max(0, start_loc - 1)
+        start_idx = snap["start_idx"]
 
         if idx + 1 < len(active_snapshots):
-            next_loc = price_index.searchsorted(active_snapshots[idx + 1]["ts"])
-            end_idx = max(start_idx, max(0, next_loc - 1))
+            end_idx = max(start_idx, active_snapshots[idx + 1]["start_idx"])
         else:
             end_idx = len(price_index) - 1
 
@@ -474,6 +603,7 @@ def calculate_segmented_ytd(
         segment_contrib_curve = pd.Series(0.0, index=segment_index)
         segment_long_curve = pd.Series(0.0, index=segment_index)
         segment_short_curve = pd.Series(0.0, index=segment_index)
+        segment_position_curves = {}
 
         for ticker, info in positions.items():
             if ticker not in rel_prices.columns:
@@ -487,6 +617,7 @@ def calculate_segmented_ytd(
             asset_cum_ret = (rel_prices[ticker] - 1.0).fillna(0.0)
             position_curve = weight * direction * asset_cum_ret
             segment_contrib_curve += position_curve
+            segment_position_curves[ticker] = position_curve
 
             if direction == 1:
                 segment_long_curve += position_curve
@@ -511,9 +642,18 @@ def calculate_segmented_ytd(
         segment_net_daily_ret = segment_gross_daily_ret - segment_drag_series
         segment_net_daily_ret.iloc[0] = 0.0
         segment_net_values = net_start_value * (1.0 + segment_net_daily_ret).cumprod()
+        segment_net_without_drag = net_start_value * (1.0 + segment_gross_daily_ret).cumprod()
+        segment_financing_cost = float(segment_net_without_drag.iloc[-1] - segment_net_values.iloc[-1])
 
         portfolio_val_series_gross.loc[segment_index] = segment_gross_values
         portfolio_val_series_net.loc[segment_index] = segment_net_values
+
+        for ticker, prior_contribution in cumulative_position_contributions.items():
+            contribution_history.loc[segment_index, ticker] = prior_contribution
+        for ticker, position_curve in segment_position_curves.items():
+            prior_contribution = cumulative_position_contributions.get(ticker, 0.0)
+            contribution_history.loc[segment_index, ticker] = prior_contribution + gross_start_value * position_curve
+
         previous_segment_value = segment_gross_curve.shift(1).replace(0, np.nan)
         long_daily_ret.loc[segment_index] = (segment_long_curve.diff() / previous_segment_value).fillna(0.0)
         short_daily_ret.loc[segment_index] = (segment_short_curve.diff() / previous_segment_value).fillna(0.0)
@@ -524,11 +664,20 @@ def calculate_segmented_ytd(
             "effectiveDate": snap["date"],
             "label": snap.get("label", "Portfolio snapshot"),
             "source": snap.get("source", "snapshot"),
+            "executionTiming": snap.get("executionTiming", "effective_open"),
             "longExposure": exposure['long'],
             "shortExposure": exposure['short'],
             "grossExposure": exposure['gross'],
             "netExposure": exposure['net'],
             "positionCount": len(positions),
+            "dailyFinancingDrag": float(segment_drag),
+            "annualFinancingCost": float(segment_drag * 360),
+            "segmentFinancingCost": segment_financing_cost,
+            "cumulativeFinancingCost": float(segment_gross_values.iloc[-1] - segment_net_values.iloc[-1]),
+            "grossStartValue": float(gross_start_value),
+            "grossEndValue": float(segment_gross_values.iloc[-1]),
+            "netStartValue": float(net_start_value),
+            "netEndValue": float(segment_net_values.iloc[-1]),
         })
 
         if idx == len(active_snapshots) - 1:
@@ -544,9 +693,13 @@ def calculate_segmented_ytd(
 
         gross_start_value = float(segment_gross_values.iloc[-1])
         net_start_value = float(segment_net_values.iloc[-1])
+        for ticker in contribution_history.columns:
+            if not pd.isna(contribution_history.loc[segment_index[-1], ticker]):
+                cumulative_position_contributions[ticker] = float(contribution_history.loc[segment_index[-1], ticker])
 
     portfolio_val_series_gross = portfolio_val_series_gross.ffill().dropna()
     portfolio_val_series_net = portfolio_val_series_net.ffill().dropna()
+    contribution_history = contribution_history.reindex(portfolio_val_series_net.index).ffill()
 
     if portfolio_val_series_gross.empty or portfolio_val_series_net.empty:
         return None
@@ -562,6 +715,7 @@ def calculate_segmented_ytd(
         "ytd_longs_contrib": ytd_longs_contrib,
         "ytd_shorts_contrib": ytd_shorts_contrib,
         "position_contributions": position_contributions,
+        "position_contribution_history": contribution_history,
         "current_weights": current_weights,
         "rebalance_events": rebalance_events,
         "long_daily_ret": long_daily_ret.reindex(portfolio_val_series_net.index).fillna(0.0),
@@ -680,8 +834,6 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     portfolio_net_ret = portfolio_daily_ret
 
     # --- 2. CORE METRICS (use GROSS returns so historical metrics don't vary by cost tier) ---
-    ANNUAL_FACTOR = 252
-    
     # Beta (Robust Calculation) — uses gross returns
     valid_mask = ~(np.isnan(portfolio_gross_ret) | np.isnan(benchmark_ret))
     clean_port = portfolio_gross_ret[valid_mask]
@@ -747,8 +899,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     
     # Max Drawdown
     cum_ret = (1 + portfolio_daily_ret).cumprod()
-    running_max = cum_ret.cummax()
-    drawdown = (cum_ret - running_max) / running_max
+    drawdown = calculate_drawdown_series(cum_ret)
     max_drawdown = drawdown.min()
 
     # --- 4. RISK ATTRIBUTION (MCTR) ---
@@ -892,12 +1043,14 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             ytd_longs_contrib = segmented_ytd["ytd_longs_contrib"]
             ytd_shorts_contrib = segmented_ytd["ytd_shorts_contrib"]
             ytd_position_contributions = segmented_ytd["position_contributions"]
+            ytd_position_contribution_history = segmented_ytd["position_contribution_history"]
             ytd_current_weights = segmented_ytd["current_weights"]
             rebalance_events = segmented_ytd["rebalance_events"]
         else:
             # Calculate Value Series
             portfolio_val_series = pd.Series(0.0, index=ytd_rel_prices.index)
             ytd_position_contributions = {}
+            ytd_position_contribution_history = pd.DataFrame(np.nan, index=ytd_rel_prices.index, columns=active_tickers)
             ytd_current_weights = {}
             rebalance_events = []
 
@@ -921,6 +1074,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
                     # Position Contribution
                     position_contrib = weight * direction * asset_cum_ret
                     portfolio_val_series += position_contrib.fillna(0)
+                    ytd_position_contribution_history[ticker] = position_contrib
 
                     # Final Contribution (for summary)
                     final_contrib = position_contrib.iloc[-1]
@@ -989,7 +1143,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
 
         # YTD Beta
         if not ytd_benchmark_aligned.empty and np.var(ytd_benchmark_aligned, ddof=1) > 0:
-            ytd_beta = np.cov(ytd_portfolio_daily_ret, ytd_benchmark_aligned)[0][1] / np.var(ytd_benchmark_aligned, ddof=1)
+            ytd_beta = calculate_beta(ytd_portfolio_daily_ret, ytd_benchmark_aligned)
+            if pd.isna(ytd_beta):
+                ytd_beta = 0.0
             ytd_correlation = np.corrcoef(ytd_portfolio_daily_ret, ytd_benchmark_aligned)[0][1]
             
             # YTD Beta History (Expanding Window)
@@ -998,8 +1154,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
                 if i >= 14: # Minimum sample size filter to avoid massive math anomalies early in the year
                     port_slice = ytd_portfolio_daily_ret.iloc[:i]
                     bench_slice = ytd_benchmark_aligned.iloc[:i]
-                    bench_var = np.var(bench_slice, ddof=1)
-                    ytd_beta_history.iloc[i-1] = np.cov(port_slice, bench_slice)[0][1] / bench_var if bench_var > 0 else 0.0
+                    beta_val = calculate_beta(port_slice, bench_slice)
+                    ytd_beta_history.iloc[i-1] = beta_val if not pd.isna(beta_val) else 0.0
                 else:
                     ytd_beta_history.iloc[i-1] = np.nan
         else:
@@ -1054,8 +1210,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         bench_hist_sharpe = (annual_bench_ret - rf_rate) / bench_ann_vol if bench_ann_vol > 0 else 0
         
         # YTD Max Drawdown (Portfolio)
-        ytd_cum_max = portfolio_val_series.cummax()
-        ytd_drawdown = (portfolio_val_series - ytd_cum_max) / ytd_cum_max
+        ytd_drawdown = calculate_drawdown_series(portfolio_val_series)
         ytd_max_drawdown = ytd_drawdown.min()
 
         # YTD Max Drawdown (Benchmark)
@@ -1063,8 +1218,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         # We did this earlier for alignment? No, ytd_benchmark is the slice of returns.
         if not ytd_benchmark.empty:
             ytd_bench_idx = (1 + ytd_benchmark).cumprod()
-            ytd_bench_cum_max = ytd_bench_idx.cummax()
-            ytd_bench_drawdown = (ytd_bench_idx - ytd_bench_cum_max) / ytd_bench_cum_max
+            ytd_bench_drawdown = calculate_drawdown_series(ytd_bench_idx)
             ytd_bench_max_drawdown = ytd_bench_drawdown.min()
         else:
             ytd_bench_max_drawdown = 0.0
@@ -1151,6 +1305,11 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             msci_ytd = 0
             
         # Longs/Shorts Contribution was already accumulated efficiently in the main YTD loop above.
+        ytd_historical_diagnostics = build_historical_diagnostics(
+            portfolio_val_series,
+            ytd_benchmark,
+            ytd_position_contribution_history,
+        )
         
     else:
         ytd_return = 0.0
@@ -1182,6 +1341,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_benchmark_aligned = pd.Series(dtype=float)
         ytd_trading_days = 0
         ytd_position_contributions = {}
+        ytd_position_contribution_history = pd.DataFrame()
+        ytd_historical_diagnostics = []
         ytd_current_weights = {}
         rebalance_events = []
 
@@ -1431,6 +1592,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Benchmark_Stream': ytd_benchmark if 'ytd_benchmark' in locals() else None,
         'YTD_Beta_History': ytd_beta_history if 'ytd_beta_history' in locals() else None,
         'YTD_Position_Contributions': ytd_position_contributions if 'ytd_position_contributions' in locals() else {},
+        'YTD_Position_Contribution_History': ytd_position_contribution_history if 'ytd_position_contribution_history' in locals() else pd.DataFrame(),
+        'YTD_Historical_Diagnostics': ytd_historical_diagnostics if 'ytd_historical_diagnostics' in locals() else [],
         'YTD_Current_Weights': ytd_current_weights if 'ytd_current_weights' in locals() else {},
         'Rebalance_Events': rebalance_events if 'rebalance_events' in locals() else [],
         'Rebalance_Mode': 'dated_snapshots' if rebalance_events else 'static',

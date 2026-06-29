@@ -234,6 +234,7 @@ def _build_rebalance_change_history(portfolio: str, raw_prices, ytd_position_con
             "date": effective_date,
             "label": snapshot.get("label", "Portfolio snapshot"),
             "source": snapshot.get("source", "snapshot"),
+            "executionTiming": snapshot.get("executionTiming", "effective_open"),
             "status": "active" if effective_ts <= today else "planned",
             "changeCount": len(changes),
             "beforeExposure": before_exposure,
@@ -504,6 +505,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "stressTests": [],
                 "periodicReturns": [],
                 "history": [],
+                "analyticsHistory": [],
                 "leverage": {}
              }
 
@@ -575,7 +577,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             "riskAttribution": [],
             "stressTests": [],
             "periodicReturns": [],
-            "history": []
+            "history": [],
+            "analyticsHistory": []
         }
 
         # Format Convexity Metrics
@@ -909,6 +912,21 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                         # Map back
                         if i < len(bench_curve):
                              item["benchmark"] = to_float(bench_curve.iloc[i])
+
+        for row in metrics.get("YTD_Historical_Diagnostics", []) or []:
+            response["analyticsHistory"].append({
+                "date": row.get("date"),
+                "portfolio": to_float(row.get("portfolio")),
+                "drawdown": to_float(row.get("drawdown")),
+                "variance": to_float(row.get("variance")),
+                "volatility": to_float(row.get("volatility")),
+                "beta": to_float(row.get("beta")),
+                "battingAverage": to_float(row.get("battingAverage")),
+                "winnersCount": row.get("winnersCount", 0),
+                "losersCount": row.get("losersCount", 0),
+                "positionsCount": row.get("positionsCount", 0),
+                "profitFactor": to_float(row.get("profitFactor")),
+            })
 
         # Sanitize stress tests
         for st in response["stressTests"]:
