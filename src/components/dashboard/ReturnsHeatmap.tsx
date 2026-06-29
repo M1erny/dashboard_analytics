@@ -1,10 +1,11 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useRef } from 'react';
 import { cn } from '../../lib/utils';
 import type { PeriodicReturn, RiskAttribution } from '../../utils/finance';
-import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap, Target, Trophy, TrendingDown, Activity } from 'lucide-react';
+import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap, Target, Trophy, TrendingDown, Activity, GripVertical, RotateCcw } from 'lucide-react';
 
 type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry' | 'volatilityContribution';
 type SortDir = 'asc' | 'desc';
+type ColumnGroup = 'position' | 'contribution' | 'returns' | 'risk';
 
 // ─── Color System ────────────────────────────────────────────
 const getReturnColor = (val: number | null): string => {
@@ -225,7 +226,7 @@ interface ColumnDef {
     key: SortKey;
     label: string;
     tooltip?: string;
-    group: 'position' | 'contribution' | 'returns' | 'risk';
+    group: ColumnGroup;
 }
 
 const columns: ColumnDef[] = [
@@ -244,11 +245,33 @@ const columns: ColumnDef[] = [
     { key: 'volumeIndicator',  label: 'Vol Ratio',  group: 'risk', tooltip: '7D avg volume ÷ YTD avg volume' },
 ];
 
-const groupMeta: Record<string, { label: string; icon: React.ReactNode; colSpan: number; color: string; accentColor: string }> = {
-    position:     { label: 'Position',      icon: <BarChart3 className="h-3 w-3" />, colSpan: 3, color: 'text-blue-400',    accentColor: 'bg-blue-500' },
-    contribution: { label: 'Contribution',  icon: <Zap className="h-3 w-3" />,       colSpan: 3, color: 'text-violet-400',  accentColor: 'bg-violet-500' },
-    returns:      { label: 'Returns',       icon: <TrendingUp className="h-3 w-3" />,colSpan: 4, color: 'text-emerald-400', accentColor: 'bg-emerald-500' },
-    risk:         { label: 'Risk',          icon: <Flame className="h-3 w-3" />,     colSpan: 3, color: 'text-rose-400',    accentColor: 'bg-rose-500' },
+const columnByKey = new Map<SortKey, ColumnDef>(columns.map(col => [col.key, col]));
+const defaultColumnOrder = columns.map(col => col.key);
+const columnOrderStorageKey = 'returnsHeatmap.columnOrder.v1';
+
+const normalizeColumnOrder = (order: unknown): SortKey[] => {
+    const validKeys = new Set(defaultColumnOrder);
+    const ordered = Array.isArray(order)
+        ? order.filter((key): key is SortKey => typeof key === 'string' && validKeys.has(key as SortKey))
+        : [];
+    const missing = defaultColumnOrder.filter(key => !ordered.includes(key));
+    return [...ordered, ...missing];
+};
+
+const getInitialColumnOrder = (): SortKey[] => {
+    if (typeof window === 'undefined') return defaultColumnOrder;
+    try {
+        return normalizeColumnOrder(JSON.parse(window.localStorage.getItem(columnOrderStorageKey) || 'null'));
+    } catch {
+        return defaultColumnOrder;
+    }
+};
+
+const groupMeta: Record<ColumnGroup, { label: string; icon: React.ReactNode; color: string; accentColor: string }> = {
+    position:     { label: 'Position',      icon: <BarChart3 className="h-3 w-3" />, color: 'text-blue-400',    accentColor: 'bg-blue-500' },
+    contribution: { label: 'Contribution',  icon: <Zap className="h-3 w-3" />,       color: 'text-violet-400',  accentColor: 'bg-violet-500' },
+    returns:      { label: 'Returns',       icon: <TrendingUp className="h-3 w-3" />,color: 'text-emerald-400', accentColor: 'bg-emerald-500' },
+    risk:         { label: 'Risk',          icon: <Flame className="h-3 w-3" />,     color: 'text-rose-400',    accentColor: 'bg-rose-500' },
 };
 
 // ─── Main Component ──────────────────────────────────────────
@@ -256,6 +279,55 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
     const [sortKey, setSortKey] = useState<SortKey>('ytdContribution');
     const [sortDir, setSortDir] = useState<SortDir>('desc');
     const [hoveredRow, setHoveredRow] = useState<string | null>(null);
+    const [columnOrder, setColumnOrder] = useState<SortKey[]>(getInitialColumnOrder);
+    const [draggedColumn, setDraggedColumn] = useState<SortKey | null>(null);
+    const [dragOverColumn, setDragOverColumn] = useState<SortKey | null>(null);
+    const skipNextSortRef = useRef(false);
+    const pointerDragColumnRef = useRef<SortKey | null>(null);
+    const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
+
+    const orderedColumns = useMemo(() => {
+        return normalizeColumnOrder(columnOrder)
+            .map(key => columnByKey.get(key))
+            .filter((col): col is ColumnDef => Boolean(col));
+    }, [columnOrder]);
+
+    const groupedColumnSegments = useMemo(() => {
+        const segments: Array<{ group: ColumnGroup; colSpan: number }> = [];
+        for (const col of orderedColumns) {
+            const last = segments[segments.length - 1];
+            if (last?.group === col.group) {
+                last.colSpan += 1;
+            } else {
+                segments.push({ group: col.group, colSpan: 1 });
+            }
+        }
+        return segments;
+    }, [orderedColumns]);
+
+    const commitColumnOrder = useCallback((nextOrder: SortKey[]) => {
+        const normalized = normalizeColumnOrder(nextOrder);
+        setColumnOrder(normalized);
+        if (typeof window !== 'undefined') {
+            window.localStorage.setItem(columnOrderStorageKey, JSON.stringify(normalized));
+        }
+    }, []);
+
+    const moveColumn = useCallback((sourceKey: SortKey, targetKey: SortKey) => {
+        if (sourceKey === targetKey) return;
+        const current = normalizeColumnOrder(columnOrder);
+        const withoutSource = current.filter(key => key !== sourceKey);
+        const targetIndex = withoutSource.indexOf(targetKey);
+        if (targetIndex === -1) return;
+        withoutSource.splice(targetIndex, 0, sourceKey);
+        commitColumnOrder(withoutSource);
+    }, [columnOrder, commitColumnOrder]);
+
+    const resetColumnOrder = useCallback(() => {
+        commitColumnOrder(defaultColumnOrder);
+        setDraggedColumn(null);
+        setDragOverColumn(null);
+    }, [commitColumnOrder]);
 
     const riskMap = useMemo(() => {
         const map = new Map<string, number>();
@@ -266,12 +338,58 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
     }, [activeRisks]);
 
     const handleSort = (key: SortKey) => {
+        if (skipNextSortRef.current) {
+            skipNextSortRef.current = false;
+            return;
+        }
         if (sortKey === key) {
             setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
         } else {
             setSortKey(key);
             setSortDir('desc');
         }
+    };
+
+    const clearColumnDrag = () => {
+        setDraggedColumn(null);
+        setDragOverColumn(null);
+        pointerDragColumnRef.current = null;
+        pointerStartRef.current = null;
+        window.setTimeout(() => {
+            skipNextSortRef.current = false;
+        }, 0);
+    };
+
+    const handleColumnPointerDown = (key: SortKey, event: React.PointerEvent<HTMLTableCellElement>) => {
+        pointerDragColumnRef.current = key;
+        pointerStartRef.current = { x: event.clientX, y: event.clientY };
+    };
+
+    const handleColumnPointerMove = (key: SortKey, event: React.PointerEvent<HTMLTableCellElement>) => {
+        const sourceKey = pointerDragColumnRef.current;
+        const start = pointerStartRef.current;
+        if (!sourceKey || !start) return;
+
+        const moved = Math.abs(event.clientX - start.x) > 8 || Math.abs(event.clientY - start.y) > 8;
+        if (!moved) return;
+
+        skipNextSortRef.current = true;
+        setDraggedColumn(sourceKey);
+        setDragOverColumn(key);
+    };
+
+    const handleColumnPointerEnter = (key: SortKey) => {
+        if (draggedColumn) setDragOverColumn(key);
+    };
+
+    const handleColumnPointerUp = (key: SortKey, event: React.PointerEvent<HTMLTableCellElement>) => {
+        const sourceKey = pointerDragColumnRef.current;
+        if (sourceKey && draggedColumn) {
+            event.preventDefault();
+            event.stopPropagation();
+            moveColumn(sourceKey, dragOverColumn ?? key);
+        }
+        clearColumnDrag();
     };
 
     const getValue = useCallback((row: PeriodicReturn, key: SortKey): number | null => {
@@ -392,18 +510,21 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             : <ChevronUp className="h-3 w-3 inline ml-0.5 text-blue-400" />;
     };
 
-    const renderCell = (row: PeriodicReturn, col: ColumnDef, isFirstInGroup: boolean) => {
+    const renderCell = (row: PeriodicReturn, col: ColumnDef, isFirstInGroup: boolean, isFirstColumn: boolean) => {
         const isHovered = hoveredRow === row.ticker;
         const groupBorder = isFirstInGroup && col.group !== 'position' ? "border-l border-white/[0.05]" : "";
+        const isStickyTicker = col.key === 'ticker' && isFirstColumn;
 
         switch (col.key) {
             case 'ticker':
                 return (
                     <td key={col.key} className={cn(
-                        "px-4 py-3 whitespace-nowrap sticky left-0 z-[5]",
-                        "bg-slate-950/95 backdrop-blur-sm",
-                        // right shadow for sticky column
-                        "after:absolute after:top-0 after:right-0 after:bottom-0 after:w-[1px] after:bg-gradient-to-b after:from-white/[0.06] after:via-white/[0.03] after:to-white/[0.06]",
+                        "px-4 py-3 whitespace-nowrap",
+                        isStickyTicker && [
+                            "sticky left-0 z-[5] bg-slate-950/95 backdrop-blur-sm",
+                            // right shadow for sticky column
+                            "after:absolute after:top-0 after:right-0 after:bottom-0 after:w-[1px] after:bg-gradient-to-b after:from-white/[0.06] after:via-white/[0.03] after:to-white/[0.06]",
+                        ],
                         groupBorder
                     )}>
                         <div className="flex items-center gap-2.5">
@@ -540,6 +661,14 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                         <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                         <span className="text-[11px] text-gray-400 font-mono">{summary.total} positions</span>
                     </div>
+                    <button
+                        type="button"
+                        onClick={resetColumnOrder}
+                        title="Reset column order"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.035] text-gray-500 transition-colors hover:border-white/[0.12] hover:bg-white/[0.07] hover:text-gray-300"
+                    >
+                        <RotateCcw className="h-3.5 w-3.5" />
+                    </button>
                 </div>
             </div>
 
@@ -648,19 +777,21 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                     {/* Group Header Row */}
                     <thead className="sticky top-0 z-20">
                         <tr className="bg-slate-950/98 backdrop-blur-md">
-                            {Object.entries(groupMeta).map(([key, meta], groupIdx) => (
+                            {groupedColumnSegments.map((segment, groupIdx) => {
+                                const meta = groupMeta[segment.group];
+                                return (
                                 <th
-                                    key={key}
-                                    colSpan={meta.colSpan}
+                                    key={`${segment.group}-${groupIdx}`}
+                                    colSpan={segment.colSpan}
                                     className={cn(
                                         "px-4 py-2 text-[10px] uppercase tracking-[0.14em] font-semibold",
                                         groupIdx > 0 && "border-l border-white/[0.06]",
-                                        key === 'position' && "text-left"
+                                        segment.group === 'position' && "text-left"
                                     )}
                                 >
                                     <div className={cn(
                                         "flex items-center gap-2",
-                                        key !== 'position' && "justify-center"
+                                        segment.group !== 'position' && "justify-center"
                                     )}>
                                         <div className={cn(
                                             "flex items-center gap-1.5 px-2 py-0.5 rounded-md",
@@ -674,28 +805,49 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                                         <div className={cn("hidden sm:block flex-1 h-[1px] rounded-full opacity-40", meta.accentColor)} />
                                     </div>
                                 </th>
-                            ))}
+                                );
+                            })}
                         </tr>
                         {/* Column Header Row */}
                         <tr className="bg-slate-950/95 backdrop-blur-md border-b border-white/[0.08]">
-                            {columns.map((col, i) => {
-                                const isFirstInGroup = i === 0 || columns[i - 1].group !== col.group;
+                            {orderedColumns.map((col, i) => {
+                                const isFirstInGroup = i === 0 || orderedColumns[i - 1].group !== col.group;
+                                const isFirstColumn = i === 0;
+                                const isDragging = draggedColumn === col.key;
+                                const isDropTarget = dragOverColumn === col.key && draggedColumn !== null && draggedColumn !== col.key;
                                 return (
                                     <th
                                         key={col.key}
+                                        data-column-key={col.key}
                                         onClick={() => handleSort(col.key)}
+                                        onPointerDown={(event) => handleColumnPointerDown(col.key, event)}
+                                        onPointerMove={(event) => handleColumnPointerMove(col.key, event)}
+                                        onPointerEnter={() => handleColumnPointerEnter(col.key)}
+                                        onPointerUp={(event) => handleColumnPointerUp(col.key, event)}
+                                        onPointerCancel={clearColumnDrag}
                                         title={col.tooltip}
                                         className={cn(
-                                            "group px-4 py-2.5 font-medium cursor-pointer select-none whitespace-nowrap transition-all duration-150",
+                                            "group px-4 py-2.5 font-medium cursor-grab select-none whitespace-nowrap transition-all duration-150 active:cursor-grabbing",
                                             "hover:bg-white/[0.04] active:bg-white/[0.08]",
-                                            col.key === 'ticker' ? "text-left text-gray-300 sticky left-0 z-[15] bg-slate-950/95" : "text-center text-gray-400",
+                                            col.key === 'ticker' && isFirstColumn ? "text-left text-gray-300 sticky left-0 z-[15] bg-slate-950/95" : col.key === 'ticker' ? "text-left text-gray-300" : "text-center text-gray-400",
                                             sortKey === col.key && "text-blue-400 bg-blue-500/[0.06]",
                                             isFirstInGroup && col.group !== 'position' && "border-l border-white/[0.06]",
+                                            isDragging && "opacity-50",
+                                            isDropTarget && "bg-blue-500/[0.12] shadow-[inset_2px_0_0_rgba(96,165,250,0.75)]",
                                             "text-[12px]"
                                         )}
                                     >
-                                        {col.label === 'YTD' ? periodLabel : col.label}
-                                        <SortIndicator columnKey={col.key} />
+                                        <div className={cn(
+                                            "flex items-center gap-1.5",
+                                            col.key === 'ticker' ? "justify-start" : "justify-center"
+                                        )}>
+                                            <GripVertical className={cn(
+                                                "h-3 w-3 shrink-0 text-gray-600 transition-colors",
+                                                isDragging ? "text-blue-300" : "group-hover:text-gray-400"
+                                            )} />
+                                            <span>{col.label === 'YTD' ? periodLabel : col.label}</span>
+                                            <SortIndicator columnKey={col.key} />
+                                        </div>
                                     </th>
                                 );
                             })}
@@ -714,9 +866,9 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                                         : idx % 2 === 0 ? "bg-white/[0.015]" : "bg-transparent"
                                 )}
                             >
-                                {columns.map((col, i) => {
-                                    const isFirstInGroup = i === 0 || columns[i - 1].group !== col.group;
-                                    return renderCell(row, col, isFirstInGroup);
+                                {orderedColumns.map((col, i) => {
+                                    const isFirstInGroup = i === 0 || orderedColumns[i - 1].group !== col.group;
+                                    return renderCell(row, col, isFirstInGroup, i === 0);
                                 })}
                             </tr>
                         ))}
