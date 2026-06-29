@@ -19,6 +19,7 @@ const COUNTRY_NAMES: Record<string, string> = {
     'Portugal': 'PRT',
     'Denmark': 'DNK',
     'Belgium': 'BEL',
+    'Canada': 'CAN',
 };
 
 interface CountryAllocation {
@@ -43,6 +44,16 @@ export const CountryMapWidget: React.FC<CountryMapWidgetProps> = memo(({ country
             </div>
         );
     }
+
+    const visibleCountries = Object.entries(countryAllocation)
+        .map(([code, data]) => ({
+            code,
+            ...data,
+            net: data.long - data.short,
+            gross: data.long + data.short,
+        }))
+        .filter(country => country.gross > 0)
+        .sort((a, b) => b.gross - a.gross);
 
     const getCountryColor = (geoName: string) => {
         const isoCode = COUNTRY_NAMES[geoName];
@@ -130,6 +141,27 @@ export const CountryMapWidget: React.FC<CountryMapWidgetProps> = memo(({ country
                         </Geographies>
                     </ZoomableGroup>
                 </ComposableMap>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 border-t border-white/[0.06] bg-white/[0.015] p-3 sm:grid-cols-4 lg:grid-cols-7">
+                {visibleCountries.map(country => (
+                    <div
+                        key={country.code}
+                        className="min-w-0 rounded-lg border border-white/[0.07] bg-slate-950/55 px-2.5 py-2"
+                    >
+                        <div className="mb-1 flex items-center justify-between gap-2">
+                            <span className="font-mono text-[11px] font-black tracking-wide text-gray-300">{country.code}</span>
+                            <span className={`font-mono text-[10px] font-bold ${country.net >= 0 ? 'text-emerald-300' : 'text-rose-300'}`}>
+                                {fmtP(country.net)}
+                            </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[9px] font-mono font-bold">
+                            <span className="text-emerald-400">{(country.long * 100).toFixed(1)}L</span>
+                            <span className="text-gray-600">/</span>
+                            <span className="text-rose-400">{(country.short * 100).toFixed(1)}S</span>
+                        </div>
+                    </div>
+                ))}
             </div>
 
             {/* Glassmorphism Tooltip */}
