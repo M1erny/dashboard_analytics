@@ -62,6 +62,34 @@ class HistoricalDiagnosticsTests(unittest.TestCase):
         self.assertEqual(by_date["2026-01-06"]["losersCount"], 1)
         self.assertAlmostEqual(by_date["2026-01-06"]["battingAverage"], 0.0)
 
+    def test_latest_patch_prefers_fresh_warsaw_quote_over_stale_yahoo_quote(self):
+        patch_price, patch_source = risk.select_latest_patch_price(
+            last_price=33.50,
+            previous_close=22.50,
+            regular_previous_close=24.80,
+            open_val=None,
+            volume_val=0,
+            qtype="MUTUALFUND",
+            market_quote={"price": 26.60, "source": "BiznesRadar"},
+        )
+
+        self.assertEqual(patch_price, 26.60)
+        self.assertEqual(patch_source, "BiznesRadar")
+
+    def test_latest_patch_uses_regular_previous_close_before_stale_previous_close(self):
+        patch_price, patch_source = risk.select_latest_patch_price(
+            last_price=33.50,
+            previous_close=22.50,
+            regular_previous_close=24.80,
+            open_val=None,
+            volume_val=0,
+            qtype="MUTUALFUND",
+            market_quote=None,
+        )
+
+        self.assertEqual(patch_price, 24.80)
+        self.assertEqual(patch_source, "regularMarketPreviousClose")
+
 
 if __name__ == "__main__":
     unittest.main()

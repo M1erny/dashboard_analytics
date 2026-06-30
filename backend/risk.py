@@ -12,6 +12,8 @@ from scipy.stats import skew, kurtosis
 # ==========================================
 import json
 import os
+import re
+from urllib.request import Request, urlopen
 
 def load_portfolio_config(name="main"):
     base_dir = os.path.dirname(os.path.abspath(__file__))
@@ -124,6 +126,123 @@ BORROW_FEE = 0.025  # 2.5% estimated retail hard-to-borrow blended fee
 
 
 
+def _finite_float(value):
+    try:
+        if value is None:
+            return None
+        number = float(value)
+        if not np.isfinite(number):
+            return None
+        return number
+    except (TypeError, ValueError):
+        return None
+
+
+def _fast_info_value(fast_info, key):
+    try:
+        return _finite_float(fast_info.get(key))
+    except Exception:
+        return None
+
+
+def _parse_market_number(value):
+    if value is None:
+        return None
+    cleaned = (
+        str(value)
+        .replace("\xa0", "")
+        .replace(" ", "")
+        .replace("%", "")
+        .replace("+", "")
+        .replace(",", ".")
+    )
+    return _finite_float(cleaned)
+
+
+def fetch_warsaw_latest_quote(ticker, min_date=None):
+    """Fetch a current Warsaw quote when Yahoo has a blank newest bar."""
+    if not str(ticker).upper().endswith(".WA"):
+        return None
+
+    symbol = str(ticker).upper().split(".")[0]
+    url = f"https://www.biznesradar.pl/notowania/{symbol}"
+    try:
+        request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urlopen(request, timeout=5) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+    except Exception as ex:
+        print(f"  Warsaw backup quote failed for {ticker}: {ex}")
+        return None
+
+    price_match = re.search(r'itemprop=["\']price["\']\s+content=["\']([^"\']+)["\']', html)
+    if price_match is None:
+        price_match = re.search(r'class=["\']q_ch_act["\'][^>]*>\s*([^<]+)\s*<', html)
+
+    price = _parse_market_number(price_match.group(1) if price_match else None)
+    if price is None or price <= 0:
+        return None
+
+    previous_match = re.search(r'class=["\']q_ch_prev["\'][^>]*>\s*([^<]+)\s*<', html)
+    change_match = re.search(r'itemprop=["\']priceChangePercent["\']\s+content=["\']([^"\']+)["\']', html)
+    time_match = re.search(r'itemprop=["\']quoteTime["\']\s+content=["\']([^"\']+)["\']', html)
+
+    quote_dt = None
+    quote_epoch = _finite_float(time_match.group(1) if time_match else None)
+    if quote_epoch is not None:
+        try:
+            quote_dt = datetime.fromtimestamp(quote_epoch)
+        except (OverflowError, OSError, ValueError):
+            quote_dt = None
+
+    if min_date is not None and quote_dt is not None:
+        min_ts = pd.Timestamp(min_date).tz_localize(None)
+        if pd.Timestamp(quote_dt).tz_localize(None).date() < min_ts.date():
+            print(f"  Warsaw backup quote for {ticker} is stale ({quote_dt.date()}); skipping.")
+            return None
+
+    return {
+        "price": price,
+        "previous_close": _parse_market_number(previous_match.group(1) if previous_match else None),
+        "change_pct": _parse_market_number(change_match.group(1) if change_match else None),
+        "quote_time": quote_dt,
+        "source": "BiznesRadar",
+        "url": url,
+    }
+
+
+def select_latest_patch_price(last_price, previous_close, regular_previous_close, open_val=None, volume_val=None, qtype=None, market_quote=None):
+    """Choose the safest price for a missing newest row."""
+    last_price = _finite_float(last_price)
+    previous_close = _finite_float(previous_close)
+    regular_previous_close = _finite_float(regular_previous_close)
+    open_val = _finite_float(open_val)
+    volume_val = _finite_float(volume_val)
+
+    reference_close = regular_previous_close if regular_previous_close and regular_previous_close > 0 else previous_close
+
+    if market_quote:
+        market_price = _finite_float(market_quote.get("price"))
+        if market_price and market_price > 0:
+            return market_price, market_quote.get("source", "market quote")
+
+    if last_price and last_price > 0:
+        if reference_close and reference_close > 0:
+            diff_pct = abs(last_price - reference_close) / reference_close
+            is_stale_indicator = (
+                qtype == "MUTUALFUND" or
+                open_val is None or
+                volume_val == 0
+            )
+            if diff_pct > 0.15 and is_stale_indicator:
+                return reference_close, "regularMarketPreviousClose"
+        return last_price, "Yahoo fast_info lastPrice"
+
+    if reference_close and reference_close > 0:
+        return reference_close, "regularMarketPreviousClose"
+
+    return None, None
+
+
 
 
 # ==========================================
@@ -229,27 +348,18 @@ def fetch_data(portfolio_name="main"):
 
                 if is_nan_val:
                     ticker_obj = yf.Ticker(t)
-                    last_price = ticker_obj.fast_info['lastPrice']
-                    if last_price is not None and not np.isnan(last_price):
-                        patch_price = last_price
-                        prev_close = ticker_obj.fast_info.get('previousClose')
-                        
-                        if prev_close is not None and not np.isnan(prev_close) and prev_close > 0:
-                            diff_pct = abs(last_price - prev_close) / prev_close
-                            if diff_pct > 0.15:
-                                # Quote is considered stale if price deviates by >15% and we have stale quote markers
-                                open_val = ticker_obj.fast_info.get('open')
-                                volume_val = ticker_obj.fast_info.get('lastVolume')
-                                qtype = ticker_obj.fast_info.get('quoteType')
-                                is_stale_indicator = (
-                                    qtype == 'MUTUALFUND' or 
-                                    open_val is None or 
-                                    np.isnan(open_val) or
-                                    volume_val == 0
-                                )
-                                if is_stale_indicator:
-                                    print(f"  Warning: large difference ({diff_pct*100:.2f}%) between lastPrice ({last_price}) and previousClose ({prev_close}) for {t}. Using previousClose ({prev_close}) instead of stale lastPrice.")
-                                    patch_price = prev_close
+                    fast_info = ticker_obj.fast_info
+                    market_quote = fetch_warsaw_latest_quote(t, min_date=last_date)
+                    patch_price, patch_source = select_latest_patch_price(
+                        last_price=_fast_info_value(fast_info, 'lastPrice'),
+                        previous_close=_fast_info_value(fast_info, 'previousClose'),
+                        regular_previous_close=_fast_info_value(fast_info, 'regularMarketPreviousClose'),
+                        open_val=_fast_info_value(fast_info, 'open'),
+                        volume_val=_fast_info_value(fast_info, 'lastVolume'),
+                        qtype=fast_info.get('quoteType'),
+                        market_quote=market_quote,
+                    )
+                    if patch_price is not None:
 
                         if isinstance(stock_raw.columns, pd.MultiIndex):
                             for price_col in ['Close', 'Adj Close']:
@@ -258,7 +368,7 @@ def fetch_data(portfolio_name="main"):
                         else:
                             if t in stock_raw.columns:
                                 stock_raw.loc[last_date, t] = patch_price
-                        print(f"  Patched latest NaN price for {t} with: {patch_price}")
+                        print(f"  Patched latest NaN price for {t} with: {patch_price} ({patch_source})")
         except Exception as ex:
             print(f"  Failed to patch latest price for {t}: {ex}")
 
