@@ -90,6 +90,10 @@ const formatRiskContrib = (val: number | null): string => {
     return `${sign}${(val * 100).toFixed(1)}%`;
 };
 
+const getSinceRebalanceDisplayContribution = (row: PeriodicReturn): number | null => {
+    return row.sinceRebalanceContributionYtdBasis ?? row.sinceRebalanceContribution ?? null;
+};
+
 // ─── Contribution Bar (visual magnitude indicator) ───────────
 const ContribBar = ({ value, maxAbsValue }: { value: number | null; maxAbsValue: number }) => {
     if (value === null || value === undefined || maxAbsValue === 0) return null;
@@ -234,7 +238,7 @@ const columns: ColumnDef[] = [
     { key: 'lastPrice',        label: 'Price',      group: 'position', tooltip: 'Last fetched price' },
     { key: 'currentWeight',    label: 'Weight',     group: 'position', tooltip: 'Current drifted weight' },
     { key: 'ytdContribution',  label: 'YTD Total',  group: 'contribution', tooltip: 'Full YTD contribution, including prior books and exited/rebalanced exposure' },
-    { key: 'sinceRebalanceContribution', label: 'Since Reb.', group: 'contribution', tooltip: 'Contribution since the latest active rebalance, measured against that rebalance book' },
+    { key: 'sinceRebalanceContribution', label: 'Since Reb.', group: 'contribution', tooltip: 'Latest-rebalance contribution on the same YTD basis as YTD Total' },
     { key: 'r7dContribution',  label: '7D',         group: 'contribution', tooltip: '7-day portfolio contribution' },
     { key: 'r1dContribution',  label: '1D',         group: 'contribution', tooltip: '1-day portfolio contribution' },
     { key: 'r1d',              label: '1D',         group: 'returns', tooltip: '1-day return' },
@@ -398,7 +402,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             case 'ticker': return null;
             case 'ytd': return row.ytd ?? null;
             case 'ytdContribution': return row.ytdContribution ?? null;
-            case 'sinceRebalanceContribution': return row.sinceRebalanceContribution ?? null;
+            case 'sinceRebalanceContribution': return getSinceRebalanceDisplayContribution(row);
             case 'r7dContribution': return row.r7dContribution ?? null;
             case 'r1dContribution': return row.r1dContribution ?? null;
             case 'r1d': return row.r1d ?? null;
@@ -435,7 +439,8 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
         let max = 0;
         for (const r of periodicReturns) {
             if (r.ytdContribution !== null && r.ytdContribution !== undefined) max = Math.max(max, Math.abs(r.ytdContribution));
-            if (r.sinceRebalanceContribution !== null && r.sinceRebalanceContribution !== undefined) max = Math.max(max, Math.abs(r.sinceRebalanceContribution));
+            const sinceRebalance = getSinceRebalanceDisplayContribution(r);
+            if (sinceRebalance !== null) max = Math.max(max, Math.abs(sinceRebalance));
             if (r.r7dContribution !== null && r.r7dContribution !== undefined) max = Math.max(max, Math.abs(r.r7dContribution));
             if (r.r1dContribution !== null && r.r1dContribution !== undefined) max = Math.max(max, Math.abs(r.r1dContribution));
         }
@@ -447,7 +452,8 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
         let longCount = 0, shortCount = 0;
         for (const r of periodicReturns) {
             if (r.ytdContribution != null) ytdC += r.ytdContribution;
-            if (r.sinceRebalanceContribution != null) sinceRebalanceC += r.sinceRebalanceContribution;
+            const sinceRebalance = getSinceRebalanceDisplayContribution(r);
+            if (sinceRebalance != null) sinceRebalanceC += sinceRebalance;
             if (r.r7dContribution != null) r7dC += r.r7dContribution;
             if (r.r1dContribution != null) r1dC += r.r1dContribution;
             if ((r.status === undefined || r.status === 'Active') && r.direction === 'Long') longCount++;
@@ -562,9 +568,12 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             case 'r7dContribution':
             case 'r1dContribution': {
                 const val = col.key === 'ytdContribution' ? row.ytdContribution :
-                            col.key === 'sinceRebalanceContribution' ? row.sinceRebalanceContribution :
+                            col.key === 'sinceRebalanceContribution' ? getSinceRebalanceDisplayContribution(row) :
                             col.key === 'r7dContribution' ? row.r7dContribution : row.r1dContribution;
                 const normalizedVal = val ?? null;
+                const title = col.key === 'sinceRebalanceContribution' && row.sinceRebalanceStartDate
+                    ? `Since latest rebalance from ${row.sinceRebalanceStartDate}; same YTD basis as YTD Total`
+                    : col.tooltip;
                 return (
                     <td key={col.key} className={cn(
                         "px-4 py-3 text-center font-mono text-[13px] relative transition-all duration-200",
@@ -572,7 +581,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                         isHovered && "brightness-125",
                         groupBorder
                     )}
-                    title={col.key === 'sinceRebalanceContribution' && row.sinceRebalanceStartDate ? `Since latest rebalance from ${row.sinceRebalanceStartDate}` : col.tooltip}
+                    title={title}
                     >
                         <span className="relative z-[1]">{formatContribution(normalizedVal)}</span>
                         <ContribBar value={normalizedVal} maxAbsValue={maxAbsContrib} />

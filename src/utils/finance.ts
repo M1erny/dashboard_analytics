@@ -120,8 +120,8 @@ export interface PeriodicReturn {
     r1y: number | null;
     ytd: number;
     ytdContribution: number | null;  // weight * return * direction
-    sinceRebalanceContribution?: number | null;  // contribution since latest active rebalance, measured on rebalance book NAV
-    sinceRebalanceContributionYtdBasis?: number | null;
+    sinceRebalanceContribution?: number | null;  // since latest rebalance, measured on rebalance book NAV
+    sinceRebalanceContributionYtdBasis?: number | null;  // same period, scaled to YTD Total's January-equity basis
     sinceRebalanceStartDate?: string | null;
     r1dContribution: number | null;
     r7dContribution: number | null;
