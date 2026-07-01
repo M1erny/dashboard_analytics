@@ -648,6 +648,9 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
         all_position_config = risk.get_all_position_configs(portfolio)
         target_config = risk.load_portfolio_config(portfolio)
         ytd_position_contributions = metrics.get('YTD_Position_Contributions', {}) or {}
+        since_rebalance_contributions = metrics.get('Since_Rebalance_Position_Contributions', {}) or {}
+        since_rebalance_contributions_ytd_basis = metrics.get('Since_Rebalance_Position_Contributions_YTD_Basis', {}) or {}
+        latest_rebalance_start_date = metrics.get('Latest_Rebalance_Start_Date')
         ytd_current_weights = metrics.get('YTD_Current_Weights', {}) or {}
         rebalance_events = metrics.get('Rebalance_Events', []) or []
         response["rebalance"] = {
@@ -756,6 +759,9 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 ytd_contribution = ytd_position_contributions.get(ticker)
             else:
                 ytd_contribution = weight * ytd_ret * dir_multiplier if weight and ytd_ret is not None else None
+
+            since_rebalance_contribution = since_rebalance_contributions.get(ticker)
+            since_rebalance_contribution_ytd_basis = since_rebalance_contributions_ytd_basis.get(ticker)
             
             # Calculate current drifted weight
             if ticker in ytd_current_weights:
@@ -838,6 +844,9 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "r1m": to_float(r1m),
                 "r1y": row['1Y'] if (row is not None and '1Y' in row and not pd.isna(row['1Y'])) else None,
                 "ytdContribution": to_float(ytd_contribution),
+                "sinceRebalanceContribution": to_float(since_rebalance_contribution),
+                "sinceRebalanceContributionYtdBasis": to_float(since_rebalance_contribution_ytd_basis),
+                "sinceRebalanceStartDate": latest_rebalance_start_date,
                 "r1dContribution": to_float(r1d_contribution),
                 "r7dContribution": to_float(r7d_contribution),
                 "weight": to_float(weight) if weight else None,

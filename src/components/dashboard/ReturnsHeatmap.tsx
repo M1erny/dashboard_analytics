@@ -3,7 +3,7 @@ import { cn } from '../../lib/utils';
 import type { PeriodicReturn, RiskAttribution } from '../../utils/finance';
 import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap, Target, Trophy, TrendingDown, Activity, GripVertical, RotateCcw } from 'lucide-react';
 
-type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry' | 'volatilityContribution';
+type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'sinceRebalanceContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry' | 'volatilityContribution';
 type SortDir = 'asc' | 'desc';
 type ColumnGroup = 'position' | 'contribution' | 'returns' | 'risk';
 
@@ -233,7 +233,8 @@ const columns: ColumnDef[] = [
     { key: 'ticker',           label: 'Ticker',     group: 'position' },
     { key: 'lastPrice',        label: 'Price',      group: 'position', tooltip: 'Last fetched price' },
     { key: 'currentWeight',    label: 'Weight',     group: 'position', tooltip: 'Current drifted weight' },
-    { key: 'ytdContribution',  label: 'YTD',        group: 'contribution', tooltip: 'YTD portfolio contribution' },
+    { key: 'ytdContribution',  label: 'YTD Total',  group: 'contribution', tooltip: 'Full YTD contribution, including prior books and exited/rebalanced exposure' },
+    { key: 'sinceRebalanceContribution', label: 'Since Reb.', group: 'contribution', tooltip: 'Contribution since the latest active rebalance, measured against that rebalance book' },
     { key: 'r7dContribution',  label: '7D',         group: 'contribution', tooltip: '7-day portfolio contribution' },
     { key: 'r1dContribution',  label: '1D',         group: 'contribution', tooltip: '1-day portfolio contribution' },
     { key: 'r1d',              label: '1D',         group: 'returns', tooltip: '1-day return' },
@@ -247,7 +248,7 @@ const columns: ColumnDef[] = [
 
 const columnByKey = new Map<SortKey, ColumnDef>(columns.map(col => [col.key, col]));
 const defaultColumnOrder = columns.map(col => col.key);
-const columnOrderStorageKey = 'returnsHeatmap.columnOrder.v1';
+const columnOrderStorageKey = 'returnsHeatmap.columnOrder.v2';
 
 const normalizeColumnOrder = (order: unknown): SortKey[] => {
     const validKeys = new Set(defaultColumnOrder);
@@ -397,6 +398,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             case 'ticker': return null;
             case 'ytd': return row.ytd ?? null;
             case 'ytdContribution': return row.ytdContribution ?? null;
+            case 'sinceRebalanceContribution': return row.sinceRebalanceContribution ?? null;
             case 'r7dContribution': return row.r7dContribution ?? null;
             case 'r1dContribution': return row.r1dContribution ?? null;
             case 'r1d': return row.r1d ?? null;
@@ -433,6 +435,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
         let max = 0;
         for (const r of periodicReturns) {
             if (r.ytdContribution !== null && r.ytdContribution !== undefined) max = Math.max(max, Math.abs(r.ytdContribution));
+            if (r.sinceRebalanceContribution !== null && r.sinceRebalanceContribution !== undefined) max = Math.max(max, Math.abs(r.sinceRebalanceContribution));
             if (r.r7dContribution !== null && r.r7dContribution !== undefined) max = Math.max(max, Math.abs(r.r7dContribution));
             if (r.r1dContribution !== null && r.r1dContribution !== undefined) max = Math.max(max, Math.abs(r.r1dContribution));
         }
@@ -440,16 +443,17 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
     }, [periodicReturns]);
 
     const summary = useMemo(() => {
-        let ytdC = 0, r7dC = 0, r1dC = 0;
+        let ytdC = 0, sinceRebalanceC = 0, r7dC = 0, r1dC = 0;
         let longCount = 0, shortCount = 0;
         for (const r of periodicReturns) {
             if (r.ytdContribution != null) ytdC += r.ytdContribution;
+            if (r.sinceRebalanceContribution != null) sinceRebalanceC += r.sinceRebalanceContribution;
             if (r.r7dContribution != null) r7dC += r.r7dContribution;
             if (r.r1dContribution != null) r1dC += r.r1dContribution;
             if ((r.status === undefined || r.status === 'Active') && r.direction === 'Long') longCount++;
             if ((r.status === undefined || r.status === 'Active') && r.direction === 'Short') shortCount++;
         }
-        return { ytdC, r7dC, r1dC, longCount, shortCount, total: longCount + shortCount };
+        return { ytdC, sinceRebalanceC, r7dC, r1dC, longCount, shortCount, total: longCount + shortCount };
     }, [periodicReturns]);
 
     // Book Analytics — hedge fund standard metrics
@@ -554,19 +558,24 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                     </td>
                 );
             case 'ytdContribution':
+            case 'sinceRebalanceContribution':
             case 'r7dContribution':
             case 'r1dContribution': {
                 const val = col.key === 'ytdContribution' ? row.ytdContribution :
+                            col.key === 'sinceRebalanceContribution' ? row.sinceRebalanceContribution :
                             col.key === 'r7dContribution' ? row.r7dContribution : row.r1dContribution;
+                const normalizedVal = val ?? null;
                 return (
                     <td key={col.key} className={cn(
                         "px-4 py-3 text-center font-mono text-[13px] relative transition-all duration-200",
-                        getContribColor(val),
+                        getContribColor(normalizedVal),
                         isHovered && "brightness-125",
                         groupBorder
-                    )}>
-                        <span className="relative z-[1]">{formatContribution(val)}</span>
-                        <ContribBar value={val} maxAbsValue={maxAbsContrib} />
+                    )}
+                    title={col.key === 'sinceRebalanceContribution' && row.sinceRebalanceStartDate ? `Since latest rebalance from ${row.sinceRebalanceStartDate}` : col.tooltip}
+                    >
+                        <span className="relative z-[1]">{formatContribution(normalizedVal)}</span>
+                        <ContribBar value={normalizedVal} maxAbsValue={maxAbsContrib} />
                     </td>
                 );
             }
@@ -673,15 +682,19 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             </div>
 
             {/* ── Summary Strip ─────────────────────────────── */}
-            <div className="grid grid-cols-3 divide-x divide-white/[0.06] border-b border-white/[0.06]">
+            <div className="grid grid-cols-2 lg:grid-cols-4 border-b border-white/[0.06]">
                 {[
-                    { label: `${periodLabel} Impact`, value: summary.ytdC, icon: <TrendingUp className="h-4 w-4" />, gradient: 'from-blue-500/10 to-transparent' },
+                    { label: `${periodLabel} Total`, value: summary.ytdC, icon: <TrendingUp className="h-4 w-4" />, gradient: 'from-blue-500/10 to-transparent' },
+                    { label: 'Since Rebal.', value: summary.sinceRebalanceC, icon: <Target className="h-4 w-4" />, gradient: 'from-sky-500/10 to-transparent' },
                     { label: '7D Impact', value: summary.r7dC, icon: <Zap className="h-4 w-4" />, gradient: 'from-violet-500/10 to-transparent' },
                     { label: '1D Impact', value: summary.r1dC, icon: <Flame className="h-4 w-4" />, gradient: 'from-orange-500/10 to-transparent' },
-                ].map(item => (
+                ].map((item, index) => (
                     <div key={item.label} className={cn(
                         "relative flex items-center justify-center gap-3 px-5 py-3.5 overflow-hidden",
-                        "transition-colors duration-300 hover:bg-white/[0.02]"
+                        "transition-colors duration-300 hover:bg-white/[0.02]",
+                        index % 2 === 1 && "border-l border-white/[0.06]",
+                        index < 2 && "border-b border-white/[0.06] lg:border-b-0",
+                        index > 0 && "lg:border-l lg:border-white/[0.06]"
                     )}>
                         {/* Subtle background gradient */}
                         <div className={cn("absolute inset-0 bg-gradient-to-r opacity-50", item.gradient)} />

@@ -221,6 +221,16 @@ class RebalanceAccountingTests(unittest.TestCase):
             expected_first_segment + expected_second_segment,
             places=8,
         )
+        self.assertAlmostEqual(
+            result["latest_segment_position_contributions"]["KEEP"],
+            0.20,
+            places=8,
+        )
+        self.assertAlmostEqual(
+            result["latest_segment_position_contributions_ytd_basis"]["KEEP"],
+            expected_second_segment,
+            places=8,
+        )
         self.assertAlmostEqual(result["ytd_return"], 0.32, places=8)
         self.assertEqual(list(result["position_contributions"].keys()), ["KEEP"])
 

@@ -711,6 +711,9 @@ def calculate_segmented_ytd(
     all_segment_tickers = sorted({ticker for snap in active_snapshots for ticker in snap.get("positions", {}).keys()})
     contribution_history = pd.DataFrame(np.nan, index=price_index, columns=all_segment_tickers)
     cumulative_position_contributions = {}
+    latest_segment_position_contributions = {}
+    latest_segment_position_contributions_ytd_basis = {}
+    latest_segment_start_date = None
 
     for idx, snap in enumerate(active_snapshots):
         start_idx = snap["start_idx"]
@@ -811,6 +814,7 @@ def calculate_segmented_ytd(
         if idx == len(active_snapshots) - 1:
             current_weights = {}
             final_curve = float(segment_gross_curve.iloc[-1])
+            latest_segment_start_date = segment_index[0].strftime('%Y-%m-%d')
             for ticker, info in positions.items():
                 weight = float(info.get('weight', 0) or 0)
                 if ticker in rel_prices.columns and final_curve != 0:
@@ -818,6 +822,9 @@ def calculate_segmented_ytd(
                     current_weights[ticker] = float(weight * rel_final / final_curve) if not pd.isna(rel_final) else weight
                 else:
                     current_weights[ticker] = weight
+            for ticker, position_curve in segment_position_curves.items():
+                latest_segment_position_contributions[ticker] = float(position_curve.iloc[-1])
+                latest_segment_position_contributions_ytd_basis[ticker] = float(gross_start_value * position_curve.iloc[-1])
 
         gross_start_value = float(segment_gross_values.iloc[-1])
         net_start_value = float(segment_net_values.iloc[-1])
@@ -844,6 +851,9 @@ def calculate_segmented_ytd(
         "ytd_shorts_contrib": ytd_shorts_contrib,
         "position_contributions": position_contributions,
         "position_contribution_history": contribution_history,
+        "latest_segment_position_contributions": latest_segment_position_contributions,
+        "latest_segment_position_contributions_ytd_basis": latest_segment_position_contributions_ytd_basis,
+        "latest_segment_start_date": latest_segment_start_date,
         "current_weights": current_weights,
         "rebalance_events": rebalance_events,
         "long_daily_ret": long_daily_ret.reindex(portfolio_val_series_net.index).fillna(0.0),
@@ -1172,6 +1182,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             ytd_shorts_contrib = segmented_ytd["ytd_shorts_contrib"]
             ytd_position_contributions = segmented_ytd["position_contributions"]
             ytd_position_contribution_history = segmented_ytd["position_contribution_history"]
+            since_rebalance_position_contributions = segmented_ytd["latest_segment_position_contributions"]
+            since_rebalance_position_contributions_ytd_basis = segmented_ytd["latest_segment_position_contributions_ytd_basis"]
+            latest_rebalance_start_date = segmented_ytd["latest_segment_start_date"]
             ytd_current_weights = segmented_ytd["current_weights"]
             rebalance_events = segmented_ytd["rebalance_events"]
         else:
@@ -1179,6 +1192,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             portfolio_val_series = pd.Series(0.0, index=ytd_rel_prices.index)
             ytd_position_contributions = {}
             ytd_position_contribution_history = pd.DataFrame(np.nan, index=ytd_rel_prices.index, columns=active_tickers)
+            since_rebalance_position_contributions = {}
+            since_rebalance_position_contributions_ytd_basis = {}
+            latest_rebalance_start_date = ytd_rel_prices.index[0].strftime('%Y-%m-%d') if len(ytd_rel_prices.index) else None
             ytd_current_weights = {}
             rebalance_events = []
 
@@ -1208,6 +1224,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
                     final_contrib = position_contrib.iloc[-1]
                     if not pd.isna(final_contrib):
                         ytd_position_contributions[ticker] = float(final_contrib)
+                        since_rebalance_position_contributions[ticker] = float(final_contrib)
+                        since_rebalance_position_contributions_ytd_basis[ticker] = float(final_contrib)
                         if direction == 1:
                             ytd_longs_contrib += final_contrib
                         else:
@@ -1472,6 +1490,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_trading_days = 0
         ytd_position_contributions = {}
         ytd_position_contribution_history = pd.DataFrame()
+        since_rebalance_position_contributions = {}
+        since_rebalance_position_contributions_ytd_basis = {}
+        latest_rebalance_start_date = None
         ytd_historical_diagnostics = []
         ytd_current_weights = {}
         rebalance_events = []
@@ -1723,6 +1744,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Beta_History': ytd_beta_history if 'ytd_beta_history' in locals() else None,
         'YTD_Position_Contributions': ytd_position_contributions if 'ytd_position_contributions' in locals() else {},
         'YTD_Position_Contribution_History': ytd_position_contribution_history if 'ytd_position_contribution_history' in locals() else pd.DataFrame(),
+        'Since_Rebalance_Position_Contributions': since_rebalance_position_contributions if 'since_rebalance_position_contributions' in locals() else {},
+        'Since_Rebalance_Position_Contributions_YTD_Basis': since_rebalance_position_contributions_ytd_basis if 'since_rebalance_position_contributions_ytd_basis' in locals() else {},
+        'Latest_Rebalance_Start_Date': latest_rebalance_start_date if 'latest_rebalance_start_date' in locals() else None,
         'YTD_Historical_Diagnostics': ytd_historical_diagnostics if 'ytd_historical_diagnostics' in locals() else [],
         'YTD_Current_Weights': ytd_current_weights if 'ytd_current_weights' in locals() else {},
         'Rebalance_Events': rebalance_events if 'rebalance_events' in locals() else [],
