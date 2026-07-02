@@ -9,6 +9,7 @@ DEFAULT_GENERATION_MODEL = "gemini-2.5-flash-lite"
 DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
 DEFAULT_THINKING_BUDGET = 0
 DEFAULT_REQUEST_TIMEOUT = 45.0
+DEFAULT_EMBEDDING_TIMEOUT = 15.0
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 
@@ -73,6 +74,7 @@ class GeminiClient:
         )
         self.thinking_budget = _env_int("BRAIN_LLM_THINKING_BUDGET", DEFAULT_THINKING_BUDGET)
         self.request_timeout = _env_float("BRAIN_LLM_TIMEOUT_SECONDS", DEFAULT_REQUEST_TIMEOUT)
+        self.embedding_timeout = _env_float("BRAIN_EMBEDDING_TIMEOUT_SECONDS", DEFAULT_EMBEDDING_TIMEOUT)
 
     @property
     def configured(self) -> bool:
@@ -86,6 +88,7 @@ class GeminiClient:
             "embeddingModel": self.embedding_model,
             "thinkingBudget": self.thinking_budget,
             "requestTimeoutSeconds": self.request_timeout,
+            "embeddingTimeoutSeconds": self.embedding_timeout,
             "apiKeyEnv": "GOOGLE_AI_API_KEY or GEMINI_API_KEY",
         }
 
@@ -107,8 +110,11 @@ class GeminiClient:
             "taskType": task_type,
         }
 
-        with httpx.Client(timeout=60) as client:
-            response = client.post(url, params={"key": api_key}, json=payload)
+        with httpx.Client(timeout=self.embedding_timeout) as client:
+            try:
+                response = client.post(url, params={"key": api_key}, json=payload)
+            except httpx.TimeoutException as exc:
+                raise RuntimeError(f"Gemini embedding timed out after {self.embedding_timeout:.0f}s") from exc
             response.raise_for_status()
             data = response.json()
 

@@ -152,6 +152,19 @@ const memoryTypeValues: MemoryType[] = ['liked', 'passed', 'trend', 'framework',
 
 const brainApiUrl = (path: string) => `${API_BASE}${path}`;
 
+const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 12000) => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        window.clearTimeout(timeout);
+    }
+};
+
+const isAbortError = (error: unknown) =>
+    error instanceof DOMException && error.name === 'AbortError';
+
 const memoryTypes: {
     type: MemoryType;
     label: string;
@@ -452,23 +465,55 @@ export const InvestmentBrain: React.FC = () => {
 
         setIsSearching(true);
         setSearchMessage('Searching Supabase embeddings...');
+        setSearchResults([]);
         try {
             const params = new URLSearchParams({ q: cleanedQuery, limit: '12' });
-            const semanticResponse = await fetch(brainApiUrl(`/api/brain/search/semantic?${params.toString()}`));
-            if (semanticResponse.ok) {
-                const semanticPayload = await semanticResponse.json() as { results?: SearchResult[]; timings?: { totalMs?: number } };
-                const semanticResults = Array.isArray(semanticPayload.results) ? semanticPayload.results : [];
-                if (semanticResults.length > 0) {
-                    const totalSeconds = typeof semanticPayload.timings?.totalMs === 'number'
-                        ? ` in ${(semanticPayload.timings.totalMs / 1000).toFixed(1)}s`
-                        : '';
-                    setSearchResults(semanticResults);
-                    setSearchMessage(`Top ${semanticResults.length} semantic match${semanticResults.length === 1 ? '' : 'es'}${totalSeconds}`);
-                    return;
+            let semanticTimedOut = false;
+            let semanticUnavailable = false;
+
+            try {
+                const semanticResponse = await fetchWithTimeout(
+                    brainApiUrl(`/api/brain/search/semantic?${params.toString()}`),
+                    {},
+                    14000
+                );
+                if (semanticResponse.ok) {
+                    const semanticPayload = await semanticResponse.json() as { results?: SearchResult[]; timings?: { totalMs?: number } };
+                    const semanticResults = Array.isArray(semanticPayload.results) ? semanticPayload.results : [];
+                    if (semanticResults.length > 0) {
+                        const totalSeconds = typeof semanticPayload.timings?.totalMs === 'number'
+                            ? ` in ${(semanticPayload.timings.totalMs / 1000).toFixed(1)}s`
+                            : '';
+                        setSearchResults(semanticResults);
+                        setSearchMessage(`Top ${semanticResults.length} semantic match${semanticResults.length === 1 ? '' : 'es'}${totalSeconds}`);
+                        return;
+                    }
+                } else {
+                    semanticUnavailable = true;
                 }
+            } catch (error) {
+                semanticTimedOut = isAbortError(error);
+                semanticUnavailable = !semanticTimedOut;
             }
 
-            const keywordResponse = await fetch(brainApiUrl(`/api/brain/search?${params.toString()}`));
+            setSearchMessage(semanticTimedOut
+                ? 'Semantic search timed out; checking keyword index...'
+                : 'No vector hits yet; checking keyword index...');
+
+            let keywordResponse: Response;
+            try {
+                keywordResponse = await fetchWithTimeout(
+                    brainApiUrl(`/api/brain/search?${params.toString()}`),
+                    {},
+                    12000
+                );
+            } catch (error) {
+                if (isAbortError(error)) {
+                    throw new Error('Brain backend did not respond. Render may still be redeploying or Supabase may be slow.');
+                }
+                throw error;
+            }
+
             if (!keywordResponse.ok) {
                 const payload = await keywordResponse.json().catch(() => null) as { detail?: string } | null;
                 throw new Error(payload?.detail ?? 'Search failed');
@@ -479,10 +524,15 @@ export const InvestmentBrain: React.FC = () => {
             const totalSeconds = typeof payload.timings?.totalMs === 'number'
                 ? ` in ${(payload.timings.totalMs / 1000).toFixed(1)}s`
                 : '';
+            const prefix = semanticTimedOut
+                ? 'Semantic timed out; '
+                : semanticUnavailable
+                    ? 'Semantic unavailable; '
+                    : 'No vector hits yet; ';
             setSearchResults(results);
             setSearchMessage(results.length
-                ? `No semantic chunks yet; top ${results.length} keyword match${results.length === 1 ? '' : 'es'}${totalSeconds}`
-                : `No semantic or keyword matches yet${totalSeconds}`);
+                ? `${prefix}top ${results.length} keyword match${results.length === 1 ? '' : 'es'}${totalSeconds}`
+                : `${prefix}no keyword matches${totalSeconds}. Sync Drive, then Embed Missing if this library should contain it.`);
         } catch (error) {
             setSearchResults([]);
             setSearchMessage(error instanceof Error ? error.message : 'Search is unavailable');
@@ -639,16 +689,20 @@ export const InvestmentBrain: React.FC = () => {
         setAnalysisMessage('Retrieving your brain context, then asking Gemini...');
         setAnalysisAnswer('');
         try {
-            const response = await fetch(brainApiUrl('/api/brain/analyze-company'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    ticker,
-                    question: analysisQuestion.trim(),
-                    limit: 5,
-                    useSemantic: true,
-                }),
-            });
+            const response = await fetchWithTimeout(
+                brainApiUrl('/api/brain/analyze-company'),
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        ticker,
+                        question: analysisQuestion.trim(),
+                        limit: 5,
+                        useSemantic: true,
+                    }),
+                },
+                65000
+            );
             if (!response.ok) {
                 const payload = await response.json().catch(() => null) as { detail?: string } | null;
                 throw new Error(payload?.detail ?? 'Analysis failed');
@@ -664,7 +718,9 @@ export const InvestmentBrain: React.FC = () => {
                 : '';
             setAnalysisMessage(`${payload.model} with ${payload.embeddingModel}${totalSeconds}${generationSeconds}`);
         } catch (error) {
-            setAnalysisMessage(error instanceof Error ? error.message : 'Analysis failed');
+            setAnalysisMessage(isAbortError(error)
+                ? 'Ask Brain timed out. Try again after Render finishes waking up, or narrow the question.'
+                : error instanceof Error ? error.message : 'Analysis failed');
         } finally {
             setIsAnalyzing(false);
         }

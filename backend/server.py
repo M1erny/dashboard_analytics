@@ -2,10 +2,12 @@ import sys
 import os
 import html
 import re
+import asyncio
 
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
 from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -71,6 +73,34 @@ except Exception as e:
     brain_store_error = str(e)
     brain_store = None
 gemini_client = GeminiClient() if GeminiClient else None
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+BRAIN_SEARCH_TIMEOUT_SECONDS = _env_float("BRAIN_SEARCH_TIMEOUT_SECONDS", 18.0)
+BRAIN_ANALYSIS_TIMEOUT_SECONDS = _env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 60.0)
+BRAIN_INDEX_TIMEOUT_SECONDS = _env_float("BRAIN_INDEX_TIMEOUT_SECONDS", 240.0)
+
+
+async def _run_brain_step(label: str, func, *args, timeout: float | None = None, **kwargs):
+    try:
+        return await asyncio.wait_for(
+            run_in_threadpool(func, *args, **kwargs),
+            timeout=timeout or BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504,
+            detail=f"{label} timed out. Try again in a moment, or check Render/Supabase if this repeats.",
+        )
 
 
 def _local_indexing_enabled() -> bool:
@@ -351,6 +381,7 @@ async def get_status():
 @app.get("/api/brain/status")
 async def get_brain_status():
     store = _brain_or_503()
+    counts = await _run_brain_step("Brain counts", store.counts)
     capabilities = [
         "manual_memories",
         "source_storage",
@@ -375,7 +406,7 @@ async def get_brain_status():
         "embeddingProvider": "google_ai_studio" if gemini_client and gemini_client.configured else "not_configured",
         "llm": gemini_client.status() if gemini_client else {"configured": False},
         "capabilities": capabilities,
-        "counts": store.counts(),
+        "counts": counts,
     }
 
 
@@ -410,7 +441,7 @@ def _drive_or_503() -> GoogleDriveClient:
 async def get_drive_indexer_status():
     client = _drive_or_503()
     folder_id = parse_drive_folder_id() if parse_drive_folder_id else None
-    return client.status(folder_id)
+    return await _run_brain_step("Drive index status", client.status, folder_id)
 
 
 @app.get("/api/brain/drive/auth-url")
@@ -487,13 +518,16 @@ async def index_local_brain_library(payload: BrainLocalIndexRequest):
     if not index_local_library:
         raise HTTPException(status_code=503, detail="Local brain indexer is not available")
     try:
-        return index_local_library(
+        return await _run_brain_step(
+            "Local library indexing",
+            index_local_library,
             store,
             root_path=payload.rootPath,
             extensions=payload.extensions,
             limit_files=payload.limitFiles,
             max_bytes=payload.maxBytes,
             force=payload.force,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -505,12 +539,15 @@ async def index_google_drive_brain_folder(payload: BrainDriveIndexRequest):
     if not index_drive_folder:
         raise HTTPException(status_code=503, detail="Google Drive indexer is not available")
     try:
-        return index_drive_folder(
+        return await _run_brain_step(
+            "Google Drive indexing",
+            index_drive_folder,
             store,
             folder_id=payload.folderId,
             limit_files=payload.limitFiles,
             max_bytes=payload.maxBytes,
             force=payload.force,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -526,7 +563,14 @@ async def list_brain_memories(
 ):
     store = _brain_or_503()
     try:
-        return {"memories": store.list_memories(query=q, memory_type=memory_type, limit=limit)}
+        memories = await _run_brain_step(
+            "Memory list",
+            store.list_memories,
+            query=q,
+            memory_type=memory_type,
+            limit=limit,
+        )
+        return {"memories": memories}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -582,7 +626,14 @@ async def list_brain_sources(
     limit: int = 100,
 ):
     store = _brain_or_503()
-    return {"sources": store.list_sources(query=q, kind=kind, limit=limit)}
+    sources = await _run_brain_step(
+        "Source list",
+        store.list_sources,
+        query=q,
+        kind=kind,
+        limit=limit,
+    )
+    return {"sources": sources}
 
 
 @app.delete("/api/brain/sources/{source_id}")
@@ -665,24 +716,44 @@ async def list_brain_chunks(
     limit: int = 100,
 ):
     store = _brain_or_503()
-    return {"chunks": store.list_chunks(source_id=source_id, query=q, limit=limit)}
+    chunks = await _run_brain_step(
+        "Chunk list",
+        store.list_chunks,
+        source_id=source_id,
+        query=q,
+        limit=limit,
+    )
+    return {"chunks": chunks}
 
 
 @app.get("/api/brain/sources/{source_id}/chunks")
 async def list_brain_source_chunks(source_id: int, limit: int = 100):
     store = _brain_or_503()
-    return {"chunks": store.list_chunks(source_id=source_id, limit=limit)}
+    chunks = await _run_brain_step(
+        "Source chunk list",
+        store.list_chunks,
+        source_id=source_id,
+        limit=limit,
+    )
+    return {"chunks": chunks}
 
 
 @app.get("/api/brain/search")
 async def search_brain(q: str, limit: int = 50, entity_type: str | None = None):
     store = _brain_or_503()
     started_at = time.perf_counter()
-    results = store.search(query=q, limit=limit, entity_type=entity_type)
+    results = await _run_brain_step(
+        "Keyword brain search",
+        store.search,
+        query=q,
+        limit=limit,
+        entity_type=entity_type,
+    )
+    counts = await _run_brain_step("Brain counts", store.counts)
     return {
         "query": q,
         "results": results,
-        "counts": store.counts(),
+        "counts": counts,
         "timings": {
             "totalMs": round((time.perf_counter() - started_at) * 1000, 1),
         },
@@ -693,14 +764,27 @@ async def search_brain(q: str, limit: int = 50, entity_type: str | None = None):
 async def backfill_brain_embeddings(payload: BrainEmbeddingBackfillRequest):
     store = _brain_or_503()
     client = _gemini_or_503()
-    chunks = store.list_chunks_for_embedding(limit=payload.limit, force=payload.force)
+    chunks = await _run_brain_step(
+        "Embedding chunk list",
+        store.list_chunks_for_embedding,
+        limit=payload.limit,
+        force=payload.force,
+    )
     indexed = []
     errors = []
 
     for chunk in chunks:
         try:
-            embedding = client.embed_text(chunk["body"], task_type="RETRIEVAL_DOCUMENT")
-            store.update_chunk_embedding(
+            embedding = await _run_brain_step(
+                "Gemini embedding",
+                client.embed_text,
+                chunk["body"],
+                task_type="RETRIEVAL_DOCUMENT",
+                timeout=float(getattr(client, "embedding_timeout", 15.0)) + 5.0,
+            )
+            await _run_brain_step(
+                "Store embedding",
+                store.update_chunk_embedding,
                 int(chunk["id"]),
                 embedding_model=client.embedding_model,
                 embedding=embedding,
@@ -716,6 +800,7 @@ async def backfill_brain_embeddings(payload: BrainEmbeddingBackfillRequest):
                 "title": chunk.get("title"),
                 "error": str(e),
             })
+    counts = await _run_brain_step("Brain counts", store.counts)
 
     return {
         "model": client.embedding_model,
@@ -723,7 +808,7 @@ async def backfill_brain_embeddings(payload: BrainEmbeddingBackfillRequest):
         "embedded": len(indexed),
         "errors": errors,
         "items": indexed,
-        "counts": store.counts(),
+        "counts": counts,
     }
 
 
@@ -732,11 +817,22 @@ async def semantic_brain_search(q: str, limit: int = 10):
     store = _brain_or_503()
     client = _gemini_or_503()
     started_at = time.perf_counter()
-    query_embedding = client.embed_text(q, task_type="RETRIEVAL_QUERY")
+    query_embedding = await _run_brain_step(
+        "Semantic embedding",
+        client.embed_text,
+        q,
+        task_type="RETRIEVAL_QUERY",
+    )
     embedding_ms = round((time.perf_counter() - started_at) * 1000, 1)
     search_started_at = time.perf_counter()
-    chunks = store.semantic_search_chunks(query_embedding, limit=limit) or []
+    chunks = await _run_brain_step(
+        "Supabase vector search",
+        store.semantic_search_chunks,
+        query_embedding,
+        limit=limit,
+    ) or []
     search_ms = round((time.perf_counter() - search_started_at) * 1000, 1)
+    counts = await _run_brain_step("Brain counts", store.counts)
     return {
         "query": q,
         "model": client.embedding_model,
@@ -753,7 +849,7 @@ async def semantic_brain_search(q: str, limit: int = 10):
             }
             for chunk in chunks
         ],
-        "counts": store.counts(),
+        "counts": counts,
         "timings": {
             "embeddingMs": embedding_ms,
             "searchMs": search_ms,
@@ -899,24 +995,54 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     retrieval_query = f"{ticker} {question}"
 
     step_started = time.perf_counter()
-    keyword_results = store.search(retrieval_query, limit=payload.limit)
+    keyword_results = await _run_brain_step(
+        "Keyword brain search",
+        store.search,
+        retrieval_query,
+        limit=payload.limit,
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
     timings["keywordSearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
     semantic_results = []
     if payload.useSemantic:
         step_started = time.perf_counter()
         try:
-            query_embedding = client.embed_text(retrieval_query, task_type="RETRIEVAL_QUERY")
-            semantic_results = store.semantic_search_chunks(query_embedding, limit=payload.limit) or []
+            query_embedding = await _run_brain_step(
+                "Semantic embedding",
+                client.embed_text,
+                retrieval_query,
+                task_type="RETRIEVAL_QUERY",
+                timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+            )
+            semantic_results = await _run_brain_step(
+                "Supabase vector search",
+                store.semantic_search_chunks,
+                query_embedding,
+                limit=payload.limit,
+                timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+            ) or []
         except Exception as e:
             timings["semanticError"] = str(e)[:240]
             semantic_results = []
         timings["semanticSearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
     step_started = time.perf_counter()
-    memory_results = store.list_memories(query=ticker, limit=payload.limit)
+    memory_results = await _run_brain_step(
+        "Memory search",
+        store.list_memories,
+        query=ticker,
+        limit=payload.limit,
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
     if not memory_results:
-        memory_results = store.list_memories(query=question, limit=min(payload.limit, 6))
+        memory_results = await _run_brain_step(
+            "Memory search",
+            store.list_memories,
+            query=question,
+            limit=min(payload.limit, 6),
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
     timings["memorySearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
     context_items = []
@@ -931,7 +1057,13 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
             break
 
     step_started = time.perf_counter()
-    deep_sources = _expand_semantic_hits_into_sources(store, semantic_results or context_items)
+    deep_sources = await _run_brain_step(
+        "Deep source expansion",
+        _expand_semantic_hits_into_sources,
+        store,
+        semantic_results or context_items,
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
     timings["deepSourceExpansionMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
     prompt = f"""
@@ -965,7 +1097,16 @@ Be concise but not shallow: 5 short sections, maximum 3 bullets per section. If 
 
     step_started = time.perf_counter()
     try:
-        answer = client.generate_text(prompt, temperature=0.2, max_output_tokens=1200)
+        answer = await _run_brain_step(
+            "Gemini analysis",
+            client.generate_text,
+            prompt,
+            temperature=0.2,
+            max_output_tokens=1200,
+            timeout=BRAIN_ANALYSIS_TIMEOUT_SECONDS,
+        )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gemini analysis failed: {str(e)[:300]}")
 

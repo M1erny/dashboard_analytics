@@ -2,7 +2,6 @@ import json
 import math
 import os
 import re
-import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Any
@@ -57,6 +56,14 @@ CHUNK_RETURNING_COLUMNS = """
 """
 
 
+class _NoopLock:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
 class PostgresBrainStore:
     """Postgres/pgvector persistence for the Investment Brain."""
 
@@ -76,7 +83,10 @@ class PostgresBrainStore:
 
         self.database_label = self._safe_database_label(self.database_url)
         self.db_path = self.database_label
-        self._lock = threading.RLock()
+        self.statement_timeout_ms = self._env_int("BRAIN_POSTGRES_STATEMENT_TIMEOUT_MS", 12000)
+        self.lock_timeout_ms = self._env_int("BRAIN_POSTGRES_LOCK_TIMEOUT_MS", 4000)
+        self.idle_transaction_timeout_ms = self._env_int("BRAIN_POSTGRES_IDLE_TIMEOUT_MS", 30000)
+        self._lock = _NoopLock()
         self._init_db()
 
     @staticmethod
@@ -105,6 +115,16 @@ class PostgresBrainStore:
         name = (parsed.path or "/postgres").lstrip("/") or "postgres"
         return f"postgresql://{host}{port}/{name}"
 
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        raw = os.environ.get(name)
+        if raw is None or raw.strip() == "":
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            return default
+
     @contextmanager
     def _connect(self):
         conn = psycopg.connect(
@@ -112,6 +132,11 @@ class PostgresBrainStore:
             row_factory=dict_row,
             prepare_threshold=None,
             connect_timeout=10,
+            options=(
+                f"-c statement_timeout={self.statement_timeout_ms} "
+                f"-c lock_timeout={self.lock_timeout_ms} "
+                f"-c idle_in_transaction_session_timeout={self.idle_transaction_timeout_ms}"
+            ),
         )
         try:
             yield conn
