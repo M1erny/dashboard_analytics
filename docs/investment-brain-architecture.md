@@ -202,6 +202,10 @@ Current capability:
 - idempotent local-file indexing using file hashes
 - local extraction for txt, md, csv, json, html, docx, and pdf when `pypdf` is installed
 - searchable `chunks` table prepared for future embeddings
+- Gemini API client through `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`
+- embedding backfill through `POST /api/brain/embeddings/backfill`
+- SQLite-based cosine semantic search for embedded chunks
+- company analysis through `POST /api/brain/analyze-company`
 - SQLite FTS keyword search
 - local browser fallback
 - Vercel frontend routing
@@ -210,7 +214,7 @@ Current limitations:
 
 - no browser-side PDF upload yet
 - no always-on folder watcher yet; scanning is manual
-- no embeddings yet
+- embeddings require a Google AI Studio API key and an explicit backfill run
 - no Postgres/pgvector yet
 - SQLite on Render is not enough for permanent production memory unless backed by persistent disk
 - the cloud backend cannot read files from your personal computer unless you run the indexer/backend locally or point it at cloud storage
@@ -221,6 +225,10 @@ Current API spine:
 GET    /api/brain/status
 GET    /api/brain/index/local/status
 POST   /api/brain/index/local
+GET    /api/brain/llm/status
+POST   /api/brain/embeddings/backfill
+GET    /api/brain/search/semantic
+POST   /api/brain/analyze-company
 POST   /api/brain/memories
 GET    /api/brain/memories
 DELETE /api/brain/memories/:id
@@ -242,7 +250,7 @@ GET    /api/brain/search
 4. Add an always-on local Brain Indexer that watches the Google Drive folder.
 5. Improve PDF page references and add OCR for scanned documents.
 6. Add a Drive/remote-file identity layer so re-indexing is portable across machines.
-7. Generate summaries and embeddings through an AI API.
+7. Add source-level summaries and memory extraction through the Gemini API.
 8. Add source citation views in the dashboard.
 9. Add why-I-liked / why-I-passed / why-I-sold company memory.
 10. Add backups and export tools.

@@ -13,7 +13,12 @@ Current no-API brain setup:
 - Manual memories, text ingestion, local-file indexing, chunk storage, and keyword search are available.
 - Drop `.txt`, `.md`, `.csv`, `.json`, `.html`, `.docx`, or `.pdf` files into `backend/brain_library`, then open `/dashboard/brain` and run the local folder scan.
 - To point the scanner at a synced Google Drive folder later, run the backend with `BRAIN_LIBRARY_DIR="C:\path\to\Google Drive\Investment Brain"`.
-- AI summaries, embeddings, vector search, and company-analysis answers are intentionally not connected until an AI API key is configured.
+- Gemini support is wired through environment variables. Do not commit API keys.
+  - `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`: Google AI Studio API key.
+  - `BRAIN_LLM_MODEL`: optional, defaults to `gemini-2.5-flash`.
+  - `BRAIN_EMBEDDING_MODEL`: optional, defaults to `gemini-embedding-001`.
+  - Local option: copy `backend/.env.example` to `backend/.env`; `backend/.env` is ignored by git.
+  - Use `/dashboard/brain` to scan files, embed missing chunks, and run company analysis.
 
 ## Key Features
 

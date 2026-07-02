@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 import sqlite3
@@ -624,6 +625,84 @@ class BrainStore:
                 params.append(limit)
 
             return [self._chunk_from_row(row) for row in conn.execute(sql, params).fetchall()]
+
+    def list_chunks_for_embedding(
+        self,
+        *,
+        limit: int = 50,
+        force: bool = False,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 500))
+        with self._lock, self._connect() as conn:
+            sql = "SELECT * FROM chunks"
+            if not force:
+                sql += " WHERE embedding IS NULL OR embedding = ''"
+            sql += " ORDER BY source_id, ordinal LIMIT ?"
+            return [self._chunk_from_row_with_embedding(row) for row in conn.execute(sql, (limit,)).fetchall()]
+
+    @staticmethod
+    def _chunk_from_row_with_embedding(row: sqlite3.Row) -> dict[str, Any]:
+        chunk = BrainStore._chunk_from_row(row)
+        chunk["embedding"] = BrainStore._json_loads(row["embedding"], None)
+        return chunk
+
+    def update_chunk_embedding(
+        self,
+        chunk_id: int,
+        *,
+        embedding_model: str,
+        embedding: list[float],
+    ) -> None:
+        now = self._now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE chunks
+                   SET embedding_model = ?,
+                       embedding = ?,
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                (embedding_model, self._json_dumps(embedding), now, chunk_id),
+            )
+
+    def semantic_search_chunks(
+        self,
+        query_embedding: list[float],
+        *,
+        limit: int = 10,
+    ) -> list[dict[str, Any]]:
+        limit = max(1, min(int(limit), 100))
+        query_norm = math.sqrt(sum(value * value for value in query_embedding))
+        if query_norm == 0:
+            return []
+
+        scored: list[dict[str, Any]] = []
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM chunks WHERE embedding IS NOT NULL AND embedding != ''"
+            ).fetchall()
+
+        for row in rows:
+            embedding = self._json_loads(row["embedding"], None)
+            if not isinstance(embedding, list) or len(embedding) != len(query_embedding):
+                continue
+
+            dot = 0.0
+            chunk_norm_sq = 0.0
+            for left, right in zip(query_embedding, embedding):
+                right_value = float(right)
+                dot += left * right_value
+                chunk_norm_sq += right_value * right_value
+            chunk_norm = math.sqrt(chunk_norm_sq)
+            if chunk_norm == 0:
+                continue
+
+            result = self._chunk_from_row(row)
+            result["score"] = dot / (query_norm * chunk_norm)
+            scored.append(result)
+
+        return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
 
     def delete_source(self, source_id: int) -> bool:
         with self._lock, self._connect() as conn:

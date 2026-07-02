@@ -24,11 +24,13 @@ try:
     from brain_store import BrainStore
     from brain_ingestion import chunk_text, normalize_text, stable_hash
     from brain_indexer import index_local_library, indexer_status
+    from gemini_client import GeminiClient
 except ImportError as e:
     print(f"Error importing Investment Brain modules: {e}")
     BrainStore = None
     index_local_library = None
     indexer_status = None
+    GeminiClient = None
 
 app = FastAPI()
 
@@ -44,6 +46,7 @@ app.add_middleware(
 _cache = {}
 _data_cache = {}  # Shared raw market data cache keyed by portfolio
 brain_store = BrainStore() if BrainStore else None
+gemini_client = GeminiClient() if GeminiClient else None
 
 
 class BrainMemoryRequest(BaseModel):
@@ -100,10 +103,33 @@ class BrainLocalIndexRequest(BaseModel):
     force: bool = False
 
 
+class BrainEmbeddingBackfillRequest(BaseModel):
+    limit: int = Field(default=50, ge=1, le=250)
+    force: bool = False
+
+
+class BrainCompanyAnalysisRequest(BaseModel):
+    ticker: str = Field(..., min_length=1, max_length=40)
+    question: str | None = None
+    limit: int = Field(default=8, ge=1, le=20)
+    useSemantic: bool = True
+
+
 def _brain_or_503():
     if not brain_store:
         raise HTTPException(status_code=503, detail="Investment Brain store is not available")
     return brain_store
+
+
+def _gemini_or_503():
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="Gemini client is not available")
+    if not gemini_client.configured:
+        raise HTTPException(
+            status_code=503,
+            detail="Google AI API key is not configured. Set GOOGLE_AI_API_KEY or GEMINI_API_KEY.",
+        )
+    return gemini_client
 
 def _get_cached_market_data(force: bool = False, portfolio_name: str = "main"):
     """Fetch and cache raw market data for a portfolio."""
@@ -277,8 +303,9 @@ async def get_brain_status():
         "state": "ready",
         "database": str(store.db_path),
         "search": "sqlite_fts5",
-        "vectorSearch": "not_configured",
-        "embeddingProvider": "not_configured",
+        "vectorSearch": "sqlite_cosine_after_embedding_backfill",
+        "embeddingProvider": "google_ai_studio" if gemini_client and gemini_client.configured else "not_configured",
+        "llm": gemini_client.status() if gemini_client else {"configured": False},
         "capabilities": [
             "manual_memories",
             "source_storage",
@@ -286,10 +313,19 @@ async def get_brain_status():
             "chunk_indexing",
             "local_file_indexing",
             "keyword_search",
+            "gemini_embeddings",
+            "gemini_company_analysis",
             "embedding_ready_schema",
         ],
         "counts": store.counts(),
     }
+
+
+@app.get("/api/brain/llm/status")
+async def get_brain_llm_status():
+    if not gemini_client:
+        return {"configured": False, "provider": None}
+    return gemini_client.status()
 
 
 @app.get("/api/brain/index/local/status")
@@ -484,6 +520,141 @@ async def search_brain(q: str, limit: int = 50, entity_type: str | None = None):
         "query": q,
         "results": store.search(query=q, limit=limit, entity_type=entity_type),
         "counts": store.counts(),
+    }
+
+
+@app.post("/api/brain/embeddings/backfill")
+async def backfill_brain_embeddings(payload: BrainEmbeddingBackfillRequest):
+    store = _brain_or_503()
+    client = _gemini_or_503()
+    chunks = store.list_chunks_for_embedding(limit=payload.limit, force=payload.force)
+    indexed = []
+    errors = []
+
+    for chunk in chunks:
+        try:
+            embedding = client.embed_text(chunk["body"], task_type="RETRIEVAL_DOCUMENT")
+            store.update_chunk_embedding(
+                int(chunk["id"]),
+                embedding_model=client.embedding_model,
+                embedding=embedding,
+            )
+            indexed.append({
+                "id": chunk["id"],
+                "title": chunk["title"],
+                "dimensions": len(embedding),
+            })
+        except Exception as e:
+            errors.append({
+                "id": chunk.get("id"),
+                "title": chunk.get("title"),
+                "error": str(e),
+            })
+
+    return {
+        "model": client.embedding_model,
+        "requested": len(chunks),
+        "embedded": len(indexed),
+        "errors": errors,
+        "items": indexed,
+        "counts": store.counts(),
+    }
+
+
+@app.get("/api/brain/search/semantic")
+async def semantic_brain_search(q: str, limit: int = 10):
+    store = _brain_or_503()
+    client = _gemini_or_503()
+    query_embedding = client.embed_text(q, task_type="RETRIEVAL_QUERY")
+    return {
+        "query": q,
+        "model": client.embedding_model,
+        "results": store.semantic_search_chunks(query_embedding, limit=limit),
+        "counts": store.counts(),
+    }
+
+
+def _format_context_block(items: list[dict], *, max_chars: int = 1000) -> str:
+    blocks = []
+    for index, item in enumerate(items, start=1):
+        title = item.get("title", "Untitled")
+        kind = item.get("entityType") or item.get("kind") or "chunk"
+        body = str(item.get("body", "")).strip()[:max_chars]
+        score = item.get("score")
+        score_text = f" | score={score:.3f}" if isinstance(score, (int, float)) else ""
+        blocks.append(f"[{index}] {kind}: {title}{score_text}\n{body}")
+    return "\n\n".join(blocks)
+
+
+@app.post("/api/brain/analyze-company")
+async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
+    store = _brain_or_503()
+    client = _gemini_or_503()
+
+    ticker = payload.ticker.strip().upper()
+    question = (payload.question or "").strip() or (
+        f"Analyze {ticker} using my investment brain. Focus on evidence, contradictions, risks, "
+        "and what would change my mind."
+    )
+    retrieval_query = f"{ticker} {question}"
+
+    keyword_results = store.search(retrieval_query, limit=payload.limit)
+    semantic_results = []
+    if payload.useSemantic:
+        try:
+            query_embedding = client.embed_text(retrieval_query, task_type="RETRIEVAL_QUERY")
+            semantic_results = store.semantic_search_chunks(query_embedding, limit=payload.limit)
+        except Exception:
+            semantic_results = []
+
+    memory_results = store.list_memories(query=ticker, limit=payload.limit)
+    if not memory_results:
+        memory_results = store.list_memories(query=question, limit=min(payload.limit, 6))
+
+    context_items = []
+    seen = set()
+    for item in semantic_results + keyword_results:
+        key = (item.get("entityType", "chunk"), item.get("id") or item.get("entityId"))
+        if key in seen:
+            continue
+        seen.add(key)
+        context_items.append(item)
+        if len(context_items) >= payload.limit:
+            break
+
+    prompt = f"""
+You are an investment research assistant for one investor's private dashboard.
+Use the provided brain context, but separate evidence from inference.
+Do not pretend missing information is present.
+
+Company/ticker: {ticker}
+User question: {question}
+
+Personal memories:
+{_format_context_block(memory_results, max_chars=900) or "No matching memories."}
+
+Retrieved source context:
+{_format_context_block(context_items, max_chars=1200) or "No retrieved source context."}
+
+Write the answer in this structure:
+1. Evidence from my brain
+2. Interpretation
+3. Contradictions / risks
+4. What would change my mind
+5. Memory worth saving
+""".strip()
+
+    answer = client.generate_text(prompt, temperature=0.25, max_output_tokens=1800)
+    return {
+        "ticker": ticker,
+        "question": question,
+        "model": client.generation_model,
+        "embeddingModel": client.embedding_model,
+        "answer": answer,
+        "context": {
+            "memories": memory_results,
+            "retrieved": context_items,
+        },
     }
 
 @app.get("/api/metrics")

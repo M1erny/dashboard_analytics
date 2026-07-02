@@ -62,6 +62,15 @@ type BrainStatus = {
     state?: string;
     counts?: BrainCounts;
     capabilities?: string[];
+    llm?: BrainLlmStatus;
+};
+
+type BrainLlmStatus = {
+    provider?: string | null;
+    configured: boolean;
+    generationModel?: string;
+    embeddingModel?: string;
+    apiKeyEnv?: string;
 };
 
 type LocalIndexerStatus = {
@@ -93,6 +102,22 @@ type LocalIndexResponse = {
     };
     results: LocalIndexResult[];
     counts?: BrainCounts;
+};
+
+type EmbeddingBackfillResponse = {
+    model: string;
+    requested: number;
+    embedded: number;
+    errors: { id?: number; title?: string; error: string }[];
+    counts?: BrainCounts;
+};
+
+type BrainAnalysisResponse = {
+    ticker: string;
+    question: string;
+    model: string;
+    embeddingModel: string;
+    answer: string;
 };
 
 type BackendState = 'checking' | 'ready' | 'offline';
@@ -300,6 +325,14 @@ export const InvestmentBrain: React.FC = () => {
     const [isIndexing, setIsIndexing] = useState(false);
     const [indexMessage, setIndexMessage] = useState('');
     const [indexResults, setIndexResults] = useState<LocalIndexResult[]>([]);
+    const [llmStatus, setLlmStatus] = useState<BrainLlmStatus | null>(null);
+    const [isEmbedding, setIsEmbedding] = useState(false);
+    const [embeddingMessage, setEmbeddingMessage] = useState('');
+    const [analysisTicker, setAnalysisTicker] = useState('META');
+    const [analysisQuestion, setAnalysisQuestion] = useState('What does my brain say about the moat, risks, and what would change my mind?');
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [analysisMessage, setAnalysisMessage] = useState('');
+    const [analysisAnswer, setAnalysisAnswer] = useState('');
 
     useEffect(() => {
         window.localStorage.setItem(MEMORY_STORAGE_KEY, JSON.stringify(memories));
@@ -333,6 +366,7 @@ export const InvestmentBrain: React.FC = () => {
                 if (!cancelled) {
                     setBackendState('ready');
                     setBackendCounts(status.counts ?? null);
+                    setLlmStatus(status.llm ?? null);
                     setLocalIndexerStatus(nextIndexerStatus);
                     setIndexRootPath(nextIndexerStatus?.configuredRoot ?? '');
                     setMemories(backendMemories);
@@ -522,6 +556,65 @@ export const InvestmentBrain: React.FC = () => {
             setIndexMessage(error instanceof Error ? error.message : 'Local index failed');
         } finally {
             setIsIndexing(false);
+        }
+    };
+
+    const backfillEmbeddings = async () => {
+        if (backendState !== 'ready') return;
+
+        setIsEmbedding(true);
+        setEmbeddingMessage('');
+        try {
+            const response = await fetch(brainApiUrl('/api/brain/embeddings/backfill'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ limit: 50, force: false }),
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null) as { detail?: string } | null;
+                throw new Error(payload?.detail ?? 'Embedding failed');
+            }
+
+            const payload = await response.json() as EmbeddingBackfillResponse;
+            setBackendCounts(payload.counts ?? null);
+            setEmbeddingMessage(`${payload.embedded}/${payload.requested} chunk(s) embedded with ${payload.model}. ${payload.errors.length ? `${payload.errors.length} error(s).` : ''}`);
+        } catch (error) {
+            setEmbeddingMessage(error instanceof Error ? error.message : 'Embedding failed');
+        } finally {
+            setIsEmbedding(false);
+        }
+    };
+
+    const runCompanyAnalysis = async () => {
+        const ticker = analysisTicker.trim();
+        if (!ticker || backendState !== 'ready') return;
+
+        setIsAnalyzing(true);
+        setAnalysisMessage('');
+        setAnalysisAnswer('');
+        try {
+            const response = await fetch(brainApiUrl('/api/brain/analyze-company'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    ticker,
+                    question: analysisQuestion.trim(),
+                    limit: 8,
+                    useSemantic: true,
+                }),
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null) as { detail?: string } | null;
+                throw new Error(payload?.detail ?? 'Analysis failed');
+            }
+
+            const payload = await response.json() as BrainAnalysisResponse;
+            setAnalysisAnswer(payload.answer);
+            setAnalysisMessage(`Answered with ${payload.model}; retrieval model ${payload.embeddingModel}.`);
+        } catch (error) {
+            setAnalysisMessage(error instanceof Error ? error.message : 'Analysis failed');
+        } finally {
+            setIsAnalyzing(false);
         }
     };
 
@@ -798,6 +891,49 @@ export const InvestmentBrain: React.FC = () => {
                                     </div>
                                 ))}
                             </div>
+                            <div className="mt-4 rounded-lg border border-violet-500/20 bg-violet-500/10 p-3">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                    <div>
+                                        <div className="flex items-center gap-2">
+                                            <Sparkles className="h-4 w-4 text-violet-300" />
+                                            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-violet-100">Semantic Layer</span>
+                                        </div>
+                                        <p className="mt-2 text-xs leading-5 text-violet-100/65">
+                                            Adds Gemini embeddings to stored chunks so search can find similar ideas, not only exact words.
+                                        </p>
+                                    </div>
+                                    <span className={cn(
+                                        'inline-flex w-fit shrink-0 rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                        llmStatus?.configured
+                                            ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                                            : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                                    )}>
+                                        {llmStatus?.configured ? 'Ready' : 'No key'}
+                                    </span>
+                                </div>
+                                <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <p className="font-mono text-[11px] text-violet-100/60">
+                                        {llmStatus?.embeddingModel ?? 'gemini-embedding-001'}
+                                    </p>
+                                    <button
+                                        type="button"
+                                        onClick={backfillEmbeddings}
+                                        disabled={isEmbedding || backendState !== 'ready'}
+                                        className={cn(
+                                            'inline-flex min-h-[38px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                            backendState === 'ready'
+                                                ? 'border-violet-500/30 bg-violet-500/15 text-violet-100 hover:bg-violet-500/20'
+                                                : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                        )}
+                                    >
+                                        <Sparkles className="h-3.5 w-3.5" />
+                                        {isEmbedding ? 'Embedding' : 'Embed Missing'}
+                                    </button>
+                                </div>
+                                {embeddingMessage && (
+                                    <p className="mt-3 text-xs font-semibold text-violet-100/80">{embeddingMessage}</p>
+                                )}
+                            </div>
                             <div className="mt-4 rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-3">
                                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                     <div className="min-w-0">
@@ -961,10 +1097,82 @@ export const InvestmentBrain: React.FC = () => {
 
                     <section className="grid grid-cols-1 gap-4 xl:grid-cols-12 xl:gap-5">
                         <div className="xl:col-span-7 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
-                            <div className="flex items-center gap-2">
-                                <Target className="h-4 w-4 text-rose-300" />
-                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Company Analysis Loop</h2>
+                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <Target className="h-4 w-4 text-rose-300" />
+                                        <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Company Analysis Loop</h2>
+                                    </div>
+                                    <p className="mt-2 text-sm leading-6 text-gray-500">
+                                        Ask the brain to combine your memories, indexed sources, and retrieved chunks into a structured company note.
+                                    </p>
+                                </div>
+                                <span className={cn(
+                                    'inline-flex w-fit items-center rounded-lg border px-3 py-2 text-[10px] font-bold uppercase tracking-[0.1em]',
+                                    llmStatus?.configured
+                                        ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                                        : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                                )}>
+                                    {llmStatus?.configured ? 'Gemini ready' : 'API key missing'}
+                                </span>
                             </div>
+
+                            <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-5">
+                                <label className="lg:col-span-1">
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Ticker</span>
+                                    <input
+                                        value={analysisTicker}
+                                        onChange={event => setAnalysisTicker(event.target.value.toUpperCase())}
+                                        className="mt-1 h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 font-mono text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-rose-500/40"
+                                        placeholder="META"
+                                    />
+                                </label>
+                                <label className="lg:col-span-4">
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Question</span>
+                                    <input
+                                        value={analysisQuestion}
+                                        onChange={event => setAnalysisQuestion(event.target.value)}
+                                        onKeyDown={event => {
+                                            if (event.key === 'Enter') {
+                                                void runCompanyAnalysis();
+                                            }
+                                        }}
+                                        className="mt-1 h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-rose-500/40"
+                                        placeholder="Moat, risks, valuation lens, what changes my mind..."
+                                    />
+                                </label>
+                            </div>
+
+                            <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <p className="text-xs leading-5 text-gray-500">
+                                    {llmStatus?.generationModel ?? 'gemini-2.5-flash'} + {llmStatus?.embeddingModel ?? 'gemini-embedding-001'}
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={runCompanyAnalysis}
+                                    disabled={isAnalyzing || backendState !== 'ready'}
+                                    className={cn(
+                                        'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
+                                        backendState === 'ready'
+                                            ? 'border-rose-500/30 bg-rose-500/15 text-rose-100 hover:bg-rose-500/20'
+                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                    )}
+                                >
+                                    <Sparkles className="h-4 w-4" />
+                                    {isAnalyzing ? 'Thinking' : 'Analyze'}
+                                </button>
+                            </div>
+
+                            {analysisMessage && (
+                                <p className="mt-3 text-xs font-semibold text-gray-500">{analysisMessage}</p>
+                            )}
+
+                            {analysisAnswer && (
+                                <div className="mt-4 whitespace-pre-wrap rounded-lg border border-white/[0.08] bg-black/20 p-4 text-sm leading-6 text-gray-200">
+                                    {analysisAnswer}
+                                </div>
+                            )}
+
                             <div className="mt-4 space-y-2">
                                 {analysisLoop.map((step, index) => (
                                     <div key={step} className="grid grid-cols-[34px_1fr] gap-3 rounded-lg border border-white/[0.06] bg-white/[0.025] p-3">
