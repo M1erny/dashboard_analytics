@@ -21,13 +21,13 @@ except ImportError as e:
     risk = None
 
 try:
-    from brain_store import BrainStore
+    from brain_store import create_brain_store
     from brain_ingestion import chunk_text, normalize_text, stable_hash
     from brain_indexer import index_local_library, indexer_status
     from gemini_client import GeminiClient
 except ImportError as e:
     print(f"Error importing Investment Brain modules: {e}")
-    BrainStore = None
+    create_brain_store = None
     index_local_library = None
     indexer_status = None
     GeminiClient = None
@@ -45,7 +45,11 @@ app.add_middleware(
 # Response cache (mapped by costTier, 5 minute TTL)
 _cache = {}
 _data_cache = {}  # Shared raw market data cache keyed by portfolio
-brain_store = BrainStore() if BrainStore else None
+try:
+    brain_store = create_brain_store() if create_brain_store else None
+except Exception as e:
+    print(f"Error initializing Investment Brain store: {e}")
+    brain_store = None
 gemini_client = GeminiClient() if GeminiClient else None
 
 
@@ -301,9 +305,10 @@ async def get_brain_status():
     store = _brain_or_503()
     return {
         "state": "ready",
-        "database": str(store.db_path),
-        "search": "sqlite_fts5",
-        "vectorSearch": "sqlite_cosine_after_embedding_backfill",
+        "database": getattr(store, "database_label", str(getattr(store, "db_path", "unknown"))),
+        "storage": getattr(store, "storage_label", "unknown"),
+        "search": getattr(store, "search_label", "unknown"),
+        "vectorSearch": getattr(store, "vector_search_label", "unknown"),
         "embeddingProvider": "google_ai_studio" if gemini_client and gemini_client.configured else "not_configured",
         "llm": gemini_client.status() if gemini_client else {"configured": False},
         "capabilities": [

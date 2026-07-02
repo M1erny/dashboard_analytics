@@ -2,39 +2,116 @@ import json
 import math
 import os
 import re
-import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+import psycopg
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 
 MEMORY_TYPES = {"liked", "passed", "trend", "framework", "question"}
-DEFAULT_DB_PATH = Path(__file__).with_name("brain.db")
+EMBEDDING_DIMENSIONS = 3072
 
 
-class BrainStore:
-    """SQLite persistence and unified full-text search for the Investment Brain."""
+CHUNK_COLUMNS = """
+    c.id,
+    c.source_id,
+    c.ordinal,
+    c.title,
+    c.body,
+    c.summary,
+    c.token_count,
+    c.page_start,
+    c.page_end,
+    c.tags,
+    c.metadata,
+    c.content_hash,
+    c.embedding_model,
+    c.embedding::text AS embedding,
+    c.created_at,
+    c.updated_at
+"""
 
-    def __init__(self, db_path: str | os.PathLike[str] | None = None):
-        configured_path = os.environ.get("BRAIN_DB_FILE")
-        self.db_path = Path(db_path or configured_path or DEFAULT_DB_PATH)
-        self.database_label = str(self.db_path)
-        self.storage_label = "sqlite"
-        self.search_label = "sqlite_fts5"
-        self.vector_search_label = "sqlite_cosine_after_embedding_backfill"
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+CHUNK_RETURNING_COLUMNS = """
+    id,
+    source_id,
+    ordinal,
+    title,
+    body,
+    summary,
+    token_count,
+    page_start,
+    page_end,
+    tags,
+    metadata,
+    content_hash,
+    embedding_model,
+    embedding::text AS embedding,
+    created_at,
+    updated_at
+"""
+
+
+class PostgresBrainStore:
+    """Postgres/pgvector persistence for the Investment Brain."""
+
+    storage_label = "postgres_pgvector"
+    search_label = "postgres_full_text"
+    vector_search_label = "pgvector_cosine"
+
+    def __init__(self, database_url: str | None = None):
+        self.database_url = self._normalize_database_url(
+            database_url
+            or os.environ.get("BRAIN_DATABASE_URL")
+            or os.environ.get("DATABASE_URL")
+            or ""
+        )
+        if not self.database_url:
+            raise ValueError("DATABASE_URL or BRAIN_DATABASE_URL is required for Postgres brain storage")
+
+        self.database_label = self._safe_database_label(self.database_url)
+        self.db_path = self.database_label
         self._lock = threading.RLock()
         self._init_db()
 
+    @staticmethod
+    def _normalize_database_url(database_url: str) -> str:
+        value = database_url.strip()
+        if not value:
+            return value
+
+        parsed = urlparse(value)
+        hostname = parsed.hostname or ""
+        if "supabase" not in hostname.lower():
+            return value
+
+        query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        if any(key.lower() == "sslmode" for key, _ in query_pairs):
+            return value
+
+        query_pairs.append(("sslmode", "require"))
+        return urlunparse(parsed._replace(query=urlencode(query_pairs)))
+
+    @staticmethod
+    def _safe_database_label(database_url: str) -> str:
+        parsed = urlparse(database_url)
+        host = parsed.hostname or "postgres"
+        port = f":{parsed.port}" if parsed.port else ""
+        name = (parsed.path or "/postgres").lstrip("/") or "postgres"
+        return f"postgresql://{host}{port}/{name}"
+
     @contextmanager
     def _connect(self):
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 30000")
+        conn = psycopg.connect(
+            self.database_url,
+            row_factory=dict_row,
+            prepare_threshold=None,
+        )
         try:
             yield conn
             conn.commit()
@@ -46,36 +123,43 @@ class BrainStore:
 
     def _init_db(self) -> None:
         with self._lock, self._connect() as conn:
-            conn.executescript(
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS memories (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id BIGSERIAL PRIMARY KEY,
                     type TEXT NOT NULL CHECK (type IN ('liked', 'passed', 'trend', 'framework', 'question')),
                     title TEXT NOT NULL,
                     body TEXT NOT NULL,
-                    tags TEXT NOT NULL DEFAULT '[]',
+                    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
                     source TEXT NOT NULL DEFAULT 'manual',
-                    confidence REAL,
+                    confidence DOUBLE PRECISION,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
-                );
-
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS sources (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id BIGSERIAL PRIMARY KEY,
                     kind TEXT NOT NULL DEFAULT 'note',
                     title TEXT NOT NULL,
                     body TEXT NOT NULL,
                     author TEXT,
                     source_date TEXT,
-                    tags TEXT NOT NULL DEFAULT '[]',
-                    metadata TEXT NOT NULL DEFAULT '{}',
+                    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
-                );
-
+                )
+                """
+            )
+            conn.execute(
+                f"""
                 CREATE TABLE IF NOT EXISTS chunks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source_id INTEGER NOT NULL,
+                    id BIGSERIAL PRIMARY KEY,
+                    source_id BIGINT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,
                     ordinal INTEGER NOT NULL,
                     title TEXT NOT NULL,
                     body TEXT NOT NULL,
@@ -83,84 +167,116 @@ class BrainStore:
                     token_count INTEGER NOT NULL DEFAULT 0,
                     page_start INTEGER,
                     page_end INTEGER,
-                    tags TEXT NOT NULL DEFAULT '[]',
-                    metadata TEXT NOT NULL DEFAULT '{}',
+                    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
                     content_hash TEXT NOT NULL,
                     embedding_model TEXT,
-                    embedding TEXT,
+                    embedding vector({EMBEDDING_DIMENSIONS}),
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
-                    UNIQUE(source_id, content_hash),
-                    FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
-                );
-
+                    UNIQUE(source_id, content_hash)
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS ideas (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source_id INTEGER,
+                    id BIGSERIAL PRIMARY KEY,
+                    source_id BIGINT REFERENCES sources(id) ON DELETE SET NULL,
                     kind TEXT NOT NULL DEFAULT 'principle',
                     title TEXT NOT NULL,
                     body TEXT NOT NULL,
-                    tags TEXT NOT NULL DEFAULT '[]',
-                    confidence REAL,
-                    metadata TEXT NOT NULL DEFAULT '{}',
+                    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    confidence DOUBLE PRECISION,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE SET NULL
-                );
-
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS theses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id BIGSERIAL PRIMARY KEY,
                     company TEXT NOT NULL,
                     status TEXT NOT NULL DEFAULT 'watchlist',
                     title TEXT NOT NULL,
                     body TEXT NOT NULL,
-                    tags TEXT NOT NULL DEFAULT '[]',
-                    metadata TEXT NOT NULL DEFAULT '{}',
+                    tags JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS edges (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    from_type TEXT NOT NULL,
-                    from_id INTEGER NOT NULL,
-                    to_type TEXT NOT NULL,
-                    to_id INTEGER NOT NULL,
-                    relation TEXT NOT NULL,
-                    weight REAL NOT NULL DEFAULT 1.0,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE VIRTUAL TABLE IF NOT EXISTS brain_index USING fts5(
-                    entity_type UNINDEXED,
-                    entity_id UNINDEXED,
-                    title,
-                    body,
-                    tags,
-                    tokenize='unicode61 remove_diacritics 2'
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
-                CREATE INDEX IF NOT EXISTS idx_sources_kind ON sources(kind);
-                CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_id);
-                CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash);
-                CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind);
-                CREATE INDEX IF NOT EXISTS idx_theses_company ON theses(company);
+                )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS edges (
+                    id BIGSERIAL PRIMARY KEY,
+                    from_type TEXT NOT NULL,
+                    from_id BIGINT NOT NULL,
+                    to_type TEXT NOT NULL,
+                    to_id BIGINT NOT NULL,
+                    relation TEXT NOT NULL,
+                    weight DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS brain_index (
+                    entity_type TEXT NOT NULL,
+                    entity_id BIGINT NOT NULL,
+                    title TEXT NOT NULL,
+                    body TEXT NOT NULL,
+                    tags TEXT NOT NULL DEFAULT '',
+                    search_vector TSVECTOR GENERATED ALWAYS AS (
+                        to_tsvector(
+                            'simple',
+                            coalesce(title, '') || ' ' || coalesce(body, '') || ' ' || coalesce(tags, '')
+                        )
+                    ) STORED,
+                    PRIMARY KEY(entity_type, entity_id)
+                )
+                """
+            )
+
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sources_kind ON sources(kind)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sources_file_identity ON sources ((metadata->>'fileIdentity'))")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_embedding_model ON chunks(embedding_model)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_theses_company ON theses(company)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_index_search ON brain_index USING GIN(search_vector)")
+            conn.execute("SAVEPOINT vector_index")
+            try:
+                conn.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
+                    ON chunks USING hnsw (embedding vector_cosine_ops)
+                    WHERE embedding IS NOT NULL
+                    """
+                )
+                conn.execute("RELEASE SAVEPOINT vector_index")
+            except Exception:
+                conn.execute("ROLLBACK TO SAVEPOINT vector_index")
+                conn.execute("RELEASE SAVEPOINT vector_index")
 
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
     @staticmethod
-    def _json_dumps(value: Any) -> str:
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-    @staticmethod
-    def _json_loads(value: str, fallback: Any) -> Any:
+    def _json_loads(value: Any, fallback: Any) -> Any:
+        if value is None:
+            return fallback
+        if isinstance(value, (dict, list)):
+            return value
         try:
-            return json.loads(value)
+            return json.loads(str(value))
         except (TypeError, json.JSONDecodeError):
             return fallback
 
@@ -185,16 +301,39 @@ class BrainStore:
         tokens = [token for token in tokens if len(token) > 1]
         if not tokens:
             return None
-        return " OR ".join(f"{token}*" for token in tokens[:12])
+        return " | ".join(f"{token}:*" for token in tokens[:12])
 
     @staticmethod
-    def _memory_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _embedding_literal(embedding: list[float] | None) -> str | None:
+        if embedding is None:
+            return None
+        if len(embedding) != EMBEDDING_DIMENSIONS:
+            raise ValueError(f"Expected {EMBEDDING_DIMENSIONS} embedding dimensions, got {len(embedding)}")
+        return "[" + ",".join(f"{float(value):.12g}" for value in embedding) + "]"
+
+    @staticmethod
+    def _parse_embedding(value: Any) -> list[float] | None:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            return [float(item) for item in value]
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        if not text:
+            return []
+        return [float(part) for part in text.split(",") if part.strip()]
+
+    @staticmethod
+    def _memory_from_row(row: dict[str, Any]) -> dict[str, Any]:
         return {
-            "id": row["id"],
+            "id": int(row["id"]),
             "type": row["type"],
             "title": row["title"],
             "body": row["body"],
-            "tags": BrainStore._json_loads(row["tags"], []),
+            "tags": PostgresBrainStore._json_loads(row["tags"], []),
             "source": row["source"],
             "confidence": row["confidence"],
             "createdAt": row["created_at"],
@@ -202,25 +341,25 @@ class BrainStore:
         }
 
     @staticmethod
-    def _source_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _source_from_row(row: dict[str, Any]) -> dict[str, Any]:
         return {
-            "id": row["id"],
+            "id": int(row["id"]),
             "kind": row["kind"],
             "title": row["title"],
             "body": row["body"],
             "author": row["author"],
             "sourceDate": row["source_date"],
-            "tags": BrainStore._json_loads(row["tags"], []),
-            "metadata": BrainStore._json_loads(row["metadata"], {}),
+            "tags": PostgresBrainStore._json_loads(row["tags"], []),
+            "metadata": PostgresBrainStore._json_loads(row["metadata"], {}),
             "createdAt": row["created_at"],
             "updatedAt": row["updated_at"],
         }
 
     @staticmethod
-    def _chunk_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    def _chunk_from_row(row: dict[str, Any]) -> dict[str, Any]:
         return {
-            "id": row["id"],
-            "sourceId": row["source_id"],
+            "id": int(row["id"]),
+            "sourceId": int(row["source_id"]),
             "ordinal": row["ordinal"],
             "title": row["title"],
             "body": row["body"],
@@ -228,8 +367,8 @@ class BrainStore:
             "tokenCount": row["token_count"],
             "pageStart": row["page_start"],
             "pageEnd": row["page_end"],
-            "tags": BrainStore._json_loads(row["tags"], []),
-            "metadata": BrainStore._json_loads(row["metadata"], {}),
+            "tags": PostgresBrainStore._json_loads(row["tags"], []),
+            "metadata": PostgresBrainStore._json_loads(row["metadata"], {}),
             "contentHash": row["content_hash"],
             "embeddingModel": row["embedding_model"],
             "hasEmbedding": bool(row["embedding"]),
@@ -237,9 +376,15 @@ class BrainStore:
             "updatedAt": row["updated_at"],
         }
 
+    @staticmethod
+    def _chunk_from_row_with_embedding(row: dict[str, Any]) -> dict[str, Any]:
+        chunk = PostgresBrainStore._chunk_from_row(row)
+        chunk["embedding"] = PostgresBrainStore._parse_embedding(row.get("embedding"))
+        return chunk
+
     def _replace_index(
         self,
-        conn: sqlite3.Connection,
+        conn,
         entity_type: str,
         entity_id: int,
         title: str,
@@ -247,15 +392,19 @@ class BrainStore:
         tags: list[str],
     ) -> None:
         conn.execute(
-            "DELETE FROM brain_index WHERE entity_type = ? AND entity_id = ?",
-            (entity_type, str(entity_id)),
+            "DELETE FROM brain_index WHERE entity_type = %s AND entity_id = %s",
+            (entity_type, entity_id),
         )
         conn.execute(
             """
             INSERT INTO brain_index(entity_type, entity_id, title, body, tags)
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+                title = excluded.title,
+                body = excluded.body,
+                tags = excluded.tags
             """,
-            (entity_type, str(entity_id), title, body, " ".join(tags)),
+            (entity_type, entity_id, title, body, " ".join(tags)),
         )
 
     def add_memory(
@@ -279,16 +428,15 @@ class BrainStore:
         clean_tags = self._clean_tags(tags)
         now = self._now()
         with self._lock, self._connect() as conn:
-            cur = conn.execute(
+            row = conn.execute(
                 """
                 INSERT INTO memories(type, title, body, tags, source, confidence, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
                 """,
-                (memory_type, title, body, self._json_dumps(clean_tags), source, confidence, now, now),
-            )
-            memory_id = int(cur.lastrowid)
-            self._replace_index(conn, "memory", memory_id, title, body, clean_tags)
-            row = conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+                (memory_type, title, body, Jsonb(clean_tags), source, confidence, now, now),
+            ).fetchone()
+            self._replace_index(conn, "memory", int(row["id"]), title, body, clean_tags)
             return self._memory_from_row(row)
 
     def list_memories(
@@ -312,31 +460,31 @@ class BrainStore:
                     FROM memories m
                     JOIN brain_index i
                       ON i.entity_type = 'memory'
-                     AND i.entity_id = CAST(m.id AS TEXT)
-                    WHERE brain_index MATCH ?
+                     AND i.entity_id = m.id
+                    WHERE i.search_vector @@ to_tsquery('simple', %s)
                 """
                 params.append(fts_query)
                 if memory_type:
-                    sql += " AND m.type = ?"
+                    sql += " AND m.type = %s"
                     params.append(memory_type)
-                sql += " ORDER BY m.created_at DESC LIMIT ?"
+                sql += " ORDER BY m.created_at DESC LIMIT %s"
                 params.append(limit)
             else:
                 sql = "SELECT * FROM memories"
                 if memory_type:
-                    sql += " WHERE type = ?"
+                    sql += " WHERE type = %s"
                     params.append(memory_type)
-                sql += " ORDER BY created_at DESC LIMIT ?"
+                sql += " ORDER BY created_at DESC LIMIT %s"
                 params.append(limit)
 
             return [self._memory_from_row(row) for row in conn.execute(sql, params).fetchall()]
 
     def delete_memory(self, memory_id: int) -> bool:
         with self._lock, self._connect() as conn:
-            cur = conn.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
+            cur = conn.execute("DELETE FROM memories WHERE id = %s", (memory_id,))
             conn.execute(
-                "DELETE FROM brain_index WHERE entity_type = 'memory' AND entity_id = ?",
-                (str(memory_id),),
+                "DELETE FROM brain_index WHERE entity_type = 'memory' AND entity_id = %s",
+                (memory_id,),
             )
             return cur.rowcount > 0
 
@@ -359,10 +507,11 @@ class BrainStore:
         clean_metadata = metadata or {}
         now = self._now()
         with self._lock, self._connect() as conn:
-            cur = conn.execute(
+            row = conn.execute(
                 """
                 INSERT INTO sources(kind, title, body, author, source_date, tags, metadata, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
                 """,
                 (
                     kind.strip().lower() or "note",
@@ -370,15 +519,13 @@ class BrainStore:
                     body,
                     author,
                     source_date,
-                    self._json_dumps(clean_tags),
-                    self._json_dumps(clean_metadata),
+                    Jsonb(clean_tags),
+                    Jsonb(clean_metadata),
                     now,
                     now,
                 ),
-            )
-            source_id = int(cur.lastrowid)
-            self._replace_index(conn, "source", source_id, title, body, clean_tags)
-            row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+            ).fetchone()
+            self._replace_index(conn, "source", int(row["id"]), title, body, clean_tags)
             return self._source_from_row(row)
 
     def upsert_file_source(
@@ -406,74 +553,71 @@ class BrainStore:
         clean_tags = self._clean_tags(tags)
         now = self._now()
         with self._lock, self._connect() as conn:
-            existing = None
-            for row in conn.execute("SELECT * FROM sources WHERE kind = 'file'").fetchall():
-                row_metadata = self._json_loads(row["metadata"], {})
-                if row_metadata.get("fileIdentity") == file_identity:
-                    existing = row
-                    existing_metadata = row_metadata
-                    break
+            existing = conn.execute(
+                "SELECT * FROM sources WHERE kind = 'file' AND metadata->>'fileIdentity' = %s LIMIT 1",
+                (file_identity,),
+            ).fetchone()
 
             if existing:
+                existing_metadata = self._json_loads(existing["metadata"], {})
                 if existing_metadata.get("fileHash") == file_hash and not force:
                     return self._source_from_row(existing), False
 
-                chunk_ids = [
-                    str(row["id"])
-                    for row in conn.execute("SELECT id FROM chunks WHERE source_id = ?", (existing["id"],)).fetchall()
-                ]
-                conn.execute("DELETE FROM chunks WHERE source_id = ?", (existing["id"],))
-                for chunk_id in chunk_ids:
+                chunk_rows = conn.execute(
+                    "DELETE FROM chunks WHERE source_id = %s RETURNING id",
+                    (existing["id"],),
+                ).fetchall()
+                for chunk in chunk_rows:
                     conn.execute(
-                        "DELETE FROM brain_index WHERE entity_type = 'chunk' AND entity_id = ?",
-                        (chunk_id,),
+                        "DELETE FROM brain_index WHERE entity_type = 'chunk' AND entity_id = %s",
+                        (chunk["id"],),
                     )
-                conn.execute(
+
+                row = conn.execute(
                     """
                     UPDATE sources
-                       SET title = ?,
-                           body = ?,
-                           author = ?,
-                           source_date = ?,
-                           tags = ?,
-                           metadata = ?,
-                           updated_at = ?
-                     WHERE id = ?
+                       SET title = %s,
+                           body = %s,
+                           author = %s,
+                           source_date = %s,
+                           tags = %s,
+                           metadata = %s,
+                           updated_at = %s
+                     WHERE id = %s
+                     RETURNING *
                     """,
                     (
                         title,
                         body,
                         author,
                         source_date,
-                        self._json_dumps(clean_tags),
-                        self._json_dumps(clean_metadata),
+                        Jsonb(clean_tags),
+                        Jsonb(clean_metadata),
                         now,
                         existing["id"],
                     ),
-                )
-                self._replace_index(conn, "source", int(existing["id"]), title, body, clean_tags)
-                row = conn.execute("SELECT * FROM sources WHERE id = ?", (existing["id"],)).fetchone()
+                ).fetchone()
+                self._replace_index(conn, "source", int(row["id"]), title, body, clean_tags)
                 return self._source_from_row(row), True
 
-            cur = conn.execute(
+            row = conn.execute(
                 """
                 INSERT INTO sources(kind, title, body, author, source_date, tags, metadata, created_at, updated_at)
-                VALUES ('file', ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES ('file', %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
                 """,
                 (
                     title,
                     body,
                     author,
                     source_date,
-                    self._json_dumps(clean_tags),
-                    self._json_dumps(clean_metadata),
+                    Jsonb(clean_tags),
+                    Jsonb(clean_metadata),
                     now,
                     now,
                 ),
-            )
-            source_id = int(cur.lastrowid)
-            self._replace_index(conn, "source", source_id, title, body, clean_tags)
-            row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+            ).fetchone()
+            self._replace_index(conn, "source", int(row["id"]), title, body, clean_tags)
             return self._source_from_row(row), True
 
     def list_sources(
@@ -492,21 +636,21 @@ class BrainStore:
                     FROM sources s
                     JOIN brain_index i
                       ON i.entity_type = 'source'
-                     AND i.entity_id = CAST(s.id AS TEXT)
-                    WHERE brain_index MATCH ?
+                     AND i.entity_id = s.id
+                    WHERE i.search_vector @@ to_tsquery('simple', %s)
                 """
                 params.append(fts_query)
                 if kind:
-                    sql += " AND s.kind = ?"
+                    sql += " AND s.kind = %s"
                     params.append(kind.strip().lower())
-                sql += " ORDER BY s.created_at DESC LIMIT ?"
+                sql += " ORDER BY s.created_at DESC LIMIT %s"
                 params.append(limit)
             else:
                 sql = "SELECT * FROM sources"
                 if kind:
-                    sql += " WHERE kind = ?"
+                    sql += " WHERE kind = %s"
                     params.append(kind.strip().lower())
-                sql += " ORDER BY created_at DESC LIMIT ?"
+                sql += " ORDER BY created_at DESC LIMIT %s"
                 params.append(limit)
 
             return [self._source_from_row(row) for row in conn.execute(sql, params).fetchall()]
@@ -517,11 +661,11 @@ class BrainStore:
             return None
 
         with self._lock, self._connect() as conn:
-            for row in conn.execute("SELECT * FROM sources WHERE kind = 'file'").fetchall():
-                metadata = self._json_loads(row["metadata"], {})
-                if metadata.get("fileIdentity") == file_identity:
-                    return self._source_from_row(row)
-        return None
+            row = conn.execute(
+                "SELECT * FROM sources WHERE kind = 'file' AND metadata->>'fileIdentity' = %s LIMIT 1",
+                (file_identity,),
+            ).fetchone()
+            return self._source_from_row(row) if row else None
 
     def add_chunks(self, source_id: int, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not chunks:
@@ -530,29 +674,31 @@ class BrainStore:
         now = self._now()
         saved: list[dict[str, Any]] = []
         with self._lock, self._connect() as conn:
-            source = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+            source = conn.execute("SELECT * FROM sources WHERE id = %s", (source_id,)).fetchone()
             if not source:
                 raise ValueError(f"Source {source_id} does not exist")
 
+            source_tags = self._json_loads(source["tags"], [])
             for index, chunk in enumerate(chunks):
                 title = str(chunk.get("title") or f"{source['title']} - chunk {index + 1}").strip()
                 body = str(chunk.get("body") or "").strip()
                 if not body:
                     continue
 
-                tags = self._clean_tags(chunk.get("tags") or self._json_loads(source["tags"], []))
+                tags = self._clean_tags(chunk.get("tags") or source_tags)
                 metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
                 content_hash = str(chunk.get("contentHash") or chunk.get("content_hash") or "").strip()
                 if not content_hash:
                     raise ValueError("Chunk contentHash is required")
 
-                conn.execute(
-                    """
+                embedding_literal = self._embedding_literal(chunk.get("embedding"))
+                row = conn.execute(
+                    f"""
                     INSERT INTO chunks(
                         source_id, ordinal, title, body, summary, token_count, page_start, page_end,
                         tags, metadata, content_hash, embedding_model, embedding, created_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s, %s)
                     ON CONFLICT(source_id, content_hash) DO UPDATE SET
                         ordinal = excluded.ordinal,
                         title = excluded.title,
@@ -566,6 +712,7 @@ class BrainStore:
                         embedding_model = excluded.embedding_model,
                         embedding = excluded.embedding,
                         updated_at = excluded.updated_at
+                    RETURNING {CHUNK_RETURNING_COLUMNS}
                     """,
                     (
                         source_id,
@@ -576,18 +723,14 @@ class BrainStore:
                         int(chunk.get("tokenCount") or chunk.get("token_count") or 0),
                         chunk.get("pageStart") or chunk.get("page_start"),
                         chunk.get("pageEnd") or chunk.get("page_end"),
-                        self._json_dumps(tags),
-                        self._json_dumps(metadata),
+                        Jsonb(tags),
+                        Jsonb(metadata),
                         content_hash,
                         chunk.get("embeddingModel") or chunk.get("embedding_model"),
-                        self._json_dumps(chunk.get("embedding")) if chunk.get("embedding") is not None else None,
+                        embedding_literal,
                         now,
                         now,
                     ),
-                )
-                row = conn.execute(
-                    "SELECT * FROM chunks WHERE source_id = ? AND content_hash = ?",
-                    (source_id, content_hash),
                 ).fetchone()
                 indexed_body = f"{body}\n\n{row['summary'] or ''}".strip()
                 self._replace_index(conn, "chunk", int(row["id"]), title, indexed_body, tags)
@@ -606,26 +749,26 @@ class BrainStore:
         with self._lock, self._connect() as conn:
             params: list[Any] = []
             if fts_query:
-                sql = """
-                    SELECT DISTINCT c.*
+                sql = f"""
+                    SELECT DISTINCT {CHUNK_COLUMNS}
                     FROM chunks c
                     JOIN brain_index i
                       ON i.entity_type = 'chunk'
-                     AND i.entity_id = CAST(c.id AS TEXT)
-                    WHERE brain_index MATCH ?
+                     AND i.entity_id = c.id
+                    WHERE i.search_vector @@ to_tsquery('simple', %s)
                 """
                 params.append(fts_query)
                 if source_id is not None:
-                    sql += " AND c.source_id = ?"
+                    sql += " AND c.source_id = %s"
                     params.append(source_id)
-                sql += " ORDER BY c.source_id, c.ordinal LIMIT ?"
+                sql += " ORDER BY c.source_id, c.ordinal LIMIT %s"
                 params.append(limit)
             else:
-                sql = "SELECT * FROM chunks"
+                sql = f"SELECT {CHUNK_COLUMNS} FROM chunks c"
                 if source_id is not None:
-                    sql += " WHERE source_id = ?"
+                    sql += " WHERE c.source_id = %s"
                     params.append(source_id)
-                sql += " ORDER BY source_id, ordinal LIMIT ?"
+                sql += " ORDER BY c.source_id, c.ordinal LIMIT %s"
                 params.append(limit)
 
             return [self._chunk_from_row(row) for row in conn.execute(sql, params).fetchall()]
@@ -638,17 +781,13 @@ class BrainStore:
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 500))
         with self._lock, self._connect() as conn:
-            sql = "SELECT * FROM chunks"
+            sql = f"SELECT {CHUNK_COLUMNS} FROM chunks c"
+            params: list[Any] = []
             if not force:
-                sql += " WHERE embedding IS NULL OR embedding = ''"
-            sql += " ORDER BY source_id, ordinal LIMIT ?"
-            return [self._chunk_from_row_with_embedding(row) for row in conn.execute(sql, (limit,)).fetchall()]
-
-    @staticmethod
-    def _chunk_from_row_with_embedding(row: sqlite3.Row) -> dict[str, Any]:
-        chunk = BrainStore._chunk_from_row(row)
-        chunk["embedding"] = BrainStore._json_loads(row["embedding"], None)
-        return chunk
+                sql += " WHERE c.embedding IS NULL"
+            sql += " ORDER BY c.source_id, c.ordinal LIMIT %s"
+            params.append(limit)
+            return [self._chunk_from_row_with_embedding(row) for row in conn.execute(sql, params).fetchall()]
 
     def update_chunk_embedding(
         self,
@@ -658,16 +797,17 @@ class BrainStore:
         embedding: list[float],
     ) -> None:
         now = self._now()
+        embedding_literal = self._embedding_literal(embedding)
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
                 UPDATE chunks
-                   SET embedding_model = ?,
-                       embedding = ?,
-                       updated_at = ?
-                 WHERE id = ?
+                   SET embedding_model = %s,
+                       embedding = %s::vector,
+                       updated_at = %s
+                 WHERE id = %s
                 """,
-                (embedding_model, self._json_dumps(embedding), now, chunk_id),
+                (embedding_model, embedding_literal, now, chunk_id),
             )
 
     def semantic_search_chunks(
@@ -677,51 +817,44 @@ class BrainStore:
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 100))
-        query_norm = math.sqrt(sum(value * value for value in query_embedding))
-        if query_norm == 0:
+        if math.sqrt(sum(value * value for value in query_embedding)) == 0:
             return []
 
-        scored: list[dict[str, Any]] = []
+        embedding_literal = self._embedding_literal(query_embedding)
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM chunks WHERE embedding IS NOT NULL AND embedding != ''"
+                f"""
+                SELECT {CHUNK_COLUMNS},
+                       1 - (c.embedding <=> %s::vector) AS score
+                  FROM chunks c
+                 WHERE c.embedding IS NOT NULL
+                 ORDER BY c.embedding <=> %s::vector
+                 LIMIT %s
+                """,
+                (embedding_literal, embedding_literal, limit),
             ).fetchall()
 
+        results = []
         for row in rows:
-            embedding = self._json_loads(row["embedding"], None)
-            if not isinstance(embedding, list) or len(embedding) != len(query_embedding):
-                continue
-
-            dot = 0.0
-            chunk_norm_sq = 0.0
-            for left, right in zip(query_embedding, embedding):
-                right_value = float(right)
-                dot += left * right_value
-                chunk_norm_sq += right_value * right_value
-            chunk_norm = math.sqrt(chunk_norm_sq)
-            if chunk_norm == 0:
-                continue
-
-            result = self._chunk_from_row(row)
-            result["score"] = dot / (query_norm * chunk_norm)
-            scored.append(result)
-
-        return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
+            item = self._chunk_from_row(row)
+            item["score"] = float(row["score"])
+            results.append(item)
+        return results
 
     def delete_source(self, source_id: int) -> bool:
         with self._lock, self._connect() as conn:
             chunk_ids = [
-                str(row["id"])
-                for row in conn.execute("SELECT id FROM chunks WHERE source_id = ?", (source_id,)).fetchall()
+                int(row["id"])
+                for row in conn.execute("SELECT id FROM chunks WHERE source_id = %s", (source_id,)).fetchall()
             ]
-            cur = conn.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+            cur = conn.execute("DELETE FROM sources WHERE id = %s", (source_id,))
             conn.execute(
-                "DELETE FROM brain_index WHERE entity_type = 'source' AND entity_id = ?",
-                (str(source_id),),
+                "DELETE FROM brain_index WHERE entity_type = 'source' AND entity_id = %s",
+                (source_id,),
             )
             for chunk_id in chunk_ids:
                 conn.execute(
-                    "DELETE FROM brain_index WHERE entity_type = 'chunk' AND entity_id = ?",
+                    "DELETE FROM brain_index WHERE entity_type = 'chunk' AND entity_id = %s",
                     (chunk_id,),
                 )
             return cur.rowcount > 0
@@ -732,16 +865,21 @@ class BrainStore:
             return []
 
         limit = max(1, min(int(limit), 200))
-        params: list[Any] = [fts_query]
+        params: list[Any] = [fts_query, fts_query]
         sql = """
-            SELECT entity_type, entity_id, title, body, tags, bm25(brain_index) AS rank
-            FROM brain_index
-            WHERE brain_index MATCH ?
+            SELECT entity_type,
+                   entity_id,
+                   title,
+                   body,
+                   tags,
+                   ts_rank_cd(search_vector, to_tsquery('simple', %s)) AS rank
+              FROM brain_index
+             WHERE search_vector @@ to_tsquery('simple', %s)
         """
         if entity_type:
-            sql += " AND entity_type = ?"
+            sql += " AND entity_type = %s"
             params.append(entity_type)
-        sql += " ORDER BY rank LIMIT ?"
+        sql += " ORDER BY rank DESC LIMIT %s"
         params.append(limit)
 
         with self._lock, self._connect() as conn:
@@ -752,7 +890,7 @@ class BrainStore:
                     "title": row["title"],
                     "body": row["body"],
                     "tags": row["tags"].split() if row["tags"] else [],
-                    "rank": row["rank"],
+                    "rank": float(row["rank"]),
                 }
                 for row in conn.execute(sql, params).fetchall()
             ]
@@ -766,13 +904,3 @@ class BrainStore:
             }
             result["indexed"] = int(conn.execute("SELECT COUNT(*) AS c FROM brain_index").fetchone()["c"])
             return result
-
-
-def create_brain_store():
-    database_url = os.environ.get("BRAIN_DATABASE_URL") or os.environ.get("DATABASE_URL")
-    if database_url:
-        from brain_store_postgres import PostgresBrainStore
-
-        return PostgresBrainStore(database_url)
-
-    return BrainStore()

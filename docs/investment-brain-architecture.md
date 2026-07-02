@@ -207,6 +207,7 @@ Current capability:
 - SQLite-based cosine semantic search for embedded chunks
 - company analysis through `POST /api/brain/analyze-company`
 - SQLite FTS keyword search
+- production Postgres/pgvector storage when `DATABASE_URL` or `BRAIN_DATABASE_URL` is configured
 - local browser fallback
 - Vercel frontend routing
 
@@ -215,9 +216,38 @@ Current limitations:
 - no browser-side PDF upload yet
 - no always-on folder watcher yet; scanning is manual
 - embeddings require a Google AI Studio API key and an explicit backfill run
-- no Postgres/pgvector yet
-- SQLite on Render is not enough for permanent production memory unless backed by persistent disk
+- Supabase/Postgres requires a private database connection string, not only the public Supabase project URL
 - the cloud backend cannot read files from your personal computer unless you run the indexer/backend locally or point it at cloud storage
+
+## Supabase Production Store
+
+The current Supabase project URL is:
+
+```text
+https://narvifqyqcsukuavyoik.supabase.co
+```
+
+That URL is public routing information. The backend needs the private Postgres connection string in Render:
+
+```text
+DATABASE_URL=postgresql://...
+```
+
+When `DATABASE_URL` or `BRAIN_DATABASE_URL` is present, the Render backend uses Postgres/pgvector as the brain store. Without it, the backend falls back to local SQLite for development.
+
+The production store creates and uses:
+
+- `memories` for manual decisions, passes, likes, frameworks, and trends
+- `sources` for files, books, notes, and extracted source records
+- `chunks` for searchable text pieces and `vector(3072)` Gemini embeddings
+- `brain_index` for Postgres full-text keyword search
+- pgvector cosine search for semantic retrieval
+
+Schema file:
+
+```text
+backend/migrations/001_supabase_brain_pgvector.sql
+```
 
 Current API spine:
 
