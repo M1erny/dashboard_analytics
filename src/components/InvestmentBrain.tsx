@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     ArrowLeft,
     Archive,
@@ -338,10 +338,18 @@ export const InvestmentBrain: React.FC = () => {
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisMessage, setAnalysisMessage] = useState('');
     const [analysisAnswer, setAnalysisAnswer] = useState('');
+    const analysisOutputRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
         window.localStorage.setItem(MEMORY_STORAGE_KEY, JSON.stringify(memories));
     }, [memories]);
+
+    useEffect(() => {
+        if (!isAnalyzing && !analysisAnswer) return;
+        window.setTimeout(() => {
+            analysisOutputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }, 80);
+    }, [isAnalyzing, analysisAnswer]);
 
     useEffect(() => {
         let cancelled = false;
@@ -953,13 +961,33 @@ export const InvestmentBrain: React.FC = () => {
                                 </button>
                             </div>
 
-                            {analysisMessage && (
-                                <p className="mt-3 text-xs font-semibold text-gray-500">{analysisMessage}</p>
-                            )}
+                            {(analysisMessage || analysisAnswer || isAnalyzing) && (
+                                <div
+                                    ref={analysisOutputRef}
+                                    aria-live="polite"
+                                    className="mt-4 rounded-xl border border-rose-500/20 bg-rose-950/10 p-3 sm:p-4"
+                                >
+                                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <BrainCircuit className="h-4 w-4 text-rose-300" />
+                                            <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-rose-100">Brain Answer</h3>
+                                        </div>
+                                        {analysisMessage && (
+                                            <span className="w-fit rounded border border-white/[0.08] bg-black/20 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-400">
+                                                {analysisMessage}
+                                            </span>
+                                        )}
+                                    </div>
 
-                            {analysisAnswer && (
-                                <div className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.08] bg-black/20 p-4 text-sm leading-6 text-gray-200">
-                                    {analysisAnswer}
+                                    {analysisAnswer ? (
+                                        <div className="mt-3 max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/[0.08] bg-black/25 p-4 text-sm leading-6 text-gray-100">
+                                            {analysisAnswer}
+                                        </div>
+                                    ) : (
+                                        <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/20 p-4 text-sm leading-6 text-gray-400">
+                                            Retrieving context and preparing the answer here.
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </section>
