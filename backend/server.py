@@ -1,6 +1,7 @@
 import sys
 import os
 import html
+import re
 
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
@@ -62,10 +63,12 @@ _cache = {}
 _data_cache = {}  # Shared raw market data cache keyed by portfolio
 if load_backend_env:
     load_backend_env()
+brain_store_error = None
 try:
     brain_store = create_brain_store() if create_brain_store else None
 except Exception as e:
     print(f"Error initializing Investment Brain store: {e}")
+    brain_store_error = str(e)
     brain_store = None
 gemini_client = GeminiClient() if GeminiClient else None
 
@@ -143,9 +146,26 @@ class BrainCompanyAnalysisRequest(BaseModel):
     useSemantic: bool = True
 
 
+def _safe_backend_error(message: str | None) -> str:
+    if not message:
+        return "not initialized"
+
+    clean = str(message)
+    clean = re.sub(r"postgres(?:ql)?://[^\s]+", "postgresql://<redacted>", clean)
+    clean = re.sub(r"password=[^\s]+", "password=<redacted>", clean, flags=re.IGNORECASE)
+    clean = re.sub(r"(api[_-]?key|secret|token)=([^\s&]+)", r"\1=<redacted>", clean, flags=re.IGNORECASE)
+    return clean[:500]
+
+
 def _brain_or_503():
     if not brain_store:
-        raise HTTPException(status_code=503, detail="Investment Brain store is not available")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Investment Brain store is not available",
+                "startupError": _safe_backend_error(brain_store_error),
+            },
+        )
     return brain_store
 
 

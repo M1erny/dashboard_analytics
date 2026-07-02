@@ -111,6 +111,7 @@ class PostgresBrainStore:
             self.database_url,
             row_factory=dict_row,
             prepare_threshold=None,
+            connect_timeout=10,
         )
         try:
             yield conn
