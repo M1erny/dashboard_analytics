@@ -133,13 +133,13 @@ class BrainLocalIndexRequest(BaseModel):
 
 class BrainDriveIndexRequest(BaseModel):
     folderId: str | None = None
-    limitFiles: int = Field(default=100, ge=1, le=2000)
+    limitFiles: int = Field(default=2000, ge=1, le=2000)
     maxBytes: int = Field(default=50 * 1024 * 1024, ge=1024)
     force: bool = False
 
 
 class BrainEmbeddingBackfillRequest(BaseModel):
-    limit: int = Field(default=50, ge=1, le=250)
+    limit: int = Field(default=250, ge=1, le=250)
     force: bool = False
 
 

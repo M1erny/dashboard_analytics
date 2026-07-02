@@ -518,6 +518,8 @@ def index_drive_folder(
         "indexed": sum(1 for item in results if item["status"] == "indexed"),
         "skipped": sum(1 for item in results if item["status"] == "skipped"),
         "errors": sum(1 for item in results if item["status"] == "error"),
+        "limitFiles": limit_files,
+        "limitReached": len(files) >= limit_files,
     }
     return {
         "folderId": clean_folder_id,

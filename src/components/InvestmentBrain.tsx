@@ -108,6 +108,8 @@ type DriveIndexResponse = {
         indexed: number;
         skipped: number;
         errors: number;
+        limitFiles?: number;
+        limitReached?: boolean;
     };
     results: DriveIndexResult[];
     counts?: BrainCounts;
@@ -558,7 +560,7 @@ export const InvestmentBrain: React.FC = () => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    limitFiles: 100,
+                    limitFiles: 2000,
                     force: false,
                 }),
             });
@@ -570,7 +572,10 @@ export const InvestmentBrain: React.FC = () => {
             const payload = await response.json() as DriveIndexResponse;
             setBackendCounts(payload.counts ?? null);
             setDriveResults(payload.results ?? []);
-            setDriveMessage(`${payload.summary.indexed} indexed, ${payload.summary.skipped} skipped, ${payload.summary.errors} errors`);
+            const limitNote = payload.summary.limitReached
+                ? ` Limit reached at ${payload.summary.limitFiles ?? payload.summary.found}; add background sync for larger libraries.`
+                : '';
+            setDriveMessage(`${payload.summary.indexed} indexed, ${payload.summary.skipped} skipped, ${payload.summary.errors} errors from ${payload.summary.found} Drive file(s) scanned.${limitNote}`);
 
             const statusResponse = await fetch(brainApiUrl('/api/brain/index/drive/status'));
             if (statusResponse.ok) {
@@ -589,19 +594,36 @@ export const InvestmentBrain: React.FC = () => {
         setIsEmbedding(true);
         setEmbeddingMessage('');
         try {
-            const response = await fetch(brainApiUrl('/api/brain/embeddings/backfill'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ limit: 50, force: false }),
-            });
-            if (!response.ok) {
-                const payload = await response.json().catch(() => null) as { detail?: string } | null;
-                throw new Error(payload?.detail ?? 'Embedding failed');
+            let totalRequested = 0;
+            let totalEmbedded = 0;
+            let totalErrors = 0;
+            let latestCounts: BrainCounts | null = null;
+            let model = llmStatus?.embeddingModel ?? 'embedding model';
+
+            for (let batch = 1; batch <= 20; batch += 1) {
+                setEmbeddingMessage(`Embedding missing chunks... batch ${batch}`);
+                const response = await fetch(brainApiUrl('/api/brain/embeddings/backfill'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ limit: 250, force: false }),
+                });
+                if (!response.ok) {
+                    const payload = await response.json().catch(() => null) as { detail?: string } | null;
+                    throw new Error(payload?.detail ?? 'Embedding failed');
+                }
+
+                const payload = await response.json() as EmbeddingBackfillResponse;
+                model = payload.model;
+                latestCounts = payload.counts ?? latestCounts;
+                totalRequested += payload.requested;
+                totalEmbedded += payload.embedded;
+                totalErrors += payload.errors.length;
+
+                if (payload.requested < 250 || payload.embedded === 0) break;
             }
 
-            const payload = await response.json() as EmbeddingBackfillResponse;
-            setBackendCounts(payload.counts ?? null);
-            setEmbeddingMessage(`${payload.embedded}/${payload.requested} embedded with ${payload.model}${payload.errors.length ? `, ${payload.errors.length} error(s)` : ''}.`);
+            if (latestCounts) setBackendCounts(latestCounts);
+            setEmbeddingMessage(`${totalEmbedded}/${totalRequested} embedded with ${model}${totalErrors ? `, ${totalErrors} error(s)` : ''}.`);
         } catch (error) {
             setEmbeddingMessage(error instanceof Error ? error.message : 'Embedding failed');
         } finally {
