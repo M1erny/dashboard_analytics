@@ -8,3 +8,4 @@ matplotlib
 seaborn
 pydantic
 httpx
+pypdf

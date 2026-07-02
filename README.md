@@ -9,6 +9,12 @@ The application features a robust **Python/FastAPI backend** for heavy quantitat
 
 The long-term architecture notes for the synthetic investment brain are saved in [`docs/investment-brain-architecture.md`](docs/investment-brain-architecture.md).
 
+Current no-API brain setup:
+- Manual memories, text ingestion, local-file indexing, chunk storage, and keyword search are available.
+- Drop `.txt`, `.md`, `.csv`, `.json`, `.html`, `.docx`, or `.pdf` files into `backend/brain_library`, then open `/dashboard/brain` and run the local folder scan.
+- To point the scanner at a synced Google Drive folder later, run the backend with `BRAIN_LIBRARY_DIR="C:\path\to\Google Drive\Investment Brain"`.
+- AI summaries, embeddings, vector search, and company-analysis answers are intentionally not connected until an AI API key is configured.
+
 ## Key Features
 
 ### 📊 Performance & Risk Analytics

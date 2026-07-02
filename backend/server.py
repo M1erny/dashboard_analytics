@@ -23,9 +23,12 @@ except ImportError as e:
 try:
     from brain_store import BrainStore
     from brain_ingestion import chunk_text, normalize_text, stable_hash
+    from brain_indexer import index_local_library, indexer_status
 except ImportError as e:
     print(f"Error importing Investment Brain modules: {e}")
     BrainStore = None
+    index_local_library = None
+    indexer_status = None
 
 app = FastAPI()
 
@@ -87,6 +90,14 @@ class BrainTextIngestRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     chunkWords: int = Field(default=900, ge=150, le=2500)
     overlapWords: int = Field(default=120, ge=0, le=800)
+
+
+class BrainLocalIndexRequest(BaseModel):
+    rootPath: str | None = None
+    extensions: list[str] | None = None
+    limitFiles: int = Field(default=250, ge=1, le=5000)
+    maxBytes: int = Field(default=50 * 1024 * 1024, ge=1024)
+    force: bool = False
 
 
 def _brain_or_503():
@@ -273,11 +284,41 @@ async def get_brain_status():
             "source_storage",
             "text_ingestion",
             "chunk_indexing",
+            "local_file_indexing",
             "keyword_search",
             "embedding_ready_schema",
         ],
         "counts": store.counts(),
     }
+
+
+@app.get("/api/brain/index/local/status")
+async def get_local_indexer_status(rootPath: str | None = None):
+    _brain_or_503()
+    if not indexer_status:
+        raise HTTPException(status_code=503, detail="Local brain indexer is not available")
+    try:
+        return indexer_status(rootPath)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/brain/index/local")
+async def index_local_brain_library(payload: BrainLocalIndexRequest):
+    store = _brain_or_503()
+    if not index_local_library:
+        raise HTTPException(status_code=503, detail="Local brain indexer is not available")
+    try:
+        return index_local_library(
+            store,
+            root_path=payload.rootPath,
+            extensions=payload.extensions,
+            limit_files=payload.limitFiles,
+            max_bytes=payload.maxBytes,
+            force=payload.force,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/brain/memories")

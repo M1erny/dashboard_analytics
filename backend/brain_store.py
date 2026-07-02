@@ -376,6 +376,101 @@ class BrainStore:
             row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
             return self._source_from_row(row)
 
+    def upsert_file_source(
+        self,
+        *,
+        title: str,
+        body: str,
+        tags: list[str] | None = None,
+        author: str | None = None,
+        source_date: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        force: bool = False,
+    ) -> tuple[dict[str, Any], bool]:
+        title = title.strip()
+        body = body.strip()
+        if not title or not body:
+            raise ValueError("title and body are required")
+
+        clean_metadata = metadata or {}
+        file_identity = str(clean_metadata.get("fileIdentity") or "").strip()
+        file_hash = str(clean_metadata.get("fileHash") or "").strip()
+        if not file_identity or not file_hash:
+            raise ValueError("metadata.fileIdentity and metadata.fileHash are required")
+
+        clean_tags = self._clean_tags(tags)
+        now = self._now()
+        with self._lock, self._connect() as conn:
+            existing = None
+            for row in conn.execute("SELECT * FROM sources WHERE kind = 'file'").fetchall():
+                row_metadata = self._json_loads(row["metadata"], {})
+                if row_metadata.get("fileIdentity") == file_identity:
+                    existing = row
+                    existing_metadata = row_metadata
+                    break
+
+            if existing:
+                if existing_metadata.get("fileHash") == file_hash and not force:
+                    return self._source_from_row(existing), False
+
+                chunk_ids = [
+                    str(row["id"])
+                    for row in conn.execute("SELECT id FROM chunks WHERE source_id = ?", (existing["id"],)).fetchall()
+                ]
+                conn.execute("DELETE FROM chunks WHERE source_id = ?", (existing["id"],))
+                for chunk_id in chunk_ids:
+                    conn.execute(
+                        "DELETE FROM brain_index WHERE entity_type = 'chunk' AND entity_id = ?",
+                        (chunk_id,),
+                    )
+                conn.execute(
+                    """
+                    UPDATE sources
+                       SET title = ?,
+                           body = ?,
+                           author = ?,
+                           source_date = ?,
+                           tags = ?,
+                           metadata = ?,
+                           updated_at = ?
+                     WHERE id = ?
+                    """,
+                    (
+                        title,
+                        body,
+                        author,
+                        source_date,
+                        self._json_dumps(clean_tags),
+                        self._json_dumps(clean_metadata),
+                        now,
+                        existing["id"],
+                    ),
+                )
+                self._replace_index(conn, "source", int(existing["id"]), title, body, clean_tags)
+                row = conn.execute("SELECT * FROM sources WHERE id = ?", (existing["id"],)).fetchone()
+                return self._source_from_row(row), True
+
+            cur = conn.execute(
+                """
+                INSERT INTO sources(kind, title, body, author, source_date, tags, metadata, created_at, updated_at)
+                VALUES ('file', ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    title,
+                    body,
+                    author,
+                    source_date,
+                    self._json_dumps(clean_tags),
+                    self._json_dumps(clean_metadata),
+                    now,
+                    now,
+                ),
+            )
+            source_id = int(cur.lastrowid)
+            self._replace_index(conn, "source", source_id, title, body, clean_tags)
+            row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+            return self._source_from_row(row), True
+
     def list_sources(
         self,
         query: str | None = None,
@@ -410,6 +505,18 @@ class BrainStore:
                 params.append(limit)
 
             return [self._source_from_row(row) for row in conn.execute(sql, params).fetchall()]
+
+    def get_file_source_by_identity(self, file_identity: str) -> dict[str, Any] | None:
+        file_identity = str(file_identity or "").strip()
+        if not file_identity:
+            return None
+
+        with self._lock, self._connect() as conn:
+            for row in conn.execute("SELECT * FROM sources WHERE kind = 'file'").fetchall():
+                metadata = self._json_loads(row["metadata"], {})
+                if metadata.get("fileIdentity") == file_identity:
+                    return self._source_from_row(row)
+        return None
 
     def add_chunks(self, source_id: int, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not chunks:

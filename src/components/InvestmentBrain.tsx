@@ -64,6 +64,37 @@ type BrainStatus = {
     capabilities?: string[];
 };
 
+type LocalIndexerStatus = {
+    configuredRoot: string;
+    exists: boolean;
+    customPathsAllowed: boolean;
+    supportedExtensions: string[];
+    pdfAvailable: boolean;
+    storageMode: string;
+};
+
+type LocalIndexResult = {
+    path: string;
+    relativePath: string;
+    status: 'indexed' | 'skipped' | 'error';
+    reason?: string;
+    sourceId?: number;
+    chunks?: number;
+    bytes?: number;
+};
+
+type LocalIndexResponse = {
+    root: string;
+    summary: {
+        found: number;
+        indexed: number;
+        skipped: number;
+        errors: number;
+    };
+    results: LocalIndexResult[];
+    counts?: BrainCounts;
+};
+
 type BackendState = 'checking' | 'ready' | 'offline';
 
 const memoryTypes: {
@@ -264,6 +295,11 @@ export const InvestmentBrain: React.FC = () => {
     const [sourceTags, setSourceTags] = useState('urbanization, infrastructure, source');
     const [ingestMessage, setIngestMessage] = useState('');
     const [isIngesting, setIsIngesting] = useState(false);
+    const [localIndexerStatus, setLocalIndexerStatus] = useState<LocalIndexerStatus | null>(null);
+    const [indexRootPath, setIndexRootPath] = useState('');
+    const [isIndexing, setIsIndexing] = useState(false);
+    const [indexMessage, setIndexMessage] = useState('');
+    const [indexResults, setIndexResults] = useState<LocalIndexResult[]>([]);
 
     useEffect(() => {
         window.localStorage.setItem(MEMORY_STORAGE_KEY, JSON.stringify(memories));
@@ -278,6 +314,16 @@ export const InvestmentBrain: React.FC = () => {
                 if (!statusResponse.ok) throw new Error('Brain status unavailable');
                 const status = await statusResponse.json() as BrainStatus;
 
+                let nextIndexerStatus: LocalIndexerStatus | null = null;
+                try {
+                    const indexerResponse = await fetch(brainApiUrl('/api/brain/index/local/status'));
+                    if (indexerResponse.ok) {
+                        nextIndexerStatus = await indexerResponse.json() as LocalIndexerStatus;
+                    }
+                } catch {
+                    nextIndexerStatus = null;
+                }
+
                 const memoriesResponse = await fetch(brainApiUrl('/api/brain/memories?limit=200'));
                 if (!memoriesResponse.ok) throw new Error('Brain memories unavailable');
 
@@ -287,6 +333,8 @@ export const InvestmentBrain: React.FC = () => {
                 if (!cancelled) {
                     setBackendState('ready');
                     setBackendCounts(status.counts ?? null);
+                    setLocalIndexerStatus(nextIndexerStatus);
+                    setIndexRootPath(nextIndexerStatus?.configuredRoot ?? '');
                     setMemories(backendMemories);
                 }
             } catch {
@@ -432,6 +480,48 @@ export const InvestmentBrain: React.FC = () => {
             setIngestMessage('Ingestion is unavailable. Check that the backend is running and VITE_API_URL points to it.');
         } finally {
             setIsIngesting(false);
+        }
+    };
+
+    const runLocalIndex = async () => {
+        if (backendState !== 'ready') return;
+
+        setIsIndexing(true);
+        setIndexMessage('');
+        setIndexResults([]);
+        try {
+            const requestedRoot = indexRootPath.trim();
+            const useCustomRoot = localIndexerStatus?.customPathsAllowed
+                && requestedRoot
+                && requestedRoot !== localIndexerStatus.configuredRoot;
+            const response = await fetch(brainApiUrl('/api/brain/index/local'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    rootPath: useCustomRoot ? requestedRoot : undefined,
+                    limitFiles: 250,
+                    force: false,
+                }),
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null) as { detail?: string } | null;
+                throw new Error(payload?.detail ?? 'Local index failed');
+            }
+
+            const payload = await response.json() as LocalIndexResponse;
+            setBackendCounts(payload.counts ?? null);
+            setIndexResults(payload.results ?? []);
+            setIndexMessage(
+                `${payload.summary.indexed} indexed, ${payload.summary.skipped} skipped, ${payload.summary.errors} errors from ${payload.summary.found} file(s)`
+            );
+
+            if (payload.root && payload.root !== localIndexerStatus?.configuredRoot) {
+                setIndexRootPath(payload.root);
+            }
+        } catch (error) {
+            setIndexMessage(error instanceof Error ? error.message : 'Local index failed');
+        } finally {
+            setIsIndexing(false);
         }
     };
 
@@ -708,14 +798,84 @@ export const InvestmentBrain: React.FC = () => {
                                     </div>
                                 ))}
                             </div>
-                            <div className="mt-4 rounded-lg border border-white/[0.08] bg-black/20 p-3">
-                                <div className="flex items-center gap-2">
-                                    <Network className="h-4 w-4 text-gray-300" />
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">Local indexer contract</span>
+                            <div className="mt-4 rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-3">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <HardDrive className="h-4 w-4 text-cyan-300" />
+                                            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-cyan-100">Local Folder Scanner</span>
+                                        </div>
+                                        <p className="mt-2 break-all font-mono text-[11px] leading-5 text-cyan-100/70">
+                                            {localIndexerStatus?.configuredRoot ?? 'Backend folder not loaded'}
+                                        </p>
+                                    </div>
+                                    <span className={cn(
+                                        'inline-flex w-fit shrink-0 items-center rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                        localIndexerStatus?.pdfAvailable
+                                            ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                                            : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                                    )}>
+                                        {localIndexerStatus?.pdfAvailable ? 'PDF ready' : 'PDF needs pypdf'}
+                                    </span>
                                 </div>
-                                <p className="mt-2 text-xs leading-5 text-gray-500">
-                                    Watch a folder, extract text, call `/api/brain/ingest/text` or send prebuilt chunks to `/api/brain/sources/:id/chunks`.
-                                </p>
+
+                                {localIndexerStatus?.customPathsAllowed && (
+                                    <input
+                                        value={indexRootPath}
+                                        onChange={event => setIndexRootPath(event.target.value)}
+                                        className="mt-3 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 font-mono text-xs text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
+                                        placeholder="Local library folder path"
+                                    />
+                                )}
+
+                                <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                    <p className="text-[11px] leading-5 text-cyan-100/60">
+                                        {(localIndexerStatus?.supportedExtensions ?? []).slice(0, 8).join(' ')}
+                                    </p>
+                                    <button
+                                        type="button"
+                                        onClick={runLocalIndex}
+                                        disabled={isIndexing || backendState !== 'ready'}
+                                        className={cn(
+                                            'inline-flex min-h-[38px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                            backendState === 'ready'
+                                                ? 'border-cyan-500/30 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/20'
+                                                : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                        )}
+                                    >
+                                        <Search className="h-3.5 w-3.5" />
+                                        {isIndexing ? 'Scanning' : 'Scan Folder'}
+                                    </button>
+                                </div>
+
+                                {indexMessage && (
+                                    <p className="mt-3 text-xs font-semibold text-cyan-100/80">{indexMessage}</p>
+                                )}
+
+                                {indexResults.length > 0 && (
+                                    <div className="mt-3 max-h-44 space-y-2 overflow-auto pr-1">
+                                        {indexResults.slice(0, 8).map(result => (
+                                            <div key={`${result.path}-${result.status}`} className="rounded-md border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                                                <div className="flex items-start justify-between gap-2">
+                                                    <span className="min-w-0 truncate text-xs font-bold text-white">{result.relativePath}</span>
+                                                    <span className={cn(
+                                                        'shrink-0 rounded border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-[0.08em]',
+                                                        result.status === 'indexed'
+                                                            ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
+                                                            : result.status === 'error'
+                                                                ? 'border-rose-500/20 bg-rose-500/10 text-rose-300'
+                                                                : 'border-white/10 bg-white/[0.04] text-gray-400'
+                                                    )}>
+                                                        {result.status}
+                                                    </span>
+                                                </div>
+                                                <p className="mt-1 text-[10px] leading-4 text-gray-500">
+                                                    {result.reason ?? `${result.chunks ?? 0} chunk(s)`}
+                                                </p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </section>

@@ -197,7 +197,10 @@ Current capability:
 - manual memories
 - memory types: liked, passed, megatrend, framework, question
 - source ingestion through `POST /api/brain/ingest/text`
+- local folder indexing through `POST /api/brain/index/local`
 - deterministic chunking with stable content hashes
+- idempotent local-file indexing using file hashes
+- local extraction for txt, md, csv, json, html, docx, and pdf when `pypdf` is installed
 - searchable `chunks` table prepared for future embeddings
 - SQLite FTS keyword search
 - local browser fallback
@@ -205,16 +208,19 @@ Current capability:
 
 Current limitations:
 
-- no PDF upload yet
-- no local folder indexer yet
+- no browser-side PDF upload yet
+- no always-on folder watcher yet; scanning is manual
 - no embeddings yet
 - no Postgres/pgvector yet
 - SQLite on Render is not enough for permanent production memory unless backed by persistent disk
+- the cloud backend cannot read files from your personal computer unless you run the indexer/backend locally or point it at cloud storage
 
 Current API spine:
 
 ```text
 GET    /api/brain/status
+GET    /api/brain/index/local/status
+POST   /api/brain/index/local
 POST   /api/brain/memories
 GET    /api/brain/memories
 DELETE /api/brain/memories/:id
@@ -233,9 +239,9 @@ GET    /api/brain/search
 1. Add Postgres connection support in the backend.
 2. Add pgvector tables for chunks and embeddings.
 3. Add a sources and chunks ingestion API.
-4. Build a local Brain Indexer that watches the Google Drive folder.
-5. Extract PDF text and page references.
-6. Add file and chunk hashes so re-indexing is incremental.
+4. Add an always-on local Brain Indexer that watches the Google Drive folder.
+5. Improve PDF page references and add OCR for scanned documents.
+6. Add a Drive/remote-file identity layer so re-indexing is portable across machines.
 7. Generate summaries and embeddings through an AI API.
 8. Add source citation views in the dashboard.
 9. Add why-I-liked / why-I-passed / why-I-sold company memory.

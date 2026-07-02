@@ -28,4 +28,6 @@ __pycache__/
 *.pyc
 debug_risk.txt
 backend/brain.db*
+backend/brain_library/*
+!backend/brain_library/.gitkeep
 
