@@ -131,6 +131,12 @@ class BrainStore:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS brain_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE VIRTUAL TABLE IF NOT EXISTS brain_index USING fts5(
                     entity_type UNINDEXED,
                     entity_id UNINDEXED,
@@ -706,7 +712,35 @@ class BrainStore:
             result["score"] = dot / (query_norm * chunk_norm)
             scored.append(result)
 
-        return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
+            return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
+
+    def get_setting(self, key: str) -> str | None:
+        clean_key = str(key or "").strip()
+        if not clean_key:
+            return None
+
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT value FROM brain_settings WHERE key = ?", (clean_key,)).fetchone()
+            return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        clean_key = str(key or "").strip()
+        clean_value = str(value or "").strip()
+        if not clean_key or not clean_value:
+            raise ValueError("key and value are required")
+
+        now = self._now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO brain_settings(key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (clean_key, clean_value, now),
+            )
 
     def delete_source(self, source_id: int) -> bool:
         with self._lock, self._connect() as conn:

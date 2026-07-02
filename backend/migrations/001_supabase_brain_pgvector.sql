@@ -84,6 +84,12 @@ CREATE TABLE IF NOT EXISTS edges (
     created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS brain_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS brain_index (
     entity_type TEXT NOT NULL,
     entity_id BIGINT NOT NULL,

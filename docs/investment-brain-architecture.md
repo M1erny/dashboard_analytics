@@ -22,7 +22,7 @@ Use a hybrid setup rather than trying to store everything inside Vercel, Render,
 Google Drive synced folder / local archive
         |
         v
-Local Brain Indexer on your computer
+Google Drive API indexer or local Brain Indexer
         |
         v
 Text extraction, OCR, chunking, hashes, summaries, embeddings
@@ -190,7 +190,7 @@ The final output should include:
 
 ## Current App State
 
-The current dashboard has the first version of the Investment Brain page and a SQLite-backed backend memory/search API.
+The current dashboard has the first version of the Investment Brain page with local SQLite fallback and production Postgres/pgvector storage.
 
 Current capability:
 
@@ -198,8 +198,11 @@ Current capability:
 - memory types: liked, passed, megatrend, framework, question
 - source ingestion through `POST /api/brain/ingest/text`
 - local folder indexing through `POST /api/brain/index/local`
+- Google Drive API folder indexing through `POST /api/brain/index/drive`
+- Google Drive OAuth connection through `GET /api/brain/drive/auth-url`
 - deterministic chunking with stable content hashes
 - idempotent local-file indexing using file hashes
+- idempotent Drive indexing using stable Drive file IDs and revision hashes
 - local extraction for txt, md, csv, json, html, docx, and pdf when `pypdf` is installed
 - searchable `chunks` table prepared for future embeddings
 - Gemini API client through `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`
@@ -217,7 +220,42 @@ Current limitations:
 - no always-on folder watcher yet; scanning is manual
 - embeddings require a Google AI Studio API key and an explicit backfill run
 - Supabase/Postgres requires a private database connection string, not only the public Supabase project URL
-- the cloud backend cannot read files from your personal computer unless you run the indexer/backend locally or point it at cloud storage
+- the cloud backend can read Drive through the Drive API, but it still cannot read arbitrary files from your personal computer
+
+## Google Drive API Store
+
+The configured Drive folder is:
+
+```text
+https://drive.google.com/drive/folders/1DkFRs5oCdPt8j-3Z-vfR8BnG4y8Eqdc5
+```
+
+Render environment variables:
+
+```text
+GOOGLE_DRIVE_FOLDER_ID=1DkFRs5oCdPt8j-3Z-vfR8BnG4y8Eqdc5
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_OAUTH_REDIRECT_URI=https://dashboard-eo6k.onrender.com/api/brain/drive/oauth/callback
+```
+
+Optional unattended sync:
+
+```text
+GOOGLE_DRIVE_REFRESH_TOKEN=...
+```
+
+If `GOOGLE_DRIVE_REFRESH_TOKEN` is omitted, the dashboard can open the OAuth consent URL and save the refresh token into the brain database after approval.
+
+Drive sync stores:
+
+- Drive file ID, name, relative path, MIME type, modified time, and web link
+- extracted text preview in `sources`
+- chunked full text in `chunks`
+- stable chunk hashes for idempotent re-indexing
+- embeddings after `POST /api/brain/embeddings/backfill`
+
+Raw PDFs/books remain in Google Drive. The database stores metadata, extracted text, chunks, and embeddings.
 
 ## Supabase Production Store
 
@@ -255,6 +293,10 @@ Current API spine:
 GET    /api/brain/status
 GET    /api/brain/index/local/status
 POST   /api/brain/index/local
+GET    /api/brain/index/drive/status
+GET    /api/brain/drive/auth-url
+GET    /api/brain/drive/oauth/callback
+POST   /api/brain/index/drive
 GET    /api/brain/llm/status
 POST   /api/brain/embeddings/backfill
 GET    /api/brain/search/semantic
@@ -274,16 +316,12 @@ GET    /api/brain/search
 
 ## Next Build Steps
 
-1. Add Postgres connection support in the backend.
-2. Add pgvector tables for chunks and embeddings.
-3. Add a sources and chunks ingestion API.
-4. Add an always-on local Brain Indexer that watches the Google Drive folder.
-5. Improve PDF page references and add OCR for scanned documents.
-6. Add a Drive/remote-file identity layer so re-indexing is portable across machines.
-7. Add source-level summaries and memory extraction through the Gemini API.
-8. Add source citation views in the dashboard.
-9. Add why-I-liked / why-I-passed / why-I-sold company memory.
-10. Add backups and export tools.
+1. Add scheduled Drive sync or a queue worker.
+2. Improve PDF page references and add OCR for scanned documents.
+3. Add source-level summaries and memory extraction through the Gemini API.
+4. Add source citation views in the dashboard.
+5. Add why-I-liked / why-I-passed / why-I-sold company memory.
+6. Add backups and export tools.
 
 ## Principle
 

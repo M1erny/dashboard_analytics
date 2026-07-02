@@ -1,9 +1,11 @@
 import sys
 import os
+import html
 
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import pandas as pd
@@ -24,13 +26,26 @@ try:
     from brain_store import create_brain_store
     from brain_ingestion import chunk_text, normalize_text, stable_hash
     from brain_indexer import index_local_library, indexer_status
-    from gemini_client import GeminiClient
+    from drive_indexer import (
+        GoogleDriveClient,
+        configured_redirect_uri,
+        google_drive_auth_url,
+        index_drive_folder,
+        parse_drive_folder_id,
+    )
+    from gemini_client import GeminiClient, load_backend_env
 except ImportError as e:
     print(f"Error importing Investment Brain modules: {e}")
     create_brain_store = None
     index_local_library = None
     indexer_status = None
+    GoogleDriveClient = None
+    configured_redirect_uri = None
+    google_drive_auth_url = None
+    index_drive_folder = None
+    parse_drive_folder_id = None
     GeminiClient = None
+    load_backend_env = None
 
 app = FastAPI()
 
@@ -45,6 +60,8 @@ app.add_middleware(
 # Response cache (mapped by costTier, 5 minute TTL)
 _cache = {}
 _data_cache = {}  # Shared raw market data cache keyed by portfolio
+if load_backend_env:
+    load_backend_env()
 try:
     brain_store = create_brain_store() if create_brain_store else None
 except Exception as e:
@@ -103,6 +120,13 @@ class BrainLocalIndexRequest(BaseModel):
     rootPath: str | None = None
     extensions: list[str] | None = None
     limitFiles: int = Field(default=250, ge=1, le=5000)
+    maxBytes: int = Field(default=50 * 1024 * 1024, ge=1024)
+    force: bool = False
+
+
+class BrainDriveIndexRequest(BaseModel):
+    folderId: str | None = None
+    limitFiles: int = Field(default=100, ge=1, le=2000)
     maxBytes: int = Field(default=50 * 1024 * 1024, ge=1024)
     force: bool = False
 
@@ -317,6 +341,7 @@ async def get_brain_status():
             "text_ingestion",
             "chunk_indexing",
             "local_file_indexing",
+            "google_drive_indexing",
             "keyword_search",
             "gemini_embeddings",
             "gemini_company_analysis",
@@ -344,6 +369,86 @@ async def get_local_indexer_status(rootPath: str | None = None):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+def _drive_or_503() -> GoogleDriveClient:
+    store = _brain_or_503()
+    if not GoogleDriveClient:
+        raise HTTPException(status_code=503, detail="Google Drive client is not available")
+    return GoogleDriveClient(store=store)
+
+
+@app.get("/api/brain/index/drive/status")
+async def get_drive_indexer_status():
+    client = _drive_or_503()
+    folder_id = parse_drive_folder_id() if parse_drive_folder_id else None
+    return client.status(folder_id)
+
+
+@app.get("/api/brain/drive/auth-url")
+async def get_drive_auth_url(request: Request):
+    _drive_or_503()
+    if not google_drive_auth_url or not configured_redirect_uri:
+        raise HTTPException(status_code=503, detail="Google Drive OAuth is not available")
+
+    redirect_uri = configured_redirect_uri(str(request.url_for("google_drive_oauth_callback")))
+    if not redirect_uri:
+        raise HTTPException(status_code=400, detail="Google Drive redirect URI is not configured")
+    try:
+        return {"url": google_drive_auth_url(redirect_uri), "redirectUri": redirect_uri}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/brain/drive/oauth/callback", response_class=HTMLResponse)
+async def google_drive_oauth_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    client = _drive_or_503()
+    if error:
+        return HTMLResponse(
+            f"<h1>Google Drive connection failed</h1><p>{html.escape(error)}</p>",
+            status_code=400,
+        )
+    if not code:
+        return HTMLResponse("<h1>Google Drive connection failed</h1><p>Missing OAuth code.</p>", status_code=400)
+
+    expected_state = os.environ.get("GOOGLE_OAUTH_STATE")
+    if expected_state and state != expected_state:
+        return HTMLResponse("<h1>Google Drive connection failed</h1><p>Invalid OAuth state.</p>", status_code=400)
+
+    redirect_uri = configured_redirect_uri(str(request.url_for("google_drive_oauth_callback"))) if configured_redirect_uri else None
+    try:
+        result = client.exchange_code(code, redirect_uri)
+    except Exception as e:
+        return HTMLResponse(
+            f"<h1>Google Drive connection failed</h1><p>{html.escape(str(e))}</p>",
+            status_code=400,
+        )
+
+    refresh_message = (
+        "Refresh token saved to the brain database."
+        if result.get("hasRefreshToken")
+        else "Access granted, but Google did not return a refresh token. Reconnect with prompt=consent or set GOOGLE_DRIVE_REFRESH_TOKEN in Render."
+    )
+    return HTMLResponse(
+        "<h1>Google Drive connected</h1>"
+        f"<p>{refresh_message}</p>"
+        "<p>You can close this tab and return to the Investment Brain.</p>"
+    )
+
+
+@app.get("/api/auth/google/callback", response_class=HTMLResponse)
+async def google_drive_legacy_oauth_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    return await google_drive_oauth_callback(request=request, code=code, state=state, error=error)
+
+
 @app.post("/api/brain/index/local")
 async def index_local_brain_library(payload: BrainLocalIndexRequest):
     store = _brain_or_503()
@@ -360,6 +465,25 @@ async def index_local_brain_library(payload: BrainLocalIndexRequest):
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/brain/index/drive")
+async def index_google_drive_brain_folder(payload: BrainDriveIndexRequest):
+    store = _brain_or_503()
+    if not index_drive_folder:
+        raise HTTPException(status_code=503, detail="Google Drive indexer is not available")
+    try:
+        return index_drive_folder(
+            store,
+            folder_id=payload.folderId,
+            limit_files=payload.limitFiles,
+            max_bytes=payload.maxBytes,
+            force=payload.force,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @app.get("/api/brain/memories")

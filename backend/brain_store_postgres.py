@@ -225,6 +225,15 @@ class PostgresBrainStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS brain_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS brain_index (
                     entity_type TEXT NOT NULL,
                     entity_id BIGINT NOT NULL,
@@ -840,6 +849,34 @@ class PostgresBrainStore:
             item["score"] = float(row["score"])
             results.append(item)
         return results
+
+    def get_setting(self, key: str) -> str | None:
+        clean_key = str(key or "").strip()
+        if not clean_key:
+            return None
+
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT value FROM brain_settings WHERE key = %s", (clean_key,)).fetchone()
+            return row["value"] if row else None
+
+    def set_setting(self, key: str, value: str) -> None:
+        clean_key = str(key or "").strip()
+        clean_value = str(value or "").strip()
+        if not clean_key or not clean_value:
+            raise ValueError("key and value are required")
+
+        now = self._now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO brain_settings(key, value, updated_at)
+                VALUES (%s, %s, %s)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (clean_key, clean_value, now),
+            )
 
     def delete_source(self, source_id: int) -> bool:
         with self._lock, self._connect() as conn:

@@ -7,9 +7,12 @@ import {
     BrainCircuit,
     Building2,
     CheckCircle2,
+    Cloud,
     Database,
     Download,
+    ExternalLink,
     FileText,
+    FolderSync,
     GitBranch,
     HardDrive,
     Heart,
@@ -101,6 +104,43 @@ type LocalIndexResponse = {
         errors: number;
     };
     results: LocalIndexResult[];
+    counts?: BrainCounts;
+};
+
+type DriveIndexerStatus = {
+    configured: boolean;
+    folderId?: string | null;
+    folderUrl?: string | null;
+    authConfigured: boolean;
+    connected: boolean;
+    tokenSource?: string | null;
+    supportedExtensions: string[];
+    pdfAvailable: boolean;
+    storageMode: string;
+};
+
+type DriveIndexResult = {
+    id?: string;
+    name?: string;
+    relativePath: string;
+    status: 'indexed' | 'skipped' | 'error';
+    reason?: string;
+    sourceId?: number;
+    chunks?: number;
+    bytes?: number;
+    webViewLink?: string;
+};
+
+type DriveIndexResponse = {
+    folderId: string;
+    folderUrl?: string;
+    summary: {
+        found: number;
+        indexed: number;
+        skipped: number;
+        errors: number;
+    };
+    results: DriveIndexResult[];
     counts?: BrainCounts;
 };
 
@@ -325,6 +365,10 @@ export const InvestmentBrain: React.FC = () => {
     const [isIndexing, setIsIndexing] = useState(false);
     const [indexMessage, setIndexMessage] = useState('');
     const [indexResults, setIndexResults] = useState<LocalIndexResult[]>([]);
+    const [driveStatus, setDriveStatus] = useState<DriveIndexerStatus | null>(null);
+    const [isDriveSyncing, setIsDriveSyncing] = useState(false);
+    const [driveMessage, setDriveMessage] = useState('');
+    const [driveResults, setDriveResults] = useState<DriveIndexResult[]>([]);
     const [llmStatus, setLlmStatus] = useState<BrainLlmStatus | null>(null);
     const [isEmbedding, setIsEmbedding] = useState(false);
     const [embeddingMessage, setEmbeddingMessage] = useState('');
@@ -348,6 +392,7 @@ export const InvestmentBrain: React.FC = () => {
                 const status = await statusResponse.json() as BrainStatus;
 
                 let nextIndexerStatus: LocalIndexerStatus | null = null;
+                let nextDriveStatus: DriveIndexerStatus | null = null;
                 try {
                     const indexerResponse = await fetch(brainApiUrl('/api/brain/index/local/status'));
                     if (indexerResponse.ok) {
@@ -355,6 +400,14 @@ export const InvestmentBrain: React.FC = () => {
                     }
                 } catch {
                     nextIndexerStatus = null;
+                }
+                try {
+                    const driveResponse = await fetch(brainApiUrl('/api/brain/index/drive/status'));
+                    if (driveResponse.ok) {
+                        nextDriveStatus = await driveResponse.json() as DriveIndexerStatus;
+                    }
+                } catch {
+                    nextDriveStatus = null;
                 }
 
                 const memoriesResponse = await fetch(brainApiUrl('/api/brain/memories?limit=200'));
@@ -368,6 +421,7 @@ export const InvestmentBrain: React.FC = () => {
                     setBackendCounts(status.counts ?? null);
                     setLlmStatus(status.llm ?? null);
                     setLocalIndexerStatus(nextIndexerStatus);
+                    setDriveStatus(nextDriveStatus);
                     setIndexRootPath(nextIndexerStatus?.configuredRoot ?? '');
                     setMemories(backendMemories);
                 }
@@ -556,6 +610,64 @@ export const InvestmentBrain: React.FC = () => {
             setIndexMessage(error instanceof Error ? error.message : 'Local index failed');
         } finally {
             setIsIndexing(false);
+        }
+    };
+
+    const connectGoogleDrive = async () => {
+        if (backendState !== 'ready') return;
+
+        setDriveMessage('');
+        try {
+            const response = await fetch(brainApiUrl('/api/brain/drive/auth-url'));
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null) as { detail?: string } | null;
+                throw new Error(payload?.detail ?? 'Google Drive auth is not configured');
+            }
+
+            const payload = await response.json() as { url?: string };
+            if (!payload.url) throw new Error('Google Drive auth URL is missing');
+            window.open(payload.url, '_blank', 'noopener,noreferrer');
+            setDriveMessage('Google permission tab opened. After approving, refresh this page and sync Drive.');
+        } catch (error) {
+            setDriveMessage(error instanceof Error ? error.message : 'Could not start Google Drive connection');
+        }
+    };
+
+    const runDriveIndex = async () => {
+        if (backendState !== 'ready') return;
+
+        setIsDriveSyncing(true);
+        setDriveMessage('');
+        setDriveResults([]);
+        try {
+            const response = await fetch(brainApiUrl('/api/brain/index/drive'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    limitFiles: 100,
+                    force: false,
+                }),
+            });
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null) as { detail?: string } | null;
+                throw new Error(payload?.detail ?? 'Google Drive sync failed');
+            }
+
+            const payload = await response.json() as DriveIndexResponse;
+            setBackendCounts(payload.counts ?? null);
+            setDriveResults(payload.results ?? []);
+            setDriveMessage(
+                `${payload.summary.indexed} indexed, ${payload.summary.skipped} skipped, ${payload.summary.errors} errors from ${payload.summary.found} Drive file(s)`
+            );
+
+            const statusResponse = await fetch(brainApiUrl('/api/brain/index/drive/status'));
+            if (statusResponse.ok) {
+                setDriveStatus(await statusResponse.json() as DriveIndexerStatus);
+            }
+        } catch (error) {
+            setDriveMessage(error instanceof Error ? error.message : 'Google Drive sync failed');
+        } finally {
+            setIsDriveSyncing(false);
         }
     };
 
@@ -851,7 +963,7 @@ export const InvestmentBrain: React.FC = () => {
 
                             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                 <p className="text-xs leading-5 text-gray-500">
-                                    Embeddings are intentionally not connected yet. The schema already has a slot for them.
+                                    Saved text is chunked immediately. Use the semantic layer to attach embeddings after ingestion.
                                 </p>
                                 <button
                                     type="button"
@@ -932,6 +1044,101 @@ export const InvestmentBrain: React.FC = () => {
                                 </div>
                                 {embeddingMessage && (
                                     <p className="mt-3 text-xs font-semibold text-violet-100/80">{embeddingMessage}</p>
+                                )}
+                            </div>
+                            <div className="mt-4 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3">
+                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                                    <div className="min-w-0">
+                                        <div className="flex items-center gap-2">
+                                            <Cloud className="h-4 w-4 text-emerald-300" />
+                                            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-100">Google Drive Brain</span>
+                                        </div>
+                                        <p className="mt-2 break-all font-mono text-[11px] leading-5 text-emerald-100/70">
+                                            {driveStatus?.folderId ? `drive folder ${driveStatus.folderId}` : 'Drive folder not configured'}
+                                        </p>
+                                    </div>
+                                    <span className={cn(
+                                        'inline-flex w-fit shrink-0 items-center rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                        driveStatus?.connected
+                                            ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                                            : driveStatus?.authConfigured
+                                                ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                                                : 'border-rose-500/25 bg-rose-500/10 text-rose-300'
+                                    )}>
+                                        {driveStatus?.connected ? 'Connected' : driveStatus?.authConfigured ? 'Needs auth' : 'Needs env'}
+                                    </span>
+                                </div>
+
+                                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                    <button
+                                        type="button"
+                                        onClick={connectGoogleDrive}
+                                        disabled={backendState !== 'ready' || !driveStatus?.authConfigured}
+                                        className={cn(
+                                            'inline-flex min-h-[38px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                            backendState === 'ready' && driveStatus?.authConfigured
+                                                ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
+                                                : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                        )}
+                                    >
+                                        <ExternalLink className="h-3.5 w-3.5" />
+                                        Connect
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={runDriveIndex}
+                                        disabled={isDriveSyncing || backendState !== 'ready' || !driveStatus?.connected || !driveStatus?.configured}
+                                        className={cn(
+                                            'inline-flex min-h-[38px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                            backendState === 'ready' && driveStatus?.connected && driveStatus?.configured
+                                                ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
+                                                : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                        )}
+                                    >
+                                        <FolderSync className="h-3.5 w-3.5" />
+                                        {isDriveSyncing ? 'Syncing' : 'Sync Drive'}
+                                    </button>
+                                </div>
+
+                                {driveStatus?.folderUrl && (
+                                    <a
+                                        href={driveStatus.folderUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-100/70 hover:text-emerald-100"
+                                    >
+                                        Open Drive folder
+                                        <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                )}
+
+                                {driveMessage && (
+                                    <p className="mt-3 text-xs font-semibold text-emerald-100/80">{driveMessage}</p>
+                                )}
+
+                                {driveResults.length > 0 && (
+                                    <div className="mt-3 max-h-44 space-y-2 overflow-auto pr-1">
+                                        {driveResults.slice(0, 8).map(result => (
+                                            <div key={`${result.id ?? result.relativePath}-${result.status}`} className="rounded-md border border-white/[0.06] bg-black/20 px-2.5 py-2">
+                                                <div className="flex items-start justify-between gap-2">
+                                                    <span className="min-w-0 truncate text-xs font-bold text-white">{result.relativePath}</span>
+                                                    <span className={cn(
+                                                        'shrink-0 rounded border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-[0.08em]',
+                                                        result.status === 'indexed'
+                                                            ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
+                                                            : result.status === 'error'
+                                                                ? 'border-rose-500/20 bg-rose-500/10 text-rose-300'
+                                                                : 'border-white/10 bg-white/[0.04] text-gray-400'
+                                                    )}>
+                                                        {result.status}
+                                                    </span>
+                                                </div>
+                                                <p className="mt-1 text-[10px] leading-4 text-gray-500">
+                                                    {result.reason ?? `${result.chunks ?? 0} chunk(s)`}
+                                                </p>
+                                            </div>
+                                        ))}
+                                    </div>
                                 )}
                             </div>
                             <div className="mt-4 rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-3">
@@ -1024,7 +1231,7 @@ export const InvestmentBrain: React.FC = () => {
                                     <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Search All Indexed Data</h2>
                                 </div>
                                 <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-500">
-                                    This calls the backend SQLite FTS index. It searches memories, sources, chunks, and future idea/thesis records through one retrieval layer.
+                                    This calls the backend search index. It searches memories, sources, chunks, and future idea/thesis records through one retrieval layer.
                                 </p>
                             </div>
                             <span className={cn(
