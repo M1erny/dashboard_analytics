@@ -21,9 +21,23 @@ The ledger has frozen snapshots and an `activeConfigEffectiveDate`.
 1. Before changing the book, make sure the old book is frozen in `main.rebalances.json`.
 2. Set `activeConfigEffectiveDate` to the trading date when the new book should start counting.
 3. Edit `main.json` to the new target book.
-4. Run the dashboard and check the header shows `Dated book`.
-5. Compare YTD return, YTD contribution, gross exposure, and exited positions before trusting the result.
+4. Run `python backend/validate_portfolio_history.py`.
+5. Run the dashboard and check the header shows `Dated book`.
+6. Compare YTD return, YTD contribution, gross exposure, and exited positions before trusting the result.
+7. Commit the portfolio JSON changes with a message that includes the effective date.
 
 ## Important
 
 Do not delete old tickers from the ledger snapshot. They are needed so first-half results still count after the rebalance.
+
+Do not force-push or rewrite Git history after portfolio JSON changes unless the user explicitly requests it. The commit history is the long-term audit trail.
+
+## Traceback Commands
+
+Use these commands to recover the exact portfolio JSON from any historical commit:
+
+```bash
+git log -- backend/portfolios/main.json backend/portfolios/main.rebalances.json
+git show <commit-hash>:backend/portfolios/main.json
+git show <commit-hash>:backend/portfolios/main.rebalances.json
+```

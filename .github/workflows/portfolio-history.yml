@@ -1,0 +1,23 @@
+name: Portfolio history guard
+
+on:
+  push:
+    paths:
+      - "backend/portfolios/**"
+      - "backend/validate_portfolio_history.py"
+      - ".github/workflows/portfolio-history.yml"
+  pull_request:
+    paths:
+      - "backend/portfolios/**"
+      - "backend/validate_portfolio_history.py"
+      - ".github/workflows/portfolio-history.yml"
+
+jobs:
+  validate-portfolio-history:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python backend/validate_portfolio_history.py
