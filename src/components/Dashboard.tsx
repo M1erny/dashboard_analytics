@@ -18,8 +18,6 @@ import { cn } from '../lib/utils';
 // the user scrolls past the ExecutiveSummary + ReturnsHeatmap.
 const CountryMapWidget = lazy(() => import('./dashboard/CountryMapWidget').then(m => ({ default: m.CountryMapWidget })));
 // ConvexityWidget is statically imported (also used inside ExecutiveSummary compact view)
-const StockLookup = lazy(() => import('./dashboard/StockLookup').then(m => ({ default: m.StockLookup })));
-const MoatWidget = lazy(() => import('./dashboard/MoatWidget').then(m => ({ default: m.MoatWidget })));
 
 // ─── Suspense fallback skeleton ──────────────────────────────
 const WidgetSkeleton = ({ height = 'h-[300px]' }: { height?: string }) => (
@@ -684,15 +682,6 @@ export const Dashboard: React.FC = () => {
                     <CountryMapWidget countryAllocation={countryAllocation} />
                 </Suspense>
 
-                {/* ROW 4: Business Quality — Munger Lens (lazy-loaded, makes own API call) */}
-                <Suspense fallback={<WidgetSkeleton height="h-[300px]" />}>
-                    <MoatWidget portfolioName={portfolioName} />
-                </Suspense>
-
-                {/* ROW 5: Stock Lookup (lazy-loaded, interactive tool) */}
-                <Suspense fallback={<WidgetSkeleton height="h-[200px]" />}>
-                    <StockLookup />
-                </Suspense>
             </div>
             </div>
 

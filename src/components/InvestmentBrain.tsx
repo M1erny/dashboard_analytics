@@ -2,10 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
     ArrowLeft,
     Archive,
-    BadgeCheck,
     BookOpen,
     BrainCircuit,
-    Building2,
     CheckCircle2,
     Cloud,
     Database,
@@ -18,14 +16,13 @@ import {
     Heart,
     Layers3,
     Lightbulb,
-    Network,
     Plus,
+    RotateCcw,
     Search,
     ServerCog,
     ShieldAlert,
     Sparkles,
     Target,
-    RotateCcw,
     Trash2,
     XCircle,
     type LucideIcon,
@@ -63,6 +60,10 @@ type BrainCounts = {
 
 type BrainStatus = {
     state?: string;
+    database?: string;
+    storage?: string;
+    search?: string;
+    vectorSearch?: string;
     counts?: BrainCounts;
     capabilities?: string[];
     llm?: BrainLlmStatus;
@@ -162,25 +163,31 @@ type BrainAnalysisResponse = {
 
 type BackendState = 'checking' | 'ready' | 'offline';
 
+const MEMORY_STORAGE_KEY = 'investment-brain-memories-v1';
+const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+const memoryTypeValues: MemoryType[] = ['liked', 'passed', 'trend', 'framework', 'question'];
+
+const brainApiUrl = (path: string) => `${API_BASE}${path}`;
+
 const memoryTypes: {
     type: MemoryType;
     label: string;
     Icon: LucideIcon;
     activeClass: string;
 }[] = [
-    { type: 'liked', label: 'Liked', Icon: Heart, activeClass: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30' },
-    { type: 'passed', label: 'Passed', Icon: XCircle, activeClass: 'bg-rose-500/15 text-rose-300 border-rose-500/30' },
-    { type: 'trend', label: 'Megatrend', Icon: GitBranch, activeClass: 'bg-sky-500/15 text-sky-300 border-sky-500/30' },
-    { type: 'framework', label: 'Framework', Icon: BookOpen, activeClass: 'bg-amber-500/15 text-amber-300 border-amber-500/30' },
-    { type: 'question', label: 'Question', Icon: Search, activeClass: 'bg-violet-500/15 text-violet-300 border-violet-500/30' },
+    { type: 'liked', label: 'Liked', Icon: Heart, activeClass: 'border-emerald-500/35 bg-emerald-500/15 text-emerald-200' },
+    { type: 'passed', label: 'Passed', Icon: XCircle, activeClass: 'border-rose-500/35 bg-rose-500/15 text-rose-200' },
+    { type: 'trend', label: 'Megatrend', Icon: GitBranch, activeClass: 'border-sky-500/35 bg-sky-500/15 text-sky-200' },
+    { type: 'framework', label: 'Framework', Icon: BookOpen, activeClass: 'border-amber-500/35 bg-amber-500/15 text-amber-200' },
+    { type: 'question', label: 'Question', Icon: Search, activeClass: 'border-violet-500/35 bg-violet-500/15 text-violet-200' },
 ];
 
 const memoryTone: Record<MemoryType, { Icon: LucideIcon; className: string; label: string }> = {
-    liked: { Icon: Heart, className: 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20', label: 'Liked' },
-    passed: { Icon: XCircle, className: 'text-rose-300 bg-rose-500/10 border-rose-500/20', label: 'Passed' },
-    trend: { Icon: GitBranch, className: 'text-sky-300 bg-sky-500/10 border-sky-500/20', label: 'Megatrend' },
-    framework: { Icon: BookOpen, className: 'text-amber-300 bg-amber-500/10 border-amber-500/20', label: 'Framework' },
-    question: { Icon: Search, className: 'text-violet-300 bg-violet-500/10 border-violet-500/20', label: 'Question' },
+    liked: { Icon: Heart, className: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300', label: 'Liked' },
+    passed: { Icon: XCircle, className: 'border-rose-500/25 bg-rose-500/10 text-rose-300', label: 'Passed' },
+    trend: { Icon: GitBranch, className: 'border-sky-500/25 bg-sky-500/10 text-sky-300', label: 'Megatrend' },
+    framework: { Icon: BookOpen, className: 'border-amber-500/25 bg-amber-500/10 text-amber-300', label: 'Framework' },
+    question: { Icon: Search, className: 'border-violet-500/25 bg-violet-500/10 text-violet-300', label: 'Question' },
 };
 
 const seedMemories: BrainMemory[] = [
@@ -206,85 +213,6 @@ const seedMemories: BrainMemory[] = [
         tags: ['compounder', 'owner-operator', 'quality'],
     },
 ];
-
-const brainLayers = [
-    {
-        title: 'Library',
-        detail: 'PDFs, books, annual reports, letters, transcripts, saved articles, and your own notes.',
-        Icon: Archive,
-        color: 'text-sky-300',
-    },
-    {
-        title: 'Idea Extraction',
-        detail: 'Turn raw sources into principles, warnings, mental models, valuation lenses, and company signals.',
-        Icon: Sparkles,
-        color: 'text-amber-300',
-    },
-    {
-        title: 'Knowledge Graph',
-        detail: 'Connect companies, industries, megatrends, risks, frameworks, people, and case studies.',
-        Icon: Network,
-        color: 'text-violet-300',
-    },
-    {
-        title: 'Personal Memory',
-        detail: 'Store why you liked, passed, bought, sold, or changed your mind about a company.',
-        Icon: BrainCircuit,
-        color: 'text-emerald-300',
-    },
-];
-
-const analysisLoop = [
-    'Retrieve your memories about the company, sector, and management pattern.',
-    'Pull matching frameworks from the library and graph.',
-    'Read current filings, financials, valuation, and portfolio context.',
-    'Generate bull, bear, base, and what-would-change-my-mind sections.',
-    'Save the final thesis, pass reason, or watchlist trigger back into memory.',
-];
-
-const databaseChoices = [
-    {
-        title: 'Start: SQLite',
-        label: 'Best first move',
-        Icon: Database,
-        detail: 'Free, local, simple, and durable. Use tables for memories and documents, JSON for metadata, and FTS5 for keyword search.',
-        points: ['Zero server burden', 'Easy backups', 'Perfect for one-person research brain'],
-        className: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300',
-    },
-    {
-        title: 'Scale: Postgres + pgvector',
-        label: 'When it grows',
-        Icon: ServerCog,
-        detail: 'Use this when you need stronger API concurrency, richer JSONB querying, embeddings, joins, and eventually hosted access.',
-        points: ['Company/thesis joins', 'Vector search', 'Cleaner multi-device API'],
-        className: 'border-sky-500/25 bg-sky-500/10 text-sky-300',
-    },
-];
-
-const futureEndpoints = [
-    'POST /api/brain/ingest/text',
-    'POST /api/brain/sources',
-    'POST /api/brain/sources/:id/chunks',
-    'POST /api/brain/memories',
-    'GET /api/brain/chunks',
-    'GET /api/brain/company/:ticker/context',
-    'POST /api/brain/analyze-company',
-];
-
-const schemaRows = [
-    ['sources', 'Uploaded books, PDFs, filings, notes, links, and metadata'],
-    ['chunks', 'Searchable excerpts with source, page, tags, hashes, and future embeddings'],
-    ['ideas', 'Principles, warnings, frameworks, trend claims, and valuation lenses'],
-    ['memories', 'Why you liked, passed, bought, sold, or paused a company'],
-    ['theses', 'Living company writeups with assumptions and change-my-mind triggers'],
-    ['edges', 'Graph links between companies, trends, sectors, risks, and frameworks'],
-];
-
-const MEMORY_STORAGE_KEY = 'investment-brain-memories-v1';
-const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
-
-const brainApiUrl = (path: string) => `${API_BASE}${path}`;
-const memoryTypeValues: MemoryType[] = ['liked', 'passed', 'trend', 'framework', 'question'];
 
 const formatTags = (value: string) =>
     value
@@ -343,6 +271,30 @@ const loadStoredMemories = () => {
     }
 };
 
+const formatStorage = (storage?: string) => {
+    if (storage === 'postgres_pgvector') return 'Supabase pgvector';
+    if (storage === 'sqlite') return 'SQLite';
+    return 'Not connected';
+};
+
+const formatSearchDetail = (status: BrainStatus | null) => {
+    if (status?.storage === 'postgres_pgvector') return 'Semantic search ready';
+    if (status?.vectorSearch) return 'Semantic search after embeddings';
+    if (status?.search) return 'Keyword search ready';
+    return 'No search index yet';
+};
+
+const formatDriveFolder = (status: DriveIndexerStatus | null) => {
+    if (!status?.folderId) return 'No Drive folder selected yet';
+    return status.folderUrl ? 'Google Drive folder linked' : 'Drive folder ID saved';
+};
+
+const resultTone = (status: 'indexed' | 'skipped' | 'error') => {
+    if (status === 'indexed') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
+    if (status === 'error') return 'border-rose-500/25 bg-rose-500/10 text-rose-300';
+    return 'border-white/10 bg-white/[0.04] text-gray-400';
+};
+
 export const InvestmentBrain: React.FC = () => {
     const [memoryType, setMemoryType] = useState<MemoryType>('trend');
     const [title, setTitle] = useState('Urbanization');
@@ -350,14 +302,15 @@ export const InvestmentBrain: React.FC = () => {
     const [tags, setTags] = useState('urbanization, infrastructure, long-term');
     const [memories, setMemories] = useState<BrainMemory[]>(loadStoredMemories);
     const [backendState, setBackendState] = useState<BackendState>('checking');
-    const [searchQuery, setSearchQuery] = useState('urbanization');
+    const [brainStatus, setBrainStatus] = useState<BrainStatus | null>(null);
+    const [searchQuery, setSearchQuery] = useState('pricing power AI infrastructure');
     const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
     const [searchMessage, setSearchMessage] = useState('');
     const [isSearching, setIsSearching] = useState(false);
     const [backendCounts, setBackendCounts] = useState<BrainCounts | null>(null);
-    const [sourceTitle, setSourceTitle] = useState('Urbanization source note');
-    const [sourceBody, setSourceBody] = useState('Urbanization can support long-duration demand for logistics, city infrastructure, elevators, payments, energy resilience, utilities, and housing quality. The investment risk is that many obvious beneficiaries are capital intensive or regulated, so the framework should favor pricing power, balance-sheet durability, and reinvestment runway.');
-    const [sourceTags, setSourceTags] = useState('urbanization, infrastructure, source');
+    const [sourceTitle, setSourceTitle] = useState('Source note');
+    const [sourceBody, setSourceBody] = useState('Paste a memo, transcript excerpt, book passage, framework, or article note here. The brain will store it as a source, split it into chunks, and make it searchable.');
+    const [sourceTags, setSourceTags] = useState('framework, source');
     const [ingestMessage, setIngestMessage] = useState('');
     const [isIngesting, setIsIngesting] = useState(false);
     const [localIndexerStatus, setLocalIndexerStatus] = useState<LocalIndexerStatus | null>(null);
@@ -373,7 +326,7 @@ export const InvestmentBrain: React.FC = () => {
     const [isEmbedding, setIsEmbedding] = useState(false);
     const [embeddingMessage, setEmbeddingMessage] = useState('');
     const [analysisTicker, setAnalysisTicker] = useState('META');
-    const [analysisQuestion, setAnalysisQuestion] = useState('What does my brain say about the moat, risks, and what would change my mind?');
+    const [analysisQuestion, setAnalysisQuestion] = useState('What does my brain say about the moat, risks, valuation lens, and what would change my mind?');
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisMessage, setAnalysisMessage] = useState('');
     const [analysisAnswer, setAnalysisAnswer] = useState('');
@@ -385,7 +338,7 @@ export const InvestmentBrain: React.FC = () => {
     useEffect(() => {
         let cancelled = false;
 
-        const loadBackendMemories = async () => {
+        const loadBackend = async () => {
             try {
                 const statusResponse = await fetch(brainApiUrl('/api/brain/status'));
                 if (!statusResponse.ok) throw new Error('Brain status unavailable');
@@ -393,6 +346,7 @@ export const InvestmentBrain: React.FC = () => {
 
                 let nextIndexerStatus: LocalIndexerStatus | null = null;
                 let nextDriveStatus: DriveIndexerStatus | null = null;
+
                 try {
                     const indexerResponse = await fetch(brainApiUrl('/api/brain/index/local/status'));
                     if (indexerResponse.ok) {
@@ -401,6 +355,7 @@ export const InvestmentBrain: React.FC = () => {
                 } catch {
                     nextIndexerStatus = null;
                 }
+
                 try {
                     const driveResponse = await fetch(brainApiUrl('/api/brain/index/drive/status'));
                     if (driveResponse.ok) {
@@ -418,6 +373,7 @@ export const InvestmentBrain: React.FC = () => {
 
                 if (!cancelled) {
                     setBackendState('ready');
+                    setBrainStatus(status);
                     setBackendCounts(status.counts ?? null);
                     setLlmStatus(status.llm ?? null);
                     setLocalIndexerStatus(nextIndexerStatus);
@@ -432,7 +388,7 @@ export const InvestmentBrain: React.FC = () => {
             }
         };
 
-        loadBackendMemories();
+        loadBackend();
 
         return () => {
             cancelled = true;
@@ -469,6 +425,7 @@ export const InvestmentBrain: React.FC = () => {
                     const payload = await response.json() as { memory?: unknown };
                     const saved = normalizeStoredMemory(payload.memory) ?? nextMemory;
                     setMemories(current => [saved, ...current]);
+                    setBackendCounts(current => ({ ...(current ?? {}), memories: (current?.memories ?? memories.length) + 1 }));
                 } else {
                     setMemories(current => [nextMemory, ...current]);
                 }
@@ -491,8 +448,12 @@ export const InvestmentBrain: React.FC = () => {
         if (backendState === 'ready') {
             try {
                 await fetch(brainApiUrl(`/api/brain/memories/${id}`), { method: 'DELETE' });
+                setBackendCounts(current => ({
+                    ...(current ?? {}),
+                    memories: Math.max(0, (current?.memories ?? memories.length) - 1),
+                }));
             } catch {
-                // Keep the UI responsive; local removal still reflects the user's intent.
+                // The visual removal should still honor the user's intent.
             }
         }
     };
@@ -525,10 +486,10 @@ export const InvestmentBrain: React.FC = () => {
             const payload = await response.json() as { results?: SearchResult[] };
             const results = Array.isArray(payload.results) ? payload.results : [];
             setSearchResults(results);
-            setSearchMessage(results.length ? `${results.length} indexed matches` : 'No indexed matches yet');
+            setSearchMessage(results.length ? `${results.length} match${results.length === 1 ? '' : 'es'}` : 'No matches yet');
         } catch {
             setSearchResults([]);
-            setSearchMessage('Backend search is unavailable');
+            setSearchMessage('Search is unavailable');
         } finally {
             setIsSearching(false);
         }
@@ -554,18 +515,19 @@ export const InvestmentBrain: React.FC = () => {
                     overlapWords: 60,
                     metadata: {
                         origin: 'investment-brain-ui',
-                        rawStorage: 'inline-text-for-now',
+                        rawStorage: 'inline-text',
                     },
                 }),
             });
             if (!response.ok) throw new Error('Ingestion failed');
 
             const payload = await response.json() as { chunks?: unknown[]; counts?: BrainCounts };
+            const chunkCount = Array.isArray(payload.chunks) ? payload.chunks.length : 0;
             setBackendCounts(payload.counts ?? null);
-            setIngestMessage(`Indexed ${Array.isArray(payload.chunks) ? payload.chunks.length : 0} chunk(s). Try searching this source now.`);
+            setIngestMessage(`Indexed ${chunkCount} chunk${chunkCount === 1 ? '' : 's'}.`);
             setSearchQuery(cleanedTitle);
         } catch {
-            setIngestMessage('Ingestion is unavailable. Check that the backend is running and VITE_API_URL points to it.');
+            setIngestMessage('Ingestion is unavailable');
         } finally {
             setIsIngesting(false);
         }
@@ -599,9 +561,7 @@ export const InvestmentBrain: React.FC = () => {
             const payload = await response.json() as LocalIndexResponse;
             setBackendCounts(payload.counts ?? null);
             setIndexResults(payload.results ?? []);
-            setIndexMessage(
-                `${payload.summary.indexed} indexed, ${payload.summary.skipped} skipped, ${payload.summary.errors} errors from ${payload.summary.found} file(s)`
-            );
+            setIndexMessage(`${payload.summary.indexed} indexed, ${payload.summary.skipped} skipped, ${payload.summary.errors} errors`);
 
             if (payload.root && payload.root !== localIndexerStatus?.configuredRoot) {
                 setIndexRootPath(payload.root);
@@ -627,7 +587,7 @@ export const InvestmentBrain: React.FC = () => {
             const payload = await response.json() as { url?: string };
             if (!payload.url) throw new Error('Google Drive auth URL is missing');
             window.open(payload.url, '_blank', 'noopener,noreferrer');
-            setDriveMessage('Google permission tab opened. After approving, refresh this page and sync Drive.');
+            setDriveMessage('Permission tab opened. Approve access, then refresh this page.');
         } catch (error) {
             setDriveMessage(error instanceof Error ? error.message : 'Could not start Google Drive connection');
         }
@@ -656,9 +616,7 @@ export const InvestmentBrain: React.FC = () => {
             const payload = await response.json() as DriveIndexResponse;
             setBackendCounts(payload.counts ?? null);
             setDriveResults(payload.results ?? []);
-            setDriveMessage(
-                `${payload.summary.indexed} indexed, ${payload.summary.skipped} skipped, ${payload.summary.errors} errors from ${payload.summary.found} Drive file(s)`
-            );
+            setDriveMessage(`${payload.summary.indexed} indexed, ${payload.summary.skipped} skipped, ${payload.summary.errors} errors`);
 
             const statusResponse = await fetch(brainApiUrl('/api/brain/index/drive/status'));
             if (statusResponse.ok) {
@@ -689,7 +647,7 @@ export const InvestmentBrain: React.FC = () => {
 
             const payload = await response.json() as EmbeddingBackfillResponse;
             setBackendCounts(payload.counts ?? null);
-            setEmbeddingMessage(`${payload.embedded}/${payload.requested} chunk(s) embedded with ${payload.model}. ${payload.errors.length ? `${payload.errors.length} error(s).` : ''}`);
+            setEmbeddingMessage(`${payload.embedded}/${payload.requested} embedded with ${payload.model}${payload.errors.length ? `, ${payload.errors.length} error(s)` : ''}.`);
         } catch (error) {
             setEmbeddingMessage(error instanceof Error ? error.message : 'Embedding failed');
         } finally {
@@ -722,7 +680,7 @@ export const InvestmentBrain: React.FC = () => {
 
             const payload = await response.json() as BrainAnalysisResponse;
             setAnalysisAnswer(payload.answer);
-            setAnalysisMessage(`Answered with ${payload.model}; retrieval model ${payload.embeddingModel}.`);
+            setAnalysisMessage(`${payload.model} with ${payload.embeddingModel}`);
         } catch (error) {
             setAnalysisMessage(error instanceof Error ? error.message : 'Analysis failed');
         } finally {
@@ -730,637 +688,242 @@ export const InvestmentBrain: React.FC = () => {
         }
     };
 
+    const backendReady = backendState === 'ready';
+    const storageLabel = formatStorage(brainStatus?.storage);
     const ActiveIcon = activeType.Icon;
-    const storageLabel = backendState === 'ready'
-        ? 'SQLite backend'
-        : backendState === 'checking'
-            ? 'Checking backend'
-            : 'Saved locally';
+    const counts = backendCounts ?? {};
+    const driveConnected = Boolean(driveStatus?.connected);
+    const driveConfigured = Boolean(driveStatus?.configured);
+    const driveAuthReady = Boolean(driveStatus?.authConfigured);
+    const nextAction = !backendReady
+        ? {
+            title: 'Backend offline',
+            detail: 'Reconnect Render before indexing or analyzing.',
+            label: 'Waiting',
+            Icon: ShieldAlert,
+            onClick: undefined,
+            disabled: true,
+        }
+        : driveConfigured && driveAuthReady && !driveConnected
+            ? {
+                title: 'Connect Google Drive',
+                detail: 'Authorize the Drive folder once, then this page can sync your research library.',
+                label: 'Connect Drive',
+                Icon: ExternalLink,
+                onClick: connectGoogleDrive,
+                disabled: false,
+            }
+            : driveConnected && (counts.chunks ?? 0) === 0
+                ? {
+                    title: 'Sync your Drive library',
+                    detail: 'Index supported PDFs, docs, notes, and text files into Supabase.',
+                    label: isDriveSyncing ? 'Syncing' : 'Sync Drive',
+                    Icon: FolderSync,
+                    onClick: runDriveIndex,
+                    disabled: isDriveSyncing,
+                }
+                : (counts.chunks ?? 0) > 0
+                    ? {
+                        title: 'Keep semantic search fresh',
+                        detail: 'Embed missing chunks so the brain can retrieve ideas by meaning.',
+                        label: isEmbedding ? 'Embedding' : 'Embed Missing',
+                        Icon: Sparkles,
+                        onClick: backfillEmbeddings,
+                        disabled: isEmbedding,
+                    }
+                    : {
+                        title: 'Start with one source or memory',
+                        detail: 'Paste a note, save a thesis memory, or connect Drive to seed the brain.',
+                        label: 'Ready',
+                        Icon: CheckCircle2,
+                        onClick: undefined,
+                        disabled: true,
+                    };
+
+    const statusCards = [
+        {
+            label: 'Storage',
+            value: storageLabel,
+            detail: formatSearchDetail(brainStatus),
+            Icon: Database,
+            className: brainStatus?.storage === 'postgres_pgvector' ? 'text-emerald-300' : 'text-amber-300',
+        },
+        {
+            label: 'AI',
+            value: llmStatus?.configured ? 'Gemini ready' : 'Missing key',
+            detail: llmStatus?.embeddingModel ?? 'embedding model',
+            Icon: Sparkles,
+            className: llmStatus?.configured ? 'text-violet-300' : 'text-amber-300',
+        },
+        {
+            label: 'Drive',
+            value: driveConnected ? 'Connected' : driveAuthReady ? 'Needs auth' : 'Not connected',
+            detail: driveStatus?.folderId ? 'folder configured' : 'folder missing',
+            Icon: Cloud,
+            className: driveConnected ? 'text-emerald-300' : driveAuthReady ? 'text-amber-300' : 'text-gray-400',
+        },
+        {
+            label: 'Indexed',
+            value: `${counts.sources ?? 0} sources`,
+            detail: `${counts.chunks ?? 0} chunks, ${counts.memories ?? memories.length} memories`,
+            Icon: Layers3,
+            className: 'text-sky-300',
+        },
+    ];
+
+    const latestIndexResults = driveResults.length > 0 ? driveResults : indexResults;
 
     return (
-        <div className="min-h-screen bg-background text-foreground">
+        <div className="min-h-screen bg-[#05070d] text-foreground">
             <div className="animated-top-bar h-[2px] w-full" />
 
-            <div className="px-4 py-5 sm:px-5 md:p-8">
-                <div className="mx-auto max-w-[1600px] space-y-6 md:space-y-8">
-                    <header className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="min-w-0">
-                            <a
-                                href="/"
-                                className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-gray-500 transition-colors hover:text-gray-300"
-                            >
-                                <ArrowLeft className="h-3.5 w-3.5" />
-                                Dashboard
-                            </a>
-                            <div className="mt-4 flex items-start gap-3">
-                                <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-emerald-500/20 bg-emerald-500/10">
-                                    <BrainCircuit className="h-6 w-6 text-emerald-300" />
-                                </div>
-                                <div className="min-w-0">
-                                    <h1 className="text-3xl font-black tracking-tight text-white md:text-4xl">
-                                        Investment Brain
-                                    </h1>
-                                    <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-400">
-                                        A synthetic research brain for documents, frameworks, megatrends, thesis memory, and company analysis in your own investing style.
-                                    </p>
-                                </div>
+            <main className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8">
+                <header className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+                    <div className="min-w-0">
+                        <a
+                            href="/"
+                            className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-gray-500 transition-colors hover:text-gray-300"
+                        >
+                            <ArrowLeft className="h-3.5 w-3.5" />
+                            Dashboard
+                        </a>
+                        <div className="mt-4 flex items-start gap-3">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10">
+                                <BrainCircuit className="h-6 w-6 text-emerald-300" />
+                            </div>
+                            <div className="min-w-0">
+                                <h1 className="text-3xl font-black tracking-tight text-white md:text-4xl">
+                                    Investment Brain
+                                </h1>
+                                <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-400">
+                                    Search your sources, save your reasoning, and ask company questions against your own frameworks.
+                                </p>
                             </div>
                         </div>
+                    </div>
 
-                        <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap lg:justify-end">
-                            {[storageLabel, 'Private memory', 'Cited evidence', 'Your worldview', 'Company context'].map(label => (
-                                <span
-                                    key={label}
-                                    className="inline-flex min-h-[34px] items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-gray-300"
+                    <div className="flex flex-wrap gap-2">
+                        <span className={cn(
+                            'inline-flex min-h-[34px] items-center rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em]',
+                            backendReady ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                        )}>
+                            {backendReady ? 'Backend ready' : backendState === 'checking' ? 'Checking' : 'Offline'}
+                        </span>
+                        <span className="inline-flex min-h-[34px] items-center rounded-lg border border-white/10 bg-white/[0.04] px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-gray-300">
+                            {storageLabel}
+                        </span>
+                    </div>
+                </header>
+
+                <section className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-4">
+                    {statusCards.map(item => {
+                        const Icon = item.Icon;
+                        return (
+                            <div key={item.label} className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-4">
+                                <div className="flex items-center justify-between gap-3">
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-gray-500">{item.label}</span>
+                                    <Icon className={cn('h-4 w-4', item.className)} />
+                                </div>
+                                <p className="mt-3 truncate text-lg font-black text-white">{item.value}</p>
+                                <p className="mt-1 truncate text-xs text-gray-500">{item.detail}</p>
+                            </div>
+                        );
+                    })}
+                </section>
+
+                <section className="mt-4 rounded-xl border border-white/[0.08] bg-gradient-to-r from-slate-900/85 to-slate-950/95 p-4 sm:p-5">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                        <div className="flex min-w-0 items-start gap-3">
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10">
+                                <nextAction.Icon className="h-5 w-5 text-emerald-300" />
+                            </div>
+                            <div className="min-w-0">
+                                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-gray-500">Next action</p>
+                                <h2 className="mt-1 text-xl font-black text-white">{nextAction.title}</h2>
+                                <p className="mt-1 text-sm leading-6 text-gray-400">{nextAction.detail}</p>
+                                {(driveMessage || embeddingMessage || indexMessage) && (
+                                    <p className="mt-2 text-xs font-semibold text-emerald-100/80">
+                                        {driveMessage || embeddingMessage || indexMessage}
+                                    </p>
+                                )}
+                            </div>
+                        </div>
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                            {driveStatus?.folderUrl && (
+                                <a
+                                    href={driveStatus.folderUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-4 text-xs font-bold uppercase tracking-[0.1em] text-gray-300 transition-colors hover:bg-white/[0.07]"
                                 >
-                                    {label === storageLabel && <HardDrive className="mr-1.5 h-3.5 w-3.5 text-emerald-300" />}
-                                    {label}
-                                </span>
-                            ))}
-                            {backendCounts && (
-                                <span className="inline-flex min-h-[34px] items-center justify-center rounded-lg border border-sky-500/20 bg-sky-500/10 px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-sky-200">
-                                    {backendCounts.sources ?? 0} sources / {backendCounts.chunks ?? 0} chunks
-                                </span>
+                                    <ExternalLink className="h-4 w-4" />
+                                    Drive
+                                </a>
                             )}
-                        </div>
-                    </header>
-
-                    <section className="grid grid-cols-1 gap-4 xl:grid-cols-12 xl:gap-5">
-                        <div className="xl:col-span-7 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/80 to-slate-950 p-4 sm:p-5">
-                            <div className="flex items-center gap-2">
-                                <Lightbulb className="h-4 w-4 text-amber-300" />
-                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Manual Memory Capture</h2>
-                            </div>
-
-                            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
-                                {memoryTypes.map(item => {
-                                    const Icon = item.Icon;
-                                    const active = item.type === memoryType;
-                                    return (
-                                        <button
-                                            key={item.type}
-                                            type="button"
-                                            onClick={() => setMemoryType(item.type)}
-                                            aria-pressed={active}
-                                            className={cn(
-                                                'inline-flex min-h-[40px] items-center justify-center gap-1.5 rounded-lg border px-2 text-[10px] font-bold uppercase tracking-[0.08em] transition-colors',
-                                                active ? item.activeClass : 'border-white/10 bg-white/[0.03] text-gray-500 hover:text-gray-300'
-                                            )}
-                                        >
-                                            <Icon className="h-3.5 w-3.5 shrink-0" />
-                                            {item.label}
-                                        </button>
-                                    );
-                                })}
-                            </div>
-
-                            <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-5">
-                                <label className="lg:col-span-2">
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Title</span>
-                                    <input
-                                        value={title}
-                                        onChange={event => setTitle(event.target.value)}
-                                        className="mt-1 h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-emerald-500/40"
-                                        placeholder="Company, trend, framework..."
-                                    />
-                                </label>
-                                <label className="lg:col-span-3">
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Tags</span>
-                                    <input
-                                        value={tags}
-                                        onChange={event => setTags(event.target.value)}
-                                        className="mt-1 h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-emerald-500/40"
-                                        placeholder="moat, pass, urbanization"
-                                    />
-                                </label>
-                                <label className="lg:col-span-5">
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Why this matters</span>
-                                    <textarea
-                                        value={body}
-                                        onChange={event => setBody(event.target.value)}
-                                        className="mt-1 min-h-[126px] w-full resize-y rounded-lg border border-white/10 bg-white/[0.04] px-3 py-3 text-sm leading-6 text-white outline-none transition-colors placeholder:text-gray-700 focus:border-emerald-500/40"
-                                        placeholder="Why did you pass, like it, or care about this idea?"
-                                    />
-                                </label>
-                            </div>
-
-                            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                <div className="inline-flex items-center gap-2 text-xs text-gray-500">
-                                    <ActiveIcon className="h-4 w-4 text-emerald-300" />
-                                    Saved in this browser today. Backend sync comes with the brain API.
-                                </div>
-                                <button
-                                    type="button"
-                                    onClick={addMemory}
-                                    className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/15 px-4 text-xs font-bold uppercase tracking-[0.1em] text-emerald-200 transition-colors hover:bg-emerald-500/20"
-                                >
-                                    <Plus className="h-4 w-4" />
-                                    Add Memory
-                                </button>
-                            </div>
-                        </div>
-
-                        <div className="xl:col-span-5 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/80 to-slate-950 p-4 sm:p-5">
-                            <div className="flex items-center gap-2">
-                                <Database className="h-4 w-4 text-sky-300" />
-                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Database Choice</h2>
-                            </div>
-
-                            <div className="mt-4 grid grid-cols-1 gap-3">
-                                {databaseChoices.map(choice => {
-                                    const Icon = choice.Icon;
-                                    return (
-                                        <div key={choice.title} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
-                                            <div className="flex items-start justify-between gap-3">
-                                                <div className="flex items-center gap-2">
-                                                    <Icon className="h-4 w-4 text-gray-300" />
-                                                    <h3 className="text-sm font-black text-white">{choice.title}</h3>
-                                                </div>
-                                                <span className={cn('rounded border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em]', choice.className)}>
-                                                    {choice.label}
-                                                </span>
-                                            </div>
-                                            <p className="mt-2 text-xs leading-5 text-gray-400">{choice.detail}</p>
-                                            <div className="mt-3 grid grid-cols-1 gap-1.5 sm:grid-cols-3 xl:grid-cols-1">
-                                                {choice.points.map(point => (
-                                                    <div key={point} className="flex items-center gap-1.5 text-[11px] text-gray-500">
-                                                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                                                        {point}
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-
-                            <div className="mt-4 rounded-lg border border-rose-500/20 bg-rose-500/10 p-3">
-                                <div className="flex items-center gap-2">
-                                    <ShieldAlert className="h-4 w-4 text-rose-300" />
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-rose-200">Not fund-ready yet</span>
-                                </div>
-                                <p className="mt-2 text-xs leading-5 text-rose-100/70">
-                                    Local browser memory is fine for personal research. A fund-grade version needs server storage, access controls, audit logs, backups, data licenses, and compliance review.
-                                </p>
-                            </div>
-                        </div>
-                    </section>
-
-                    <section className="grid grid-cols-1 gap-4 lg:grid-cols-4 xl:gap-5">
-                        {brainLayers.map(layer => {
-                            const Icon = layer.Icon;
-                            return (
-                                <div key={layer.title} className="rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4">
-                                    <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04]">
-                                        <Icon className={cn('h-4 w-4', layer.color)} />
-                                    </div>
-                                    <h3 className="mt-3 text-sm font-black text-white">{layer.title}</h3>
-                                    <p className="mt-2 text-xs leading-5 text-gray-500">{layer.detail}</p>
-                                </div>
-                            );
-                        })}
-                    </section>
-
-                    <section className="grid grid-cols-1 gap-4 xl:grid-cols-12 xl:gap-5">
-                        <div className="xl:col-span-7 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
-                            <div className="flex items-center gap-2">
-                                <FileText className="h-4 w-4 text-cyan-300" />
-                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Indexer Intake</h2>
-                            </div>
-                            <p className="mt-2 text-sm leading-6 text-gray-500">
-                                Paste text here today. Later the local indexer will call the same API after extracting PDFs, filings, books, and synced-folder notes.
-                            </p>
-
-                            <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-5">
-                                <label className="lg:col-span-2">
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Source title</span>
-                                    <input
-                                        value={sourceTitle}
-                                        onChange={event => setSourceTitle(event.target.value)}
-                                        className="mt-1 h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
-                                        placeholder="Book, filing, note, transcript..."
-                                    />
-                                </label>
-                                <label className="lg:col-span-3">
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Source tags</span>
-                                    <input
-                                        value={sourceTags}
-                                        onChange={event => setSourceTags(event.target.value)}
-                                        className="mt-1 h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
-                                        placeholder="framework, filing, urbanization"
-                                    />
-                                </label>
-                                <label className="lg:col-span-5">
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Extracted text</span>
-                                    <textarea
-                                        value={sourceBody}
-                                        onChange={event => setSourceBody(event.target.value)}
-                                        className="mt-1 min-h-[150px] w-full resize-y rounded-lg border border-white/10 bg-white/[0.04] px-3 py-3 text-sm leading-6 text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
-                                        placeholder="Paste source text. The backend will store it, chunk it, hash chunks, and add them to search."
-                                    />
-                                </label>
-                            </div>
-
-                            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                <p className="text-xs leading-5 text-gray-500">
-                                    Saved text is chunked immediately. Use the semantic layer to attach embeddings after ingestion.
-                                </p>
-                                <button
-                                    type="button"
-                                    onClick={ingestSourceText}
-                                    disabled={isIngesting || backendState !== 'ready'}
-                                    className={cn(
-                                        'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
-                                        backendState === 'ready'
-                                            ? 'border-cyan-500/30 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/20'
-                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
-                                    )}
-                                >
-                                    <Plus className="h-4 w-4" />
-                                    {isIngesting ? 'Indexing' : 'Index Text'}
-                                </button>
-                            </div>
-                            {ingestMessage && (
-                                <p className="mt-3 text-xs font-semibold text-gray-400">{ingestMessage}</p>
-                            )}
-                        </div>
-
-                        <div className="xl:col-span-5 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
-                            <div className="flex items-center gap-2">
-                                <Database className="h-4 w-4 text-emerald-300" />
-                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Backend Index</h2>
-                            </div>
-                            <div className="mt-4 grid grid-cols-2 gap-2">
-                                {[
-                                    ['sources', backendCounts?.sources ?? 0],
-                                    ['chunks', backendCounts?.chunks ?? 0],
-                                    ['memories', backendCounts?.memories ?? memories.length],
-                                    ['indexed', backendCounts?.indexed ?? 0],
-                                ].map(([label, value]) => (
-                                    <div key={label} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
-                                        <p className="text-[9px] font-bold uppercase tracking-[0.14em] text-gray-500">{label}</p>
-                                        <p className="mt-2 font-mono text-2xl font-black text-white">{value}</p>
-                                    </div>
-                                ))}
-                            </div>
-                            <div className="mt-4 rounded-lg border border-violet-500/20 bg-violet-500/10 p-3">
-                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                    <div>
-                                        <div className="flex items-center gap-2">
-                                            <Sparkles className="h-4 w-4 text-violet-300" />
-                                            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-violet-100">Semantic Layer</span>
-                                        </div>
-                                        <p className="mt-2 text-xs leading-5 text-violet-100/65">
-                                            Adds Gemini embeddings to stored chunks so search can find similar ideas, not only exact words.
-                                        </p>
-                                    </div>
-                                    <span className={cn(
-                                        'inline-flex w-fit shrink-0 rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
-                                        llmStatus?.configured
-                                            ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
-                                            : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
-                                    )}>
-                                        {llmStatus?.configured ? 'Ready' : 'No key'}
-                                    </span>
-                                </div>
-                                <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                    <p className="font-mono text-[11px] text-violet-100/60">
-                                        {llmStatus?.embeddingModel ?? 'gemini-embedding-001'}
-                                    </p>
-                                    <button
-                                        type="button"
-                                        onClick={backfillEmbeddings}
-                                        disabled={isEmbedding || backendState !== 'ready'}
-                                        className={cn(
-                                            'inline-flex min-h-[38px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
-                                            backendState === 'ready'
-                                                ? 'border-violet-500/30 bg-violet-500/15 text-violet-100 hover:bg-violet-500/20'
-                                                : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
-                                        )}
-                                    >
-                                        <Sparkles className="h-3.5 w-3.5" />
-                                        {isEmbedding ? 'Embedding' : 'Embed Missing'}
-                                    </button>
-                                </div>
-                                {embeddingMessage && (
-                                    <p className="mt-3 text-xs font-semibold text-violet-100/80">{embeddingMessage}</p>
-                                )}
-                            </div>
-                            <div className="mt-4 rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3">
-                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                    <div className="min-w-0">
-                                        <div className="flex items-center gap-2">
-                                            <Cloud className="h-4 w-4 text-emerald-300" />
-                                            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-100">Google Drive Brain</span>
-                                        </div>
-                                        <p className="mt-2 break-all font-mono text-[11px] leading-5 text-emerald-100/70">
-                                            {driveStatus?.folderId ? `drive folder ${driveStatus.folderId}` : 'Drive folder not configured'}
-                                        </p>
-                                    </div>
-                                    <span className={cn(
-                                        'inline-flex w-fit shrink-0 items-center rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
-                                        driveStatus?.connected
-                                            ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
-                                            : driveStatus?.authConfigured
-                                                ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
-                                                : 'border-rose-500/25 bg-rose-500/10 text-rose-300'
-                                    )}>
-                                        {driveStatus?.connected ? 'Connected' : driveStatus?.authConfigured ? 'Needs auth' : 'Needs env'}
-                                    </span>
-                                </div>
-
-                                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                    <button
-                                        type="button"
-                                        onClick={connectGoogleDrive}
-                                        disabled={backendState !== 'ready' || !driveStatus?.authConfigured}
-                                        className={cn(
-                                            'inline-flex min-h-[38px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
-                                            backendState === 'ready' && driveStatus?.authConfigured
-                                                ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
-                                                : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
-                                        )}
-                                    >
-                                        <ExternalLink className="h-3.5 w-3.5" />
-                                        Connect
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={runDriveIndex}
-                                        disabled={isDriveSyncing || backendState !== 'ready' || !driveStatus?.connected || !driveStatus?.configured}
-                                        className={cn(
-                                            'inline-flex min-h-[38px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
-                                            backendState === 'ready' && driveStatus?.connected && driveStatus?.configured
-                                                ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
-                                                : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
-                                        )}
-                                    >
-                                        <FolderSync className="h-3.5 w-3.5" />
-                                        {isDriveSyncing ? 'Syncing' : 'Sync Drive'}
-                                    </button>
-                                </div>
-
-                                {driveStatus?.folderUrl && (
-                                    <a
-                                        href={driveStatus.folderUrl}
-                                        target="_blank"
-                                        rel="noreferrer"
-                                        className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-100/70 hover:text-emerald-100"
-                                    >
-                                        Open Drive folder
-                                        <ExternalLink className="h-3 w-3" />
-                                    </a>
-                                )}
-
-                                {driveMessage && (
-                                    <p className="mt-3 text-xs font-semibold text-emerald-100/80">{driveMessage}</p>
-                                )}
-
-                                {driveResults.length > 0 && (
-                                    <div className="mt-3 max-h-44 space-y-2 overflow-auto pr-1">
-                                        {driveResults.slice(0, 8).map(result => (
-                                            <div key={`${result.id ?? result.relativePath}-${result.status}`} className="rounded-md border border-white/[0.06] bg-black/20 px-2.5 py-2">
-                                                <div className="flex items-start justify-between gap-2">
-                                                    <span className="min-w-0 truncate text-xs font-bold text-white">{result.relativePath}</span>
-                                                    <span className={cn(
-                                                        'shrink-0 rounded border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-[0.08em]',
-                                                        result.status === 'indexed'
-                                                            ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
-                                                            : result.status === 'error'
-                                                                ? 'border-rose-500/20 bg-rose-500/10 text-rose-300'
-                                                                : 'border-white/10 bg-white/[0.04] text-gray-400'
-                                                    )}>
-                                                        {result.status}
-                                                    </span>
-                                                </div>
-                                                <p className="mt-1 text-[10px] leading-4 text-gray-500">
-                                                    {result.reason ?? `${result.chunks ?? 0} chunk(s)`}
-                                                </p>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                            <div className="mt-4 rounded-lg border border-cyan-500/20 bg-cyan-500/10 p-3">
-                                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                                    <div className="min-w-0">
-                                        <div className="flex items-center gap-2">
-                                            <HardDrive className="h-4 w-4 text-cyan-300" />
-                                            <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-cyan-100">Local Folder Scanner</span>
-                                        </div>
-                                        <p className="mt-2 break-all font-mono text-[11px] leading-5 text-cyan-100/70">
-                                            {localIndexerStatus?.configuredRoot ?? 'Backend folder not loaded'}
-                                        </p>
-                                    </div>
-                                    <span className={cn(
-                                        'inline-flex w-fit shrink-0 items-center rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
-                                        localIndexerStatus?.pdfAvailable
-                                            ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
-                                            : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
-                                    )}>
-                                        {localIndexerStatus?.pdfAvailable ? 'PDF ready' : 'PDF needs pypdf'}
-                                    </span>
-                                </div>
-
-                                {localIndexerStatus?.customPathsAllowed && (
-                                    <input
-                                        value={indexRootPath}
-                                        onChange={event => setIndexRootPath(event.target.value)}
-                                        className="mt-3 h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 font-mono text-xs text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
-                                        placeholder="Local library folder path"
-                                    />
-                                )}
-
-                                <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                    <p className="text-[11px] leading-5 text-cyan-100/60">
-                                        {(localIndexerStatus?.supportedExtensions ?? []).slice(0, 8).join(' ')}
-                                    </p>
-                                    <button
-                                        type="button"
-                                        onClick={runLocalIndex}
-                                        disabled={isIndexing || backendState !== 'ready'}
-                                        className={cn(
-                                            'inline-flex min-h-[38px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
-                                            backendState === 'ready'
-                                                ? 'border-cyan-500/30 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/20'
-                                                : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
-                                        )}
-                                    >
-                                        <Search className="h-3.5 w-3.5" />
-                                        {isIndexing ? 'Scanning' : 'Scan Folder'}
-                                    </button>
-                                </div>
-
-                                {indexMessage && (
-                                    <p className="mt-3 text-xs font-semibold text-cyan-100/80">{indexMessage}</p>
-                                )}
-
-                                {indexResults.length > 0 && (
-                                    <div className="mt-3 max-h-44 space-y-2 overflow-auto pr-1">
-                                        {indexResults.slice(0, 8).map(result => (
-                                            <div key={`${result.path}-${result.status}`} className="rounded-md border border-white/[0.06] bg-black/20 px-2.5 py-2">
-                                                <div className="flex items-start justify-between gap-2">
-                                                    <span className="min-w-0 truncate text-xs font-bold text-white">{result.relativePath}</span>
-                                                    <span className={cn(
-                                                        'shrink-0 rounded border px-1.5 py-0.5 text-[8px] font-black uppercase tracking-[0.08em]',
-                                                        result.status === 'indexed'
-                                                            ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300'
-                                                            : result.status === 'error'
-                                                                ? 'border-rose-500/20 bg-rose-500/10 text-rose-300'
-                                                                : 'border-white/10 bg-white/[0.04] text-gray-400'
-                                                    )}>
-                                                        {result.status}
-                                                    </span>
-                                                </div>
-                                                <p className="mt-1 text-[10px] leading-4 text-gray-500">
-                                                    {result.reason ?? `${result.chunks ?? 0} chunk(s)`}
-                                                </p>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </section>
-
-                    <section className="rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
-                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                            <div>
-                                <div className="flex items-center gap-2">
-                                    <Search className="h-4 w-4 text-sky-300" />
-                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Search All Indexed Data</h2>
-                                </div>
-                                <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-500">
-                                    This calls the backend search index. It searches memories, sources, chunks, and future idea/thesis records through one retrieval layer.
-                                </p>
-                            </div>
-                            <span className={cn(
-                                'inline-flex w-fit items-center rounded-lg border px-3 py-2 text-[10px] font-bold uppercase tracking-[0.1em]',
-                                backendState === 'ready'
-                                    ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
-                                    : backendState === 'checking'
-                                        ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
-                                        : 'border-rose-500/25 bg-rose-500/10 text-rose-300'
-                            )}>
-                                {backendState === 'ready' ? 'Backend ready' : backendState === 'checking' ? 'Checking' : 'Local fallback'}
-                            </span>
-                        </div>
-
-                        <div className="mt-4 flex flex-col gap-3 md:flex-row">
-                            <input
-                                value={searchQuery}
-                                onChange={event => setSearchQuery(event.target.value)}
-                                onKeyDown={event => {
-                                    if (event.key === 'Enter') {
-                                        void runBackendSearch();
-                                    }
-                                }}
-                                className="h-11 min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-sky-500/40"
-                                placeholder="Search urbanization, pass reasons, frameworks..."
-                            />
                             <button
                                 type="button"
-                                onClick={runBackendSearch}
-                                disabled={isSearching || backendState !== 'ready'}
+                                onClick={nextAction.onClick}
+                                disabled={nextAction.disabled}
                                 className={cn(
-                                    'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
-                                    backendState === 'ready'
-                                        ? 'border-sky-500/30 bg-sky-500/15 text-sky-200 hover:bg-sky-500/20'
-                                        : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                    'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
+                                    nextAction.disabled
+                                        ? 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                        : 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
                                 )}
                             >
-                                <Search className="h-4 w-4" />
-                                {isSearching ? 'Searching' : 'Search'}
+                                <nextAction.Icon className="h-4 w-4" />
+                                {nextAction.label}
                             </button>
                         </div>
+                    </div>
+                </section>
 
-                        {searchMessage && (
-                            <p className="mt-3 text-xs font-semibold text-gray-500">{searchMessage}</p>
-                        )}
-
-                        {searchResults.length > 0 && (
-                            <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
-                                {searchResults.map(result => (
-                                    <article key={`${result.entityType}-${result.entityId}`} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
-                                        <div className="flex items-start justify-between gap-3">
-                                            <h3 className="text-sm font-black text-white">{result.title}</h3>
-                                            <span className="rounded border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-sky-300">
-                                                {result.entityType}
-                                            </span>
-                                        </div>
-                                        <p className="mt-2 line-clamp-3 text-xs leading-5 text-gray-400">{result.body}</p>
-                                        <div className="mt-3 flex flex-wrap gap-1.5">
-                                            {result.tags.slice(0, 6).map(tag => (
-                                                <span key={tag} className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[10px] font-semibold text-gray-500">
-                                                    {tag}
-                                                </span>
-                                            ))}
-                                        </div>
-                                    </article>
-                                ))}
-                            </div>
-                        )}
-                    </section>
-
-                    <section className="grid grid-cols-1 gap-4 xl:grid-cols-12 xl:gap-5">
-                        <div className="xl:col-span-7 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
+                <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,0.92fr)]">
+                    <div className="space-y-5">
+                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
                             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                                 <div>
                                     <div className="flex items-center gap-2">
                                         <Target className="h-4 w-4 text-rose-300" />
-                                        <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Company Analysis Loop</h2>
+                                        <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Ask The Brain</h2>
                                     </div>
                                     <p className="mt-2 text-sm leading-6 text-gray-500">
-                                        Ask the brain to combine your memories, indexed sources, and retrieved chunks into a structured company note.
+                                        Uses your memories, indexed chunks, and semantic retrieval to answer in your investing style.
                                     </p>
                                 </div>
                                 <span className={cn(
-                                    'inline-flex w-fit items-center rounded-lg border px-3 py-2 text-[10px] font-bold uppercase tracking-[0.1em]',
-                                    llmStatus?.configured
-                                        ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
-                                        : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                                    'inline-flex w-fit rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                    llmStatus?.configured ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
                                 )}>
                                     {llmStatus?.configured ? 'Gemini ready' : 'API key missing'}
                                 </span>
                             </div>
 
-                            <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-5">
-                                <label className="lg:col-span-1">
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Ticker</span>
-                                    <input
-                                        value={analysisTicker}
-                                        onChange={event => setAnalysisTicker(event.target.value.toUpperCase())}
-                                        className="mt-1 h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 font-mono text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-rose-500/40"
-                                        placeholder="META"
-                                    />
-                                </label>
-                                <label className="lg:col-span-4">
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-500">Question</span>
-                                    <input
-                                        value={analysisQuestion}
-                                        onChange={event => setAnalysisQuestion(event.target.value)}
-                                        onKeyDown={event => {
-                                            if (event.key === 'Enter') {
-                                                void runCompanyAnalysis();
-                                            }
-                                        }}
-                                        className="mt-1 h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-rose-500/40"
-                                        placeholder="Moat, risks, valuation lens, what changes my mind..."
-                                    />
-                                </label>
-                            </div>
-
-                            <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                                <p className="text-xs leading-5 text-gray-500">
-                                    {llmStatus?.generationModel ?? 'gemini-2.5-flash'} + {llmStatus?.embeddingModel ?? 'gemini-embedding-001'}
-                                </p>
+                            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[120px_1fr_auto]">
+                                <input
+                                    value={analysisTicker}
+                                    onChange={event => setAnalysisTicker(event.target.value.toUpperCase())}
+                                    className="h-11 rounded-lg border border-white/10 bg-white/[0.04] px-3 font-mono text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-rose-500/40"
+                                    placeholder="META"
+                                    aria-label="Ticker"
+                                />
+                                <input
+                                    value={analysisQuestion}
+                                    onChange={event => setAnalysisQuestion(event.target.value)}
+                                    onKeyDown={event => {
+                                        if (event.key === 'Enter') void runCompanyAnalysis();
+                                    }}
+                                    className="h-11 min-w-0 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-rose-500/40"
+                                    placeholder="Moat, risks, valuation lens, what changes my mind..."
+                                    aria-label="Analysis question"
+                                />
                                 <button
                                     type="button"
                                     onClick={runCompanyAnalysis}
-                                    disabled={isAnalyzing || backendState !== 'ready'}
+                                    disabled={isAnalyzing || !backendReady}
                                     className={cn(
-                                        'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
-                                        backendState === 'ready'
+                                        'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
+                                        backendReady
                                             ? 'border-rose-500/30 bg-rose-500/15 text-rose-100 hover:bg-rose-500/20'
                                             : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
                                     )}
@@ -1375,172 +938,445 @@ export const InvestmentBrain: React.FC = () => {
                             )}
 
                             {analysisAnswer && (
-                                <div className="mt-4 whitespace-pre-wrap rounded-lg border border-white/[0.08] bg-black/20 p-4 text-sm leading-6 text-gray-200">
+                                <div className="mt-4 max-h-[520px] overflow-auto whitespace-pre-wrap rounded-lg border border-white/[0.08] bg-black/20 p-4 text-sm leading-6 text-gray-200">
                                     {analysisAnswer}
                                 </div>
                             )}
+                        </section>
 
-                            <div className="mt-4 space-y-2">
-                                {analysisLoop.map((step, index) => (
-                                    <div key={step} className="grid grid-cols-[34px_1fr] gap-3 rounded-lg border border-white/[0.06] bg-white/[0.025] p-3">
-                                        <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] font-mono text-xs font-black text-emerald-300">
-                                            {index + 1}
-                                        </div>
-                                        <p className="self-center text-sm leading-5 text-gray-300">{step}</p>
+                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                                <div>
+                                    <div className="flex items-center gap-2">
+                                        <Search className="h-4 w-4 text-sky-300" />
+                                        <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Search</h2>
                                     </div>
-                                ))}
-                            </div>
-                        </div>
-
-                        <div className="xl:col-span-5 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
-                            <div className="flex items-center gap-2">
-                                <ServerCog className="h-4 w-4 text-cyan-300" />
-                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">API Spine</h2>
-                            </div>
-                            <div className="mt-4 space-y-2">
-                                {futureEndpoints.map(endpoint => (
-                                    <div key={endpoint} className="rounded-lg border border-white/[0.06] bg-black/20 px-3 py-2 font-mono text-xs text-gray-300">
-                                        {endpoint}
-                                    </div>
-                                ))}
-                            </div>
-                            <div className="mt-4 rounded-lg border border-amber-500/20 bg-amber-500/10 p-3">
-                                <div className="flex items-center gap-2">
-                                    <ShieldAlert className="h-4 w-4 text-amber-300" />
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-amber-200">Design rule</span>
+                                    <p className="mt-2 text-sm leading-6 text-gray-500">
+                                        Search memories, sources, and chunks before asking the model.
+                                    </p>
                                 </div>
-                                <p className="mt-2 text-xs leading-5 text-amber-100/70">
-                                    Every answer should separate evidence, inference, and your personal prior. That keeps the brain useful instead of overconfident.
-                                </p>
+                                {searchMessage && (
+                                    <span className="inline-flex w-fit rounded border border-sky-500/20 bg-sky-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-sky-300">
+                                        {searchMessage}
+                                    </span>
+                                )}
                             </div>
-                        </div>
-                    </section>
 
-                    <section className="grid grid-cols-1 gap-4 xl:grid-cols-12 xl:gap-5">
-                        <div className="xl:col-span-7 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
-                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="mt-4 flex flex-col gap-3 md:flex-row">
+                                <input
+                                    value={searchQuery}
+                                    onChange={event => setSearchQuery(event.target.value)}
+                                    onKeyDown={event => {
+                                        if (event.key === 'Enter') void runBackendSearch();
+                                    }}
+                                    className="h-11 min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-sky-500/40"
+                                    placeholder="pricing power, AI infrastructure, pass reasons..."
+                                />
+                                <button
+                                    type="button"
+                                    onClick={runBackendSearch}
+                                    disabled={isSearching || !backendReady}
+                                    className={cn(
+                                        'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
+                                        backendReady
+                                            ? 'border-sky-500/30 bg-sky-500/15 text-sky-200 hover:bg-sky-500/20'
+                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                    )}
+                                >
+                                    <Search className="h-4 w-4" />
+                                    {isSearching ? 'Searching' : 'Search'}
+                                </button>
+                            </div>
+
+                            {searchResults.length > 0 && (
+                                <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                                    {searchResults.map(result => (
+                                        <article key={`${result.entityType}-${result.entityId}`} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
+                                            <div className="flex items-start justify-between gap-3">
+                                                <h3 className="min-w-0 text-sm font-black text-white">{result.title}</h3>
+                                                <span className="shrink-0 rounded border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-sky-300">
+                                                    {result.entityType}
+                                                </span>
+                                            </div>
+                                            <p className="mt-2 line-clamp-3 text-xs leading-5 text-gray-400">{result.body}</p>
+                                            {result.tags.length > 0 && (
+                                                <div className="mt-3 flex flex-wrap gap-1.5">
+                                                    {result.tags.slice(0, 5).map(tag => (
+                                                        <span key={tag} className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[10px] font-semibold text-gray-500">
+                                                            {tag}
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </article>
+                                    ))}
+                                </div>
+                            )}
+                        </section>
+                    </div>
+
+                    <aside className="space-y-5">
+                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                            <div className="flex items-center justify-between gap-3">
                                 <div className="flex items-center gap-2">
-                                    <Layers3 className="h-4 w-4 text-violet-300" />
-                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Memory Stream</h2>
-                                    <span className="rounded border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] font-bold text-gray-500">
-                                        {memories.length}
+                                    <Cloud className="h-4 w-4 text-emerald-300" />
+                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Drive Library</h2>
+                                </div>
+                                <span className={cn(
+                                    'rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                    driveConnected
+                                        ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
+                                        : driveAuthReady
+                                            ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                                            : 'border-rose-500/25 bg-rose-500/10 text-rose-300'
+                                )}>
+                                    {driveConnected ? 'Connected' : driveAuthReady ? 'Needs auth' : 'Needs env'}
+                                </span>
+                            </div>
+                            <p className="mt-3 text-xs leading-5 text-gray-500">
+                                {formatDriveFolder(driveStatus)}
+                            </p>
+                            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                <button
+                                    type="button"
+                                    onClick={connectGoogleDrive}
+                                    disabled={!backendReady || !driveAuthReady}
+                                    className={cn(
+                                        'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                        backendReady && driveAuthReady
+                                            ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
+                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                    )}
+                                >
+                                    <ExternalLink className="h-3.5 w-3.5" />
+                                    Connect
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={runDriveIndex}
+                                    disabled={isDriveSyncing || !backendReady || !driveConnected || !driveConfigured}
+                                    className={cn(
+                                        'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                        backendReady && driveConnected && driveConfigured
+                                            ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
+                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                    )}
+                                >
+                                    <FolderSync className="h-3.5 w-3.5" />
+                                    {isDriveSyncing ? 'Syncing' : 'Sync'}
+                                </button>
+                            </div>
+                            {driveStatus?.folderUrl && (
+                                <a
+                                    href={driveStatus.folderUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="mt-3 inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-100/70 hover:text-emerald-100"
+                                >
+                                    Open folder
+                                    <ExternalLink className="h-3 w-3" />
+                                </a>
+                            )}
+                            {driveMessage && <p className="mt-3 text-xs font-semibold text-emerald-100/80">{driveMessage}</p>}
+                        </section>
+
+                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2">
+                                    <Sparkles className="h-4 w-4 text-violet-300" />
+                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Semantic Layer</h2>
+                                </div>
+                                <span className={cn(
+                                    'rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                    llmStatus?.configured ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+                                )}>
+                                    {llmStatus?.configured ? 'Ready' : 'No key'}
+                                </span>
+                            </div>
+                            <p className="mt-3 text-xs leading-5 text-gray-500">
+                                Attach embeddings after new files or notes are indexed.
+                            </p>
+                            <button
+                                type="button"
+                                onClick={backfillEmbeddings}
+                                disabled={isEmbedding || !backendReady}
+                                className={cn(
+                                    'mt-4 inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                    backendReady
+                                        ? 'border-violet-500/30 bg-violet-500/15 text-violet-100 hover:bg-violet-500/20'
+                                        : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                )}
+                            >
+                                <Sparkles className="h-3.5 w-3.5" />
+                                {isEmbedding ? 'Embedding' : 'Embed Missing'}
+                            </button>
+                            {embeddingMessage && <p className="mt-3 text-xs font-semibold text-violet-100/80">{embeddingMessage}</p>}
+                        </section>
+
+                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                            <div className="flex items-center gap-2">
+                                <FileText className="h-4 w-4 text-cyan-300" />
+                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Paste Source</h2>
+                            </div>
+                            <div className="mt-4 space-y-3">
+                                <input
+                                    value={sourceTitle}
+                                    onChange={event => setSourceTitle(event.target.value)}
+                                    className="h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
+                                    placeholder="Source title"
+                                />
+                                <input
+                                    value={sourceTags}
+                                    onChange={event => setSourceTags(event.target.value)}
+                                    className="h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
+                                    placeholder="tags"
+                                />
+                                <textarea
+                                    value={sourceBody}
+                                    onChange={event => setSourceBody(event.target.value)}
+                                    className="min-h-[118px] w-full resize-y rounded-lg border border-white/10 bg-white/[0.04] px-3 py-3 text-sm leading-6 text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
+                                    placeholder="Paste note, filing excerpt, or framework..."
+                                />
+                            </div>
+                            <button
+                                type="button"
+                                onClick={ingestSourceText}
+                                disabled={isIngesting || !backendReady}
+                                className={cn(
+                                    'mt-3 inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                    backendReady
+                                        ? 'border-cyan-500/30 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/20'
+                                        : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                )}
+                            >
+                                <Plus className="h-3.5 w-3.5" />
+                                {isIngesting ? 'Indexing' : 'Index Text'}
+                            </button>
+                            {ingestMessage && <p className="mt-3 text-xs font-semibold text-cyan-100/80">{ingestMessage}</p>}
+                        </section>
+
+                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                            <div className="flex items-center gap-2">
+                                <HardDrive className="h-4 w-4 text-gray-300" />
+                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Local Folder</h2>
+                            </div>
+                            <p className="mt-3 break-all font-mono text-[11px] leading-5 text-gray-500">
+                                {localIndexerStatus?.configuredRoot ?? 'Local scanner unavailable'}
+                            </p>
+                            {localIndexerStatus?.customPathsAllowed && (
+                                <input
+                                    value={indexRootPath}
+                                    onChange={event => setIndexRootPath(event.target.value)}
+                                    className="mt-3 h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 font-mono text-xs text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
+                                    placeholder="Local library folder path"
+                                />
+                            )}
+                            <button
+                                type="button"
+                                onClick={runLocalIndex}
+                                disabled={isIndexing || !backendReady}
+                                className={cn(
+                                    'mt-3 inline-flex min-h-[38px] w-full items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                    backendReady
+                                        ? 'border-white/10 bg-white/[0.04] text-gray-300 hover:bg-white/[0.07]'
+                                        : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                )}
+                            >
+                                <Search className="h-3.5 w-3.5" />
+                                {isIndexing ? 'Scanning' : 'Scan Local'}
+                            </button>
+                            {indexMessage && <p className="mt-3 text-xs font-semibold text-gray-400">{indexMessage}</p>}
+                        </section>
+                    </aside>
+                </section>
+
+                {latestIndexResults.length > 0 && (
+                    <section className="mt-5 rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                        <div className="flex items-center gap-2">
+                            <Archive className="h-4 w-4 text-emerald-300" />
+                            <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Latest Index Run</h2>
+                        </div>
+                        <div className="mt-4 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                            {latestIndexResults.slice(0, 10).map(result => (
+                                <div key={`${result.relativePath}-${result.status}-${result.sourceId ?? ''}`} className="flex items-start justify-between gap-3 rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+                                    <div className="min-w-0">
+                                        <p className="truncate text-xs font-bold text-white">{result.relativePath}</p>
+                                        <p className="mt-1 truncate text-[10px] text-gray-500">{result.reason ?? `${result.chunks ?? 0} chunk(s)`}</p>
+                                    </div>
+                                    <span className={cn('shrink-0 rounded border px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.08em]', resultTone(result.status))}>
+                                        {result.status}
                                     </span>
                                 </div>
-                                <div className="flex gap-2">
-                                    <button
-                                        type="button"
-                                        onClick={exportMemories}
-                                        className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.07]"
-                                    >
-                                        <Download className="h-3.5 w-3.5" />
-                                        Export
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={resetMemories}
-                                        className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.07]"
-                                    >
-                                        <RotateCcw className="h-3.5 w-3.5" />
-                                        Reset
-                                    </button>
-                                </div>
+                            ))}
+                        </div>
+                    </section>
+                )}
+
+                <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+                    <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="flex items-center gap-2">
+                                <Lightbulb className="h-4 w-4 text-amber-300" />
+                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Save A Memory</h2>
                             </div>
-                            <div className="mt-4 grid grid-cols-1 gap-3">
-                                {memories.length === 0 && (
-                                    <div className="rounded-lg border border-dashed border-white/[0.12] bg-white/[0.025] p-5 text-center">
-                                        <Archive className="mx-auto h-5 w-5 text-gray-500" />
-                                        <p className="mt-3 text-sm font-bold text-gray-300">No saved memories yet</p>
-                                        <p className="mt-1 text-xs leading-5 text-gray-500">Add a thesis, pass reason, framework, or megatrend to start building the brain.</p>
-                                    </div>
-                                )}
-                                {memories.map(memory => {
-                                    const tone = memoryTone[memory.type];
-                                    const Icon = tone.Icon;
+                            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
+                                {memoryTypes.map(item => {
+                                    const Icon = item.Icon;
+                                    const active = item.type === memoryType;
                                     return (
-                                        <article key={memory.id} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
-                                            <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                                                <div className="flex items-center gap-2">
-                                                    <span className={cn('inline-flex h-7 w-7 items-center justify-center rounded-lg border', tone.className)}>
-                                                        <Icon className="h-3.5 w-3.5" />
-                                                    </span>
-                                                    <h3 className="text-sm font-black text-white">{memory.title}</h3>
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                    <span className={cn('inline-flex w-fit items-center rounded border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em]', tone.className)}>
-                                                        {tone.label}
-                                                    </span>
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => deleteMemory(memory.id)}
-                                                        className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-gray-600 transition-colors hover:border-rose-500/30 hover:text-rose-300"
-                                                        title="Delete memory"
-                                                        aria-label={`Delete ${memory.title}`}
-                                                    >
-                                                        <Trash2 className="h-3.5 w-3.5" />
-                                                    </button>
-                                                </div>
-                                            </div>
-                                            <p className="mt-3 text-sm leading-6 text-gray-400">{memory.body}</p>
-                                            <div className="mt-3 flex flex-wrap gap-1.5">
-                                                {memory.tags.map(tag => (
-                                                    <span key={tag} className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[10px] font-semibold text-gray-500">
-                                                        {tag}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                        </article>
+                                        <button
+                                            key={item.type}
+                                            type="button"
+                                            onClick={() => setMemoryType(item.type)}
+                                            aria-pressed={active}
+                                            className={cn(
+                                                'inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-lg border px-2 text-[9px] font-bold uppercase tracking-[0.08em] transition-colors',
+                                                active ? item.activeClass : 'border-white/10 bg-white/[0.03] text-gray-500 hover:text-gray-300'
+                                            )}
+                                        >
+                                            <Icon className="h-3.5 w-3.5 shrink-0" />
+                                            {item.label}
+                                        </button>
                                     );
                                 })}
                             </div>
                         </div>
 
-                        <div className="xl:col-span-5 rounded-xl border border-white/[0.08] bg-gradient-to-br from-slate-900/70 to-slate-950/90 p-4 sm:p-5">
-                            <div className="flex items-center gap-2">
-                                <Building2 className="h-4 w-4 text-emerald-300" />
-                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Core Tables</h2>
+                        <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
+                            <div className="space-y-3">
+                                <input
+                                    value={title}
+                                    onChange={event => setTitle(event.target.value)}
+                                    className="h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-emerald-500/40"
+                                    placeholder="Company or idea"
+                                />
+                                <input
+                                    value={tags}
+                                    onChange={event => setTags(event.target.value)}
+                                    className="h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-emerald-500/40"
+                                    placeholder="tags"
+                                />
                             </div>
-                            <div className="mt-4 divide-y divide-white/[0.06] overflow-hidden rounded-lg border border-white/[0.08]">
-                                {schemaRows.map(([name, detail]) => (
-                                    <div key={name} className="grid grid-cols-1 gap-1 bg-white/[0.025] px-3 py-3 sm:grid-cols-[110px_1fr]">
-                                        <span className="font-mono text-xs font-black text-emerald-300">{name}</span>
-                                        <span className="text-xs leading-5 text-gray-400">{detail}</span>
-                                    </div>
-                                ))}
-                            </div>
-                            <div className="mt-4 rounded-lg border border-white/[0.08] bg-black/20 p-3">
-                                <div className="flex items-center gap-2">
-                                    <FileText className="h-4 w-4 text-gray-300" />
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-gray-400">Next backend move</span>
-                                </div>
-                                <p className="mt-2 text-xs leading-5 text-gray-500">
-                                    Add a small `/api/brain` service first. It can write local SQLite rows today and swap to Postgres later without changing the page.
-                                </p>
-                            </div>
+                            <textarea
+                                value={body}
+                                onChange={event => setBody(event.target.value)}
+                                className="min-h-[110px] w-full resize-y rounded-lg border border-white/10 bg-white/[0.04] px-3 py-3 text-sm leading-6 text-white outline-none transition-colors placeholder:text-gray-700 focus:border-emerald-500/40"
+                                placeholder="Why did you like, pass, sell, or question this?"
+                            />
+                        </div>
+
+                        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <p className="inline-flex items-center gap-2 text-xs text-gray-500">
+                                <ActiveIcon className="h-4 w-4 text-emerald-300" />
+                                Saved to backend when available and mirrored in browser storage.
+                            </p>
+                            <button
+                                type="button"
+                                onClick={addMemory}
+                                className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/15 px-4 text-xs font-bold uppercase tracking-[0.1em] text-emerald-200 transition-colors hover:bg-emerald-500/20"
+                            >
+                                <Plus className="h-4 w-4" />
+                                Add Memory
+                            </button>
                         </div>
                     </section>
 
-                    <section className="rounded-xl border border-white/[0.08] bg-gradient-to-r from-emerald-950/20 via-slate-900/70 to-slate-950 p-4 sm:p-5">
-                        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                            <div>
-                                <div className="flex items-center gap-2">
-                                    <BadgeCheck className="h-4 w-4 text-emerald-300" />
-                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Build Order</h2>
-                                </div>
-                                <p className="mt-2 max-w-4xl text-sm leading-6 text-gray-300">
-                                    Ship memory capture first, document ingestion second, retrieval third, and company analysis last. That order makes the system learn your taste before it tries to sound smart.
-                                </p>
-                            </div>
-                            <a
-                                href="/"
-                                className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-4 text-xs font-bold uppercase tracking-[0.1em] text-gray-300 transition-colors hover:bg-white/[0.07] hover:text-white"
-                            >
-                                <ArrowLeft className="h-4 w-4" />
-                                Back to Dashboard
-                            </a>
+                    <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                        <div className="flex items-center gap-2">
+                            <ServerCog className="h-4 w-4 text-gray-300" />
+                            <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Guardrails</h2>
+                        </div>
+                        <div className="mt-4 space-y-3 text-xs leading-5 text-gray-500">
+                            <p className="flex gap-2">
+                                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                                Sources stay in Drive; the brain stores metadata, extracted text, chunks, and embeddings.
+                            </p>
+                            <p className="flex gap-2">
+                                <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
+                                Fund-grade use still needs access controls, logs, backups, data licenses, and compliance review.
+                            </p>
                         </div>
                     </section>
-                </div>
-            </div>
+                </section>
+
+                <section className="mt-5 rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="flex items-center gap-2">
+                            <Layers3 className="h-4 w-4 text-violet-300" />
+                            <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Memory Stream</h2>
+                            <span className="rounded border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] font-bold text-gray-500">
+                                {memories.length}
+                            </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 sm:flex">
+                            <button
+                                type="button"
+                                onClick={exportMemories}
+                                className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.07]"
+                            >
+                                <Download className="h-3.5 w-3.5" />
+                                Export
+                            </button>
+                            <button
+                                type="button"
+                                onClick={resetMemories}
+                                className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.07]"
+                            >
+                                <RotateCcw className="h-3.5 w-3.5" />
+                                Reset
+                            </button>
+                        </div>
+                    </div>
+
+                    <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
+                        {memories.length === 0 && (
+                            <div className="rounded-lg border border-dashed border-white/[0.12] bg-white/[0.025] p-5 text-center xl:col-span-2">
+                                <Archive className="mx-auto h-5 w-5 text-gray-500" />
+                                <p className="mt-3 text-sm font-bold text-gray-300">No saved memories yet</p>
+                                <p className="mt-1 text-xs leading-5 text-gray-500">Add a thesis, pass reason, framework, or megatrend to start building the brain.</p>
+                            </div>
+                        )}
+                        {memories.map(memory => {
+                            const tone = memoryTone[memory.type];
+                            const Icon = tone.Icon;
+                            return (
+                                <article key={memory.id} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="min-w-0">
+                                            <div className="flex min-w-0 items-center gap-2">
+                                                <span className={cn('inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border', tone.className)}>
+                                                    <Icon className="h-3.5 w-3.5" />
+                                                </span>
+                                                <h3 className="truncate text-sm font-black text-white">{memory.title}</h3>
+                                            </div>
+                                            <p className="mt-2 line-clamp-3 text-xs leading-5 text-gray-400">{memory.body}</p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => deleteMemory(memory.id)}
+                                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-gray-600 transition-colors hover:border-rose-500/30 hover:text-rose-300"
+                                            title="Delete memory"
+                                            aria-label={`Delete ${memory.title}`}
+                                        >
+                                            <Trash2 className="h-3.5 w-3.5" />
+                                        </button>
+                                    </div>
+                                    <div className="mt-3 flex flex-wrap gap-1.5">
+                                        <span className={cn('rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]', tone.className)}>
+                                            {tone.label}
+                                        </span>
+                                        {memory.tags.slice(0, 5).map(tag => (
+                                            <span key={tag} className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[10px] font-semibold text-gray-500">
+                                                {tag}
+                                            </span>
+                                        ))}
+                                    </div>
+                                </article>
+                            );
+                        })}
+                    </div>
+                </section>
+            </main>
         </div>
     );
 };
