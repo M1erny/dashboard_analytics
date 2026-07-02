@@ -665,6 +665,11 @@ class PostgresBrainStore:
 
             return [self._source_from_row(row) for row in conn.execute(sql, params).fetchall()]
 
+    def get_source(self, source_id: int) -> dict[str, Any] | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM sources WHERE id = %s", (source_id,)).fetchone()
+            return self._source_from_row(row) if row else None
+
     def get_file_source_by_identity(self, file_identity: str) -> dict[str, Any] | None:
         file_identity = str(file_identity or "").strip()
         if not file_identity:

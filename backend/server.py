@@ -774,6 +774,116 @@ def _format_context_block(items: list[dict], *, max_chars: int = 1000) -> str:
     return "\n\n".join(blocks)
 
 
+def _source_id_from_context(item: dict[str, Any]) -> int | None:
+    value = item.get("sourceId") or item.get("source_id")
+    if value is None and item.get("entityType") == "source":
+        value = item.get("entityId") or item.get("id")
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _expand_semantic_hits_into_sources(
+    store: Any,
+    hits: list[dict[str, Any]],
+    *,
+    max_sources: int = 2,
+    window: int = 4,
+    max_source_chunks: int = 80,
+    max_chunks_per_source: int = 10,
+    max_chars_per_chunk: int = 900,
+) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    source_ids: list[int] = []
+    hit_ordinals: dict[int, list[int]] = {}
+
+    for item in hits:
+        source_id = _source_id_from_context(item)
+        if source_id is None:
+            continue
+        if source_id not in source_ids:
+            source_ids.append(source_id)
+        ordinal = item.get("ordinal")
+        if isinstance(ordinal, int):
+            hit_ordinals.setdefault(source_id, []).append(ordinal)
+        if len(source_ids) >= max_sources:
+            break
+
+    for source_id in source_ids:
+        source = store.get_source(source_id) if hasattr(store, "get_source") else None
+        chunks = store.list_chunks(source_id=source_id, limit=max_source_chunks)
+        if not chunks:
+            continue
+
+        ordinals = hit_ordinals.get(source_id) or [int(chunks[0].get("ordinal") or 0)]
+        selected: list[dict[str, Any]] = []
+        selected_ids: set[int] = set()
+
+        for ordinal in ordinals:
+            for chunk in chunks:
+                chunk_ordinal = int(chunk.get("ordinal") or 0)
+                chunk_id = int(chunk.get("id"))
+                if abs(chunk_ordinal - ordinal) <= window and chunk_id not in selected_ids:
+                    selected.append(chunk)
+                    selected_ids.add(chunk_id)
+                if len(selected) >= max_chunks_per_source:
+                    break
+            if len(selected) >= max_chunks_per_source:
+                break
+
+        if not selected:
+            selected = chunks[:max_chunks_per_source]
+
+        source_summary = None
+        if source:
+            source_summary = {
+                "id": source.get("id"),
+                "kind": source.get("kind"),
+                "title": source.get("title"),
+                "author": source.get("author"),
+                "sourceDate": source.get("sourceDate"),
+                "tags": source.get("tags", []),
+                "metadata": source.get("metadata", {}),
+            }
+
+        expanded.append({
+            "source": source_summary,
+            "sourceId": source_id,
+            "hitOrdinals": ordinals,
+            "chunks": selected[:max_chunks_per_source],
+            "maxCharsPerChunk": max_chars_per_chunk,
+        })
+
+    return expanded
+
+
+def _format_deep_source_context(items: list[dict[str, Any]]) -> str:
+    blocks: list[str] = []
+    for index, item in enumerate(items, start=1):
+        source = item.get("source") or {}
+        source_id = item.get("sourceId")
+        source_title = source.get("title") or f"Source {source_id}"
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        link = metadata.get("webViewLink") or metadata.get("driveWebViewLink") or metadata.get("driveFileId")
+        hit_ordinals = ", ".join(str(value) for value in item.get("hitOrdinals", []))
+        header = f"[File {index}] {source_title} | source_id={source_id}"
+        if hit_ordinals:
+            header += f" | semantic_hit_chunks={hit_ordinals}"
+        if link:
+            header += f" | link={link}"
+
+        chunk_lines = []
+        for chunk in item.get("chunks", []):
+            ordinal = chunk.get("ordinal")
+            title = chunk.get("title", "Chunk")
+            body = str(chunk.get("body", "")).strip()[: int(item.get("maxCharsPerChunk") or 900)]
+            chunk_lines.append(f"chunk {ordinal}: {title}\n{body}")
+
+        blocks.append(f"{header}\n" + "\n\n".join(chunk_lines))
+    return "\n\n---\n\n".join(blocks)
+
+
 @app.post("/api/brain/analyze-company")
 async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     store = _brain_or_503()
@@ -820,10 +930,16 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         if len(context_items) >= payload.limit:
             break
 
+    step_started = time.perf_counter()
+    deep_sources = _expand_semantic_hits_into_sources(store, semantic_results or context_items)
+    timings["deepSourceExpansionMs"] = round((time.perf_counter() - step_started) * 1000, 1)
+
     prompt = f"""
 You are an investment research assistant for one investor's private dashboard.
 Use the provided brain context, but separate evidence from inference.
 Do not pretend missing information is present.
+When deep source context is available, treat it as the main evidence base: semantic search found a relevant chunk, then the backend expanded into the surrounding file chunks.
+Prefer specific source titles and chunk numbers when explaining evidence.
 
 Company/ticker: {ticker}
 User question: {question}
@@ -834,6 +950,9 @@ Personal memories:
 Retrieved source context:
 {_format_context_block(context_items, max_chars=1200) or "No retrieved source context."}
 
+Deep source expansion:
+{_format_deep_source_context(deep_sources) or "No deep source expansion. This usually means no embedded chunks/files matched semantically yet."}
+
 Write the answer in this structure:
 1. Evidence from my brain
 2. Interpretation
@@ -841,12 +960,12 @@ Write the answer in this structure:
 4. What would change my mind
 5. Memory worth saving
 
-Be concise: 5 short sections, maximum 2 bullets per section.
+Be concise but not shallow: 5 short sections, maximum 3 bullets per section. If there is no retrieved or expanded source context, say that clearly.
 """.strip()
 
     step_started = time.perf_counter()
     try:
-        answer = client.generate_text(prompt, temperature=0.2, max_output_tokens=800)
+        answer = client.generate_text(prompt, temperature=0.2, max_output_tokens=1200)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Gemini analysis failed: {str(e)[:300]}")
 
@@ -863,6 +982,7 @@ Be concise: 5 short sections, maximum 2 bullets per section.
         "context": {
             "memories": memory_results,
             "retrieved": context_items,
+            "deepSources": deep_sources,
         },
     }
 
