@@ -50,15 +50,14 @@ Why this is the best middle path:
 
 A normal cloud website cannot freely read files from your computer. Browser security blocks that.
 
-So the dashboard should not directly fetch random local files. Instead, a local indexer should watch an approved folder, process the files, and upload structured/searchable outputs to the brain database.
-
-Example watched folder:
+So the dashboard should not directly fetch random local files. The intended production path is:
 
 ```text
-G:/My Drive/Investment Brain/
+Google Drive folder -> Drive API -> Render backend -> Supabase/Postgres + pgvector
 ```
 
-Google Drive for desktop should keep this folder available offline or mirrored locally, so the indexer sees real files rather than placeholders.
+Local folder indexing is disabled by default and should be treated only as an explicit development escape hatch.
+The Brain frontend defaults to the Render backend unless `VITE_BRAIN_API_URL` or `VITE_API_URL` is explicitly set.
 
 ## What The Brain Indexer Creates
 
@@ -197,30 +196,27 @@ Current capability:
 - manual memories
 - memory types: liked, passed, megatrend, framework, question
 - source ingestion through `POST /api/brain/ingest/text`
-- local folder indexing through `POST /api/brain/index/local`
 - Google Drive API folder indexing through `POST /api/brain/index/drive`
 - Google Drive OAuth connection through `GET /api/brain/drive/auth-url`
 - deterministic chunking with stable content hashes
-- idempotent local-file indexing using file hashes
 - idempotent Drive indexing using stable Drive file IDs and revision hashes
-- local extraction for txt, md, csv, json, html, docx, and pdf when `pypdf` is installed
-- searchable `chunks` table prepared for future embeddings
+- Drive/API extraction for txt, md, csv, json, html, docx, Google Docs/Sheets/Slides exports, and pdf when `pypdf` is installed
+- searchable `chunks` table with embedding backfill
 - Gemini API client through `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`
 - embedding backfill through `POST /api/brain/embeddings/backfill`
 - SQLite-based cosine semantic search for embedded chunks
 - company analysis through `POST /api/brain/analyze-company`
 - SQLite FTS keyword search
 - production Postgres/pgvector storage when `DATABASE_URL` or `BRAIN_DATABASE_URL` is configured
-- local browser fallback
 - Vercel frontend routing
 
 Current limitations:
 
 - no browser-side PDF upload yet
-- no always-on folder watcher yet; scanning is manual
+- Drive scanning is manual from the dashboard unless a scheduled Render job is added later
 - embeddings require a Google AI Studio API key and an explicit backfill run
 - Supabase/Postgres requires a private database connection string, not only the public Supabase project URL
-- the cloud backend can read Drive through the Drive API, but it still cannot read arbitrary files from your personal computer
+- local folder indexing is disabled by default; the cloud backend should read Google Drive through the Drive API, not files from your personal computer
 
 ## Google Drive API Store
 
@@ -291,8 +287,6 @@ Current API spine:
 
 ```text
 GET    /api/brain/status
-GET    /api/brain/index/local/status
-POST   /api/brain/index/local
 GET    /api/brain/index/drive/status
 GET    /api/brain/drive/auth-url
 GET    /api/brain/drive/oauth/callback

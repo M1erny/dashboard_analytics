@@ -12,7 +12,6 @@ import {
     FileText,
     FolderSync,
     GitBranch,
-    HardDrive,
     Heart,
     Layers3,
     Lightbulb,
@@ -75,37 +74,6 @@ type BrainLlmStatus = {
     generationModel?: string;
     embeddingModel?: string;
     apiKeyEnv?: string;
-};
-
-type LocalIndexerStatus = {
-    configuredRoot: string;
-    exists: boolean;
-    customPathsAllowed: boolean;
-    supportedExtensions: string[];
-    pdfAvailable: boolean;
-    storageMode: string;
-};
-
-type LocalIndexResult = {
-    path: string;
-    relativePath: string;
-    status: 'indexed' | 'skipped' | 'error';
-    reason?: string;
-    sourceId?: number;
-    chunks?: number;
-    bytes?: number;
-};
-
-type LocalIndexResponse = {
-    root: string;
-    summary: {
-        found: number;
-        indexed: number;
-        skipped: number;
-        errors: number;
-    };
-    results: LocalIndexResult[];
-    counts?: BrainCounts;
 };
 
 type DriveIndexerStatus = {
@@ -172,7 +140,12 @@ type BrainAnalysisResponse = {
 type BackendState = 'checking' | 'ready' | 'offline';
 
 const MEMORY_STORAGE_KEY = 'investment-brain-memories-v1';
-const API_BASE = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
+const DEFAULT_BRAIN_API_URL = 'https://dashboard-eo6k.onrender.com';
+const API_BASE = (
+    import.meta.env.VITE_BRAIN_API_URL
+    ?? import.meta.env.VITE_API_URL
+    ?? DEFAULT_BRAIN_API_URL
+).replace(/\/$/, '');
 const memoryTypeValues: MemoryType[] = ['liked', 'passed', 'trend', 'framework', 'question'];
 
 const brainApiUrl = (path: string) => `${API_BASE}${path}`;
@@ -321,11 +294,6 @@ export const InvestmentBrain: React.FC = () => {
     const [sourceTags, setSourceTags] = useState('framework, source');
     const [ingestMessage, setIngestMessage] = useState('');
     const [isIngesting, setIsIngesting] = useState(false);
-    const [localIndexerStatus, setLocalIndexerStatus] = useState<LocalIndexerStatus | null>(null);
-    const [indexRootPath, setIndexRootPath] = useState('');
-    const [isIndexing, setIsIndexing] = useState(false);
-    const [indexMessage, setIndexMessage] = useState('');
-    const [indexResults, setIndexResults] = useState<LocalIndexResult[]>([]);
     const [driveStatus, setDriveStatus] = useState<DriveIndexerStatus | null>(null);
     const [isDriveSyncing, setIsDriveSyncing] = useState(false);
     const [driveMessage, setDriveMessage] = useState('');
@@ -360,17 +328,7 @@ export const InvestmentBrain: React.FC = () => {
                 if (!statusResponse.ok) throw new Error('Brain status unavailable');
                 const status = await statusResponse.json() as BrainStatus;
 
-                let nextIndexerStatus: LocalIndexerStatus | null = null;
                 let nextDriveStatus: DriveIndexerStatus | null = null;
-
-                try {
-                    const indexerResponse = await fetch(brainApiUrl('/api/brain/index/local/status'));
-                    if (indexerResponse.ok) {
-                        nextIndexerStatus = await indexerResponse.json() as LocalIndexerStatus;
-                    }
-                } catch {
-                    nextIndexerStatus = null;
-                }
 
                 try {
                     const driveResponse = await fetch(brainApiUrl('/api/brain/index/drive/status'));
@@ -392,9 +350,7 @@ export const InvestmentBrain: React.FC = () => {
                     setBrainStatus(status);
                     setBackendCounts(status.counts ?? null);
                     setLlmStatus(status.llm ?? null);
-                    setLocalIndexerStatus(nextIndexerStatus);
                     setDriveStatus(nextDriveStatus);
-                    setIndexRootPath(nextIndexerStatus?.configuredRoot ?? '');
                     setMemories(backendMemories);
                 }
             } catch {
@@ -493,22 +449,38 @@ export const InvestmentBrain: React.FC = () => {
         if (!cleanedQuery) return;
 
         setIsSearching(true);
-        setSearchMessage('Searching your indexed sources...');
+        setSearchMessage('Searching Supabase embeddings...');
         try {
             const params = new URLSearchParams({ q: cleanedQuery, limit: '12' });
-            const response = await fetch(brainApiUrl(`/api/brain/search?${params.toString()}`));
-            if (!response.ok) {
-                const payload = await response.json().catch(() => null) as { detail?: string } | null;
+            const semanticResponse = await fetch(brainApiUrl(`/api/brain/search/semantic?${params.toString()}`));
+            if (semanticResponse.ok) {
+                const semanticPayload = await semanticResponse.json() as { results?: SearchResult[]; timings?: { totalMs?: number } };
+                const semanticResults = Array.isArray(semanticPayload.results) ? semanticPayload.results : [];
+                if (semanticResults.length > 0) {
+                    const totalSeconds = typeof semanticPayload.timings?.totalMs === 'number'
+                        ? ` in ${(semanticPayload.timings.totalMs / 1000).toFixed(1)}s`
+                        : '';
+                    setSearchResults(semanticResults);
+                    setSearchMessage(`Top ${semanticResults.length} semantic match${semanticResults.length === 1 ? '' : 'es'}${totalSeconds}`);
+                    return;
+                }
+            }
+
+            const keywordResponse = await fetch(brainApiUrl(`/api/brain/search?${params.toString()}`));
+            if (!keywordResponse.ok) {
+                const payload = await keywordResponse.json().catch(() => null) as { detail?: string } | null;
                 throw new Error(payload?.detail ?? 'Search failed');
             }
 
-            const payload = await response.json() as { results?: SearchResult[]; timings?: { totalMs?: number } };
+            const payload = await keywordResponse.json() as { results?: SearchResult[]; timings?: { totalMs?: number } };
             const results = Array.isArray(payload.results) ? payload.results : [];
             const totalSeconds = typeof payload.timings?.totalMs === 'number'
                 ? ` in ${(payload.timings.totalMs / 1000).toFixed(1)}s`
                 : '';
             setSearchResults(results);
-            setSearchMessage(results.length ? `${results.length} match${results.length === 1 ? '' : 'es'}${totalSeconds}` : `No matches yet${totalSeconds}`);
+            setSearchMessage(results.length
+                ? `No semantic chunks yet; top ${results.length} keyword match${results.length === 1 ? '' : 'es'}${totalSeconds}`
+                : `No semantic or keyword matches yet${totalSeconds}`);
         } catch (error) {
             setSearchResults([]);
             setSearchMessage(error instanceof Error ? error.message : 'Search is unavailable');
@@ -552,46 +524,6 @@ export const InvestmentBrain: React.FC = () => {
             setIngestMessage('Ingestion is unavailable');
         } finally {
             setIsIngesting(false);
-        }
-    };
-
-    const runLocalIndex = async () => {
-        if (backendState !== 'ready') return;
-
-        setIsIndexing(true);
-        setIndexMessage('');
-        setIndexResults([]);
-        try {
-            const requestedRoot = indexRootPath.trim();
-            const useCustomRoot = localIndexerStatus?.customPathsAllowed
-                && requestedRoot
-                && requestedRoot !== localIndexerStatus.configuredRoot;
-            const response = await fetch(brainApiUrl('/api/brain/index/local'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    rootPath: useCustomRoot ? requestedRoot : undefined,
-                    limitFiles: 250,
-                    force: false,
-                }),
-            });
-            if (!response.ok) {
-                const payload = await response.json().catch(() => null) as { detail?: string } | null;
-                throw new Error(payload?.detail ?? 'Local index failed');
-            }
-
-            const payload = await response.json() as LocalIndexResponse;
-            setBackendCounts(payload.counts ?? null);
-            setIndexResults(payload.results ?? []);
-            setIndexMessage(`${payload.summary.indexed} indexed, ${payload.summary.skipped} skipped, ${payload.summary.errors} errors`);
-
-            if (payload.root && payload.root !== localIndexerStatus?.configuredRoot) {
-                setIndexRootPath(payload.root);
-            }
-        } catch (error) {
-            setIndexMessage(error instanceof Error ? error.message : 'Local index failed');
-        } finally {
-            setIsIndexing(false);
         }
     };
 
@@ -799,7 +731,7 @@ export const InvestmentBrain: React.FC = () => {
         },
     ];
 
-    const latestIndexResults = driveResults.length > 0 ? driveResults : indexResults;
+    const latestIndexResults = driveResults;
 
     return (
         <div className="min-h-screen bg-[#05070d] text-foreground">
@@ -869,9 +801,9 @@ export const InvestmentBrain: React.FC = () => {
                                 <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-gray-500">Next action</p>
                                 <h2 className="mt-1 text-xl font-black text-white">{nextAction.title}</h2>
                                 <p className="mt-1 text-sm leading-6 text-gray-400">{nextAction.detail}</p>
-                                {(driveMessage || embeddingMessage || indexMessage) && (
+                                {(driveMessage || embeddingMessage) && (
                                     <p className="mt-2 text-xs font-semibold text-emerald-100/80">
-                                        {driveMessage || embeddingMessage || indexMessage}
+                                        {driveMessage || embeddingMessage}
                                     </p>
                                 )}
                             </div>
@@ -1000,7 +932,7 @@ export const InvestmentBrain: React.FC = () => {
                                         <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Search</h2>
                                     </div>
                                     <p className="mt-2 text-sm leading-6 text-gray-500">
-                                        Search memories, sources, and chunks before asking the model.
+                                        Searches Supabase embeddings first, then keyword index if no vector match exists.
                                     </p>
                                 </div>
                                 {searchMessage && (
@@ -1203,38 +1135,6 @@ export const InvestmentBrain: React.FC = () => {
                             {ingestMessage && <p className="mt-3 text-xs font-semibold text-cyan-100/80">{ingestMessage}</p>}
                         </section>
 
-                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
-                            <div className="flex items-center gap-2">
-                                <HardDrive className="h-4 w-4 text-gray-300" />
-                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Local Folder</h2>
-                            </div>
-                            <p className="mt-3 break-all font-mono text-[11px] leading-5 text-gray-500">
-                                {localIndexerStatus?.configuredRoot ?? 'Local scanner unavailable'}
-                            </p>
-                            {localIndexerStatus?.customPathsAllowed && (
-                                <input
-                                    value={indexRootPath}
-                                    onChange={event => setIndexRootPath(event.target.value)}
-                                    className="mt-3 h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 font-mono text-xs text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
-                                    placeholder="Local library folder path"
-                                />
-                            )}
-                            <button
-                                type="button"
-                                onClick={runLocalIndex}
-                                disabled={isIndexing || !backendReady}
-                                className={cn(
-                                    'mt-3 inline-flex min-h-[38px] w-full items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
-                                    backendReady
-                                        ? 'border-white/10 bg-white/[0.04] text-gray-300 hover:bg-white/[0.07]'
-                                        : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
-                                )}
-                            >
-                                <Search className="h-3.5 w-3.5" />
-                                {isIndexing ? 'Scanning' : 'Scan Local'}
-                            </button>
-                            {indexMessage && <p className="mt-3 text-xs font-semibold text-gray-400">{indexMessage}</p>}
-                        </section>
                     </aside>
                 </section>
 

@@ -73,6 +73,10 @@ except Exception as e:
 gemini_client = GeminiClient() if GeminiClient else None
 
 
+def _local_indexing_enabled() -> bool:
+    return os.environ.get("BRAIN_ENABLE_LOCAL_INDEXING", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class BrainMemoryRequest(BaseModel):
     type: str = Field(..., min_length=1)
     title: str = Field(..., min_length=1, max_length=240)
@@ -347,6 +351,21 @@ async def get_status():
 @app.get("/api/brain/status")
 async def get_brain_status():
     store = _brain_or_503()
+    capabilities = [
+        "manual_memories",
+        "source_storage",
+        "text_ingestion",
+        "chunk_indexing",
+        "google_drive_indexing",
+        "keyword_search",
+        "semantic_vector_search",
+        "gemini_embeddings",
+        "gemini_company_analysis",
+        "embedding_ready_schema",
+    ]
+    if _local_indexing_enabled():
+        capabilities.append("local_file_indexing")
+
     return {
         "state": "ready",
         "database": getattr(store, "database_label", str(getattr(store, "db_path", "unknown"))),
@@ -355,18 +374,7 @@ async def get_brain_status():
         "vectorSearch": getattr(store, "vector_search_label", "unknown"),
         "embeddingProvider": "google_ai_studio" if gemini_client and gemini_client.configured else "not_configured",
         "llm": gemini_client.status() if gemini_client else {"configured": False},
-        "capabilities": [
-            "manual_memories",
-            "source_storage",
-            "text_ingestion",
-            "chunk_indexing",
-            "local_file_indexing",
-            "google_drive_indexing",
-            "keyword_search",
-            "gemini_embeddings",
-            "gemini_company_analysis",
-            "embedding_ready_schema",
-        ],
+        "capabilities": capabilities,
         "counts": store.counts(),
     }
 
@@ -381,6 +389,8 @@ async def get_brain_llm_status():
 @app.get("/api/brain/index/local/status")
 async def get_local_indexer_status(rootPath: str | None = None):
     _brain_or_503()
+    if not _local_indexing_enabled():
+        raise HTTPException(status_code=403, detail="Local folder indexing is disabled. Use Google Drive sync instead.")
     if not indexer_status:
         raise HTTPException(status_code=503, detail="Local brain indexer is not available")
     try:
@@ -472,6 +482,8 @@ async def google_drive_legacy_oauth_callback(
 @app.post("/api/brain/index/local")
 async def index_local_brain_library(payload: BrainLocalIndexRequest):
     store = _brain_or_503()
+    if not _local_indexing_enabled():
+        raise HTTPException(status_code=403, detail="Local folder indexing is disabled. Use Google Drive sync instead.")
     if not index_local_library:
         raise HTTPException(status_code=503, detail="Local brain indexer is not available")
     try:
@@ -719,12 +731,34 @@ async def backfill_brain_embeddings(payload: BrainEmbeddingBackfillRequest):
 async def semantic_brain_search(q: str, limit: int = 10):
     store = _brain_or_503()
     client = _gemini_or_503()
+    started_at = time.perf_counter()
     query_embedding = client.embed_text(q, task_type="RETRIEVAL_QUERY")
+    embedding_ms = round((time.perf_counter() - started_at) * 1000, 1)
+    search_started_at = time.perf_counter()
+    chunks = store.semantic_search_chunks(query_embedding, limit=limit) or []
+    search_ms = round((time.perf_counter() - search_started_at) * 1000, 1)
     return {
         "query": q,
         "model": client.embedding_model,
-        "results": store.semantic_search_chunks(query_embedding, limit=limit),
+        "results": [
+            {
+                "entityType": "chunk",
+                "entityId": int(chunk["id"]),
+                "title": chunk["title"],
+                "body": chunk["body"],
+                "tags": chunk.get("tags", []),
+                "rank": chunk.get("score"),
+                "score": chunk.get("score"),
+                "sourceId": chunk.get("sourceId"),
+            }
+            for chunk in chunks
+        ],
         "counts": store.counts(),
+        "timings": {
+            "embeddingMs": embedding_ms,
+            "searchMs": search_ms,
+            "totalMs": round((time.perf_counter() - started_at) * 1000, 1),
+        },
     }
 
 

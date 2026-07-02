@@ -9,16 +9,17 @@ The application features a robust **Python/FastAPI backend** for heavy quantitat
 
 The long-term architecture notes for the synthetic investment brain are saved in [`docs/investment-brain-architecture.md`](docs/investment-brain-architecture.md).
 
-Current no-API brain setup:
-- Manual memories, text ingestion, local-file indexing, chunk storage, and keyword search are available.
-- Drop `.txt`, `.md`, `.csv`, `.json`, `.html`, `.docx`, or `.pdf` files into `backend/brain_library`, then open `/dashboard/brain` and run the local folder scan.
-- To point the scanner at a synced Google Drive folder later, run the backend with `BRAIN_LIBRARY_DIR="C:\path\to\Google Drive\Investment Brain"`.
+Current brain setup:
+- Manual memories, text ingestion, Google Drive API indexing, Supabase/Postgres chunk storage, keyword search, and semantic vector search are available.
+- Google Drive files are read through the Drive API. The dashboard should not scan arbitrary local folders from your computer.
+- Local folder indexing is disabled by default and requires `BRAIN_ENABLE_LOCAL_INDEXING=true` if intentionally used for development.
+- The Brain frontend defaults to the Render backend (`https://dashboard-eo6k.onrender.com`) so Drive/Supabase are used even when the UI is opened on localhost. Override with `VITE_BRAIN_API_URL` only for development.
 - Gemini support is wired through environment variables. Do not commit API keys.
   - `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`: Google AI Studio API key.
-  - `BRAIN_LLM_MODEL`: optional, defaults to `gemini-2.5-flash`.
+  - `BRAIN_LLM_MODEL`: optional, defaults to `gemini-2.5-flash-lite`.
   - `BRAIN_EMBEDDING_MODEL`: optional, defaults to `gemini-embedding-001`.
   - Local option: copy `backend/.env.example` to `backend/.env`; `backend/.env` is ignored by git.
-  - Use `/dashboard/brain` to scan files, embed missing chunks, and run company analysis.
+  - Use `/dashboard/brain` to connect Drive, sync files, embed missing chunks, search, and run company analysis.
 
 ## Key Features
 
