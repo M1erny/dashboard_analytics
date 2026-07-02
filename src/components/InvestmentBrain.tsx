@@ -159,6 +159,14 @@ type BrainAnalysisResponse = {
     model: string;
     embeddingModel: string;
     answer: string;
+    timings?: {
+        totalMs?: number;
+        generationMs?: number;
+        semanticSearchMs?: number;
+        keywordSearchMs?: number;
+        memorySearchMs?: number;
+        semanticError?: string;
+    };
 };
 
 type BackendState = 'checking' | 'ready' | 'offline';
@@ -477,19 +485,25 @@ export const InvestmentBrain: React.FC = () => {
         if (!cleanedQuery) return;
 
         setIsSearching(true);
-        setSearchMessage('');
+        setSearchMessage('Searching your indexed sources...');
         try {
-            const params = new URLSearchParams({ q: cleanedQuery, limit: '50' });
+            const params = new URLSearchParams({ q: cleanedQuery, limit: '12' });
             const response = await fetch(brainApiUrl(`/api/brain/search?${params.toString()}`));
-            if (!response.ok) throw new Error('Search failed');
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null) as { detail?: string } | null;
+                throw new Error(payload?.detail ?? 'Search failed');
+            }
 
-            const payload = await response.json() as { results?: SearchResult[] };
+            const payload = await response.json() as { results?: SearchResult[]; timings?: { totalMs?: number } };
             const results = Array.isArray(payload.results) ? payload.results : [];
+            const totalSeconds = typeof payload.timings?.totalMs === 'number'
+                ? ` in ${(payload.timings.totalMs / 1000).toFixed(1)}s`
+                : '';
             setSearchResults(results);
-            setSearchMessage(results.length ? `${results.length} match${results.length === 1 ? '' : 'es'}` : 'No matches yet');
-        } catch {
+            setSearchMessage(results.length ? `${results.length} match${results.length === 1 ? '' : 'es'}${totalSeconds}` : `No matches yet${totalSeconds}`);
+        } catch (error) {
             setSearchResults([]);
-            setSearchMessage('Search is unavailable');
+            setSearchMessage(error instanceof Error ? error.message : 'Search is unavailable');
         } finally {
             setIsSearching(false);
         }
@@ -660,7 +674,7 @@ export const InvestmentBrain: React.FC = () => {
         if (!ticker || backendState !== 'ready') return;
 
         setIsAnalyzing(true);
-        setAnalysisMessage('');
+        setAnalysisMessage('Retrieving your brain context, then asking Gemini...');
         setAnalysisAnswer('');
         try {
             const response = await fetch(brainApiUrl('/api/brain/analyze-company'), {
@@ -669,7 +683,7 @@ export const InvestmentBrain: React.FC = () => {
                 body: JSON.stringify({
                     ticker,
                     question: analysisQuestion.trim(),
-                    limit: 8,
+                    limit: 5,
                     useSemantic: true,
                 }),
             });
@@ -680,7 +694,13 @@ export const InvestmentBrain: React.FC = () => {
 
             const payload = await response.json() as BrainAnalysisResponse;
             setAnalysisAnswer(payload.answer);
-            setAnalysisMessage(`${payload.model} with ${payload.embeddingModel}`);
+            const totalSeconds = typeof payload.timings?.totalMs === 'number'
+                ? ` in ${(payload.timings.totalMs / 1000).toFixed(1)}s`
+                : '';
+            const generationSeconds = typeof payload.timings?.generationMs === 'number'
+                ? `, Gemini ${(payload.timings.generationMs / 1000).toFixed(1)}s`
+                : '';
+            setAnalysisMessage(`${payload.model} with ${payload.embeddingModel}${totalSeconds}${generationSeconds}`);
         } catch (error) {
             setAnalysisMessage(error instanceof Error ? error.message : 'Analysis failed');
         } finally {

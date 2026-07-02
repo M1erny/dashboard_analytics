@@ -712,7 +712,7 @@ class BrainStore:
             result["score"] = dot / (query_norm * chunk_norm)
             scored.append(result)
 
-            return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
+        return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
 
     def get_setting(self, key: str) -> str | None:
         clean_key = str(key or "").strip()

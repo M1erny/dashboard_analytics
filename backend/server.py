@@ -665,10 +665,15 @@ async def list_brain_source_chunks(source_id: int, limit: int = 100):
 @app.get("/api/brain/search")
 async def search_brain(q: str, limit: int = 50, entity_type: str | None = None):
     store = _brain_or_503()
+    started_at = time.perf_counter()
+    results = store.search(query=q, limit=limit, entity_type=entity_type)
     return {
         "query": q,
-        "results": store.search(query=q, limit=limit, entity_type=entity_type),
+        "results": results,
         "counts": store.counts(),
+        "timings": {
+            "totalMs": round((time.perf_counter() - started_at) * 1000, 1),
+        },
     }
 
 
@@ -739,6 +744,8 @@ def _format_context_block(items: list[dict], *, max_chars: int = 1000) -> str:
 async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     store = _brain_or_503()
     client = _gemini_or_503()
+    started_at = time.perf_counter()
+    timings: dict[str, Any] = {}
 
     ticker = payload.ticker.strip().upper()
     question = (payload.question or "").strip() or (
@@ -747,18 +754,26 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     )
     retrieval_query = f"{ticker} {question}"
 
+    step_started = time.perf_counter()
     keyword_results = store.search(retrieval_query, limit=payload.limit)
+    timings["keywordSearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
+
     semantic_results = []
     if payload.useSemantic:
+        step_started = time.perf_counter()
         try:
             query_embedding = client.embed_text(retrieval_query, task_type="RETRIEVAL_QUERY")
-            semantic_results = store.semantic_search_chunks(query_embedding, limit=payload.limit)
-        except Exception:
+            semantic_results = store.semantic_search_chunks(query_embedding, limit=payload.limit) or []
+        except Exception as e:
+            timings["semanticError"] = str(e)[:240]
             semantic_results = []
+        timings["semanticSearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
+    step_started = time.perf_counter()
     memory_results = store.list_memories(query=ticker, limit=payload.limit)
     if not memory_results:
         memory_results = store.list_memories(query=question, limit=min(payload.limit, 6))
+    timings["memorySearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
     context_items = []
     seen = set()
@@ -791,15 +806,26 @@ Write the answer in this structure:
 3. Contradictions / risks
 4. What would change my mind
 5. Memory worth saving
+
+Be concise: 5 short sections, maximum 2 bullets per section.
 """.strip()
 
-    answer = client.generate_text(prompt, temperature=0.25, max_output_tokens=1800)
+    step_started = time.perf_counter()
+    try:
+        answer = client.generate_text(prompt, temperature=0.2, max_output_tokens=800)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Gemini analysis failed: {str(e)[:300]}")
+
+    timings["generationMs"] = round((time.perf_counter() - step_started) * 1000, 1)
+    timings["totalMs"] = round((time.perf_counter() - started_at) * 1000, 1)
+
     return {
         "ticker": ticker,
         "question": question,
         "model": client.generation_model,
         "embeddingModel": client.embedding_model,
         "answer": answer,
+        "timings": timings,
         "context": {
             "memories": memory_results,
             "retrieved": context_items,

@@ -5,8 +5,10 @@ from typing import Any
 import httpx
 
 
-DEFAULT_GENERATION_MODEL = "gemini-2.5-flash"
+DEFAULT_GENERATION_MODEL = "gemini-2.5-flash-lite"
 DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
+DEFAULT_THINKING_BUDGET = 0
+DEFAULT_REQUEST_TIMEOUT = 45.0
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 
@@ -23,7 +25,27 @@ def load_backend_env() -> None:
         key = key.strip()
         value = value.strip().strip('"').strip("'")
         if key and key not in os.environ:
-            os.environ[key] = value
+                os.environ[key] = value
+
+
+def _env_int(name: str, default: int | None = None) -> int | None:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
 
 
 class GeminiClient:
@@ -49,6 +71,8 @@ class GeminiClient:
             or os.environ.get("BRAIN_EMBEDDING_MODEL")
             or DEFAULT_EMBEDDING_MODEL
         )
+        self.thinking_budget = _env_int("BRAIN_LLM_THINKING_BUDGET", DEFAULT_THINKING_BUDGET)
+        self.request_timeout = _env_float("BRAIN_LLM_TIMEOUT_SECONDS", DEFAULT_REQUEST_TIMEOUT)
 
     @property
     def configured(self) -> bool:
@@ -60,6 +84,8 @@ class GeminiClient:
             "configured": self.configured,
             "generationModel": self.generation_model,
             "embeddingModel": self.embedding_model,
+            "thinkingBudget": self.thinking_budget,
+            "requestTimeoutSeconds": self.request_timeout,
             "apiKeyEnv": "GOOGLE_AI_API_KEY or GEMINI_API_KEY",
         }
 
@@ -96,7 +122,7 @@ class GeminiClient:
         prompt: str,
         *,
         temperature: float = 0.25,
-        max_output_tokens: int = 1800,
+        max_output_tokens: int = 900,
     ) -> str:
         api_key = self._require_key()
         clean_prompt = (prompt or "").strip()
@@ -104,6 +130,13 @@ class GeminiClient:
             raise ValueError("Cannot generate from empty prompt")
 
         url = f"{GEMINI_API_BASE}/models/{self.generation_model}:generateContent"
+        generation_config: dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": max_output_tokens,
+        }
+        if self.thinking_budget is not None:
+            generation_config["thinkingConfig"] = {"thinkingBudget": self.thinking_budget}
+
         payload = {
             "contents": [
                 {
@@ -111,14 +144,23 @@ class GeminiClient:
                     "parts": [{"text": clean_prompt}],
                 }
             ],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_output_tokens,
-            },
+            "generationConfig": generation_config,
         }
 
-        with httpx.Client(timeout=90) as client:
-            response = client.post(url, params={"key": api_key}, json=payload)
+        with httpx.Client(timeout=self.request_timeout) as client:
+            try:
+                response = client.post(url, params={"key": api_key}, json=payload)
+            except httpx.TimeoutException as exc:
+                raise RuntimeError(f"Gemini request timed out after {self.request_timeout:.0f}s") from exc
+
+            if (
+                response.status_code == 400
+                and "thinking" in response.text.lower()
+                and "thinkingConfig" in generation_config
+            ):
+                generation_config.pop("thinkingConfig", None)
+                response = client.post(url, params={"key": api_key}, json=payload)
+
             response.raise_for_status()
             data = response.json()
 
