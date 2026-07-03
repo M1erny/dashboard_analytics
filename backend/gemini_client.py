@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,17 @@ def _env_float(name: str, default: float) -> float:
         return float(raw)
     except ValueError:
         return default
+
+
+def _safe_provider_error(error: Exception) -> str:
+    text = str(error)
+    if isinstance(error, httpx.HTTPStatusError):
+        response_text = error.response.text[:500] if error.response is not None else ""
+        text = f"Google AI returned HTTP {error.response.status_code}: {response_text}"
+
+    text = re.sub(r"key=([^&\s]+)", "key=<redacted>", text, flags=re.IGNORECASE)
+    text = re.sub(r"(api[_-]?key|secret|token)=([^\s&]+)", r"\1=<redacted>", text, flags=re.IGNORECASE)
+    return text[:800]
 
 
 class GeminiClient:
@@ -115,7 +127,10 @@ class GeminiClient:
                 response = client.post(url, params={"key": api_key}, json=payload)
             except httpx.TimeoutException as exc:
                 raise RuntimeError(f"Gemini embedding timed out after {self.embedding_timeout:.0f}s") from exc
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(_safe_provider_error(exc)) from exc
             data = response.json()
 
         values = data.get("embedding", {}).get("values")
@@ -167,7 +182,10 @@ class GeminiClient:
                 generation_config.pop("thinkingConfig", None)
                 response = client.post(url, params={"key": api_key}, json=payload)
 
-            response.raise_for_status()
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(_safe_provider_error(exc)) from exc
             data = response.json()
 
         parts = (

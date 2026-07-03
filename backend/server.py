@@ -212,6 +212,10 @@ async def _run_embedding_backfill_job(*, batch_size: int, max_chunks: int, force
                 if missing <= 0:
                     break
 
+            if chunks and embedding_backfill_job["embedded"] == 0 and embedding_backfill_job["errors"]:
+                embedding_backfill_job["message"] = "Embedding job stopped after provider errors. Check Google AI key, quota, billing, or model access."
+                break
+
             await asyncio.sleep(0.5)
     except Exception as exc:
         embedding_backfill_job["message"] = f"Embedding job stopped: {str(exc)[:300]}"
