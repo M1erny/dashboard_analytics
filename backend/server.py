@@ -32,6 +32,7 @@ try:
     from drive_indexer import (
         GoogleDriveClient,
         configured_redirect_uri,
+        extension_for_file,
         google_drive_auth_url,
         index_drive_folder,
         parse_drive_folder_id,
@@ -44,6 +45,7 @@ except ImportError as e:
     indexer_status = None
     GoogleDriveClient = None
     configured_redirect_uri = None
+    extension_for_file = None
     google_drive_auth_url = None
     index_drive_folder = None
     parse_drive_folder_id = None
@@ -89,6 +91,18 @@ BRAIN_SEARCH_TIMEOUT_SECONDS = _env_float("BRAIN_SEARCH_TIMEOUT_SECONDS", 18.0)
 BRAIN_ANALYSIS_TIMEOUT_SECONDS = _env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 60.0)
 BRAIN_INDEX_TIMEOUT_SECONDS = _env_float("BRAIN_INDEX_TIMEOUT_SECONDS", 240.0)
 
+embedding_backfill_job: dict[str, Any] = {
+    "running": False,
+    "startedAt": None,
+    "finishedAt": None,
+    "model": None,
+    "requested": 0,
+    "embedded": 0,
+    "errors": [],
+    "message": "Idle",
+    "embeddings": None,
+}
+
 
 async def _run_brain_step(label: str, func, *args, timeout: float | None = None, **kwargs):
     try:
@@ -101,6 +115,120 @@ async def _run_brain_step(label: str, func, *args, timeout: float | None = None,
             status_code=504,
             detail=f"{label} timed out. Try again in a moment, or check Render/Supabase if this repeats.",
         )
+
+
+def _utc_now_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _public_embedding_job() -> dict[str, Any]:
+    return {
+        "running": embedding_backfill_job.get("running", False),
+        "startedAt": embedding_backfill_job.get("startedAt"),
+        "finishedAt": embedding_backfill_job.get("finishedAt"),
+        "model": embedding_backfill_job.get("model"),
+        "requested": embedding_backfill_job.get("requested", 0),
+        "embedded": embedding_backfill_job.get("embedded", 0),
+        "errors": embedding_backfill_job.get("errors", [])[-10:],
+        "message": embedding_backfill_job.get("message", "Idle"),
+        "embeddings": embedding_backfill_job.get("embeddings"),
+    }
+
+
+async def _run_embedding_backfill_job(*, batch_size: int, max_chunks: int, force: bool) -> None:
+    store = brain_store
+    client = gemini_client
+    if not store or not client or not client.configured:
+        embedding_backfill_job.update({
+            "running": False,
+            "finishedAt": _utc_now_iso(),
+            "message": "Embedding job cannot start: backend or Gemini is not configured.",
+        })
+        return
+
+    embedding_backfill_job.update({
+        "running": True,
+        "startedAt": _utc_now_iso(),
+        "finishedAt": None,
+        "model": client.embedding_model,
+        "requested": 0,
+        "embedded": 0,
+        "errors": [],
+        "message": "Embedding job started.",
+    })
+
+    processed = 0
+    try:
+        while processed < max_chunks:
+            limit = min(batch_size, max_chunks - processed)
+            chunks = await _run_brain_step(
+                "Embedding chunk list",
+                store.list_chunks_for_embedding,
+                limit=limit,
+                force=force,
+                timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+            )
+            embedding_backfill_job["requested"] += len(chunks)
+            if not chunks:
+                embedding_backfill_job["message"] = "No missing chunks left."
+                break
+
+            for chunk in chunks:
+                title = str(chunk.get("title") or f"chunk {chunk.get('id')}")
+                embedding_backfill_job["message"] = f"Embedding {title[:120]}"
+                try:
+                    embedding = await _run_brain_step(
+                        "Gemini embedding",
+                        client.embed_text,
+                        chunk["body"],
+                        task_type="RETRIEVAL_DOCUMENT",
+                        timeout=float(getattr(client, "embedding_timeout", 15.0)) + 5.0,
+                    )
+                    await _run_brain_step(
+                        "Store embedding",
+                        store.update_chunk_embedding,
+                        int(chunk["id"]),
+                        embedding_model=client.embedding_model,
+                        embedding=embedding,
+                        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+                    )
+                    embedding_backfill_job["embedded"] += 1
+                except Exception as exc:
+                    embedding_backfill_job["errors"].append({
+                        "id": chunk.get("id"),
+                        "title": title,
+                        "error": str(exc)[:300],
+                    })
+                processed += 1
+
+            if hasattr(store, "embedding_stats"):
+                embedding_backfill_job["embeddings"] = await _run_brain_step(
+                    "Embedding coverage",
+                    store.embedding_stats,
+                    timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+                )
+                missing = int((embedding_backfill_job["embeddings"] or {}).get("missing") or 0)
+                embedding_backfill_job["message"] = f"{missing} chunks still missing embeddings."
+                if missing <= 0:
+                    break
+
+            await asyncio.sleep(0.5)
+    except Exception as exc:
+        embedding_backfill_job["message"] = f"Embedding job stopped: {str(exc)[:300]}"
+    finally:
+        if hasattr(store, "embedding_stats"):
+            try:
+                embedding_backfill_job["embeddings"] = await _run_brain_step(
+                    "Embedding coverage",
+                    store.embedding_stats,
+                    timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+                )
+            except Exception:
+                pass
+        embedding_backfill_job["running"] = False
+        embedding_backfill_job["finishedAt"] = _utc_now_iso()
+        if embedding_backfill_job.get("embedded", 0) > 0 and not str(embedding_backfill_job.get("message", "")).startswith("Embedding job stopped"):
+            embedding_backfill_job["message"] = "Embedding job finished."
 
 
 def _local_indexing_enabled() -> bool:
@@ -170,6 +298,12 @@ class BrainDriveIndexRequest(BaseModel):
 
 class BrainEmbeddingBackfillRequest(BaseModel):
     limit: int = Field(default=5, ge=1, le=25)
+    force: bool = False
+
+
+class BrainEmbeddingBackfillStartRequest(BaseModel):
+    batchSize: int = Field(default=5, ge=1, le=10)
+    maxChunks: int = Field(default=500, ge=1, le=5000)
     force: bool = False
 
 
@@ -430,6 +564,11 @@ async def get_brain_embedding_status():
     return await _run_brain_step("Embedding coverage", store.embedding_stats)
 
 
+@app.get("/api/brain/embeddings/backfill/status")
+async def get_brain_embedding_backfill_status():
+    return _public_embedding_job()
+
+
 @app.get("/api/brain/index/local/status")
 async def get_local_indexer_status(rootPath: str | None = None):
     _brain_or_503()
@@ -455,6 +594,55 @@ async def get_drive_indexer_status():
     client = _drive_or_503()
     folder_id = parse_drive_folder_id() if parse_drive_folder_id else None
     return await _run_brain_step("Drive index status", client.status, folder_id)
+
+
+@app.get("/api/brain/index/drive/files")
+async def list_google_drive_brain_files(limitFiles: int = 2000):
+    client = _drive_or_503()
+    if not parse_drive_folder_id:
+        raise HTTPException(status_code=503, detail="Google Drive folder parser is not available")
+    folder_id = parse_drive_folder_id()
+    if not folder_id:
+        raise HTTPException(status_code=400, detail="GOOGLE_DRIVE_FOLDER_ID is not configured")
+
+    limit_files = max(1, min(int(limitFiles), 5000))
+    try:
+        files = await _run_brain_step(
+            "Drive file listing",
+            client.iter_files,
+            folder_id,
+            limit_files=limit_files,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    items = []
+    for file in files:
+        extension = extension_for_file(file) if extension_for_file else None
+        items.append({
+            "id": file.get("id"),
+            "name": file.get("name"),
+            "relativePath": file.get("relativePath"),
+            "mimeType": file.get("mimeType"),
+            "size": file.get("size"),
+            "modifiedTime": file.get("modifiedTime"),
+            "webViewLink": file.get("webViewLink"),
+            "extension": extension,
+            "supported": bool(extension),
+        })
+
+    return {
+        "folderId": folder_id,
+        "folderUrl": f"https://drive.google.com/drive/folders/{folder_id}",
+        "summary": {
+            "found": len(items),
+            "supported": sum(1 for item in items if item["supported"]),
+            "unsupported": sum(1 for item in items if not item["supported"]),
+            "limitFiles": limit_files,
+            "limitReached": len(items) >= limit_files,
+        },
+        "files": items,
+    }
 
 
 @app.get("/api/brain/drive/auth-url")
@@ -827,6 +1015,24 @@ async def backfill_brain_embeddings(payload: BrainEmbeddingBackfillRequest):
         "items": indexed,
         "counts": counts,
         "embeddings": embeddings,
+    }
+
+
+@app.post("/api/brain/embeddings/backfill/start")
+async def start_brain_embedding_backfill(payload: BrainEmbeddingBackfillStartRequest):
+    _brain_or_503()
+    _gemini_or_503()
+    if embedding_backfill_job.get("running"):
+        return _public_embedding_job()
+
+    asyncio.create_task(_run_embedding_backfill_job(
+        batch_size=payload.batchSize,
+        max_chunks=payload.maxChunks,
+        force=payload.force,
+    ))
+    return {
+        **_public_embedding_job(),
+        "message": "Embedding job queued.",
     }
 
 

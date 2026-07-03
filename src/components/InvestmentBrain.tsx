@@ -124,13 +124,16 @@ type DriveIndexResponse = {
     counts?: BrainCounts;
 };
 
-type EmbeddingBackfillResponse = {
-    model: string;
-    requested: number;
-    embedded: number;
-    errors: { id?: number; title?: string; error: string }[];
-    counts?: BrainCounts;
-    embeddings?: EmbeddingStats;
+type EmbeddingBackfillJob = {
+    running: boolean;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    model?: string | null;
+    requested?: number;
+    embedded?: number;
+    errors?: { id?: number; title?: string; error: string }[];
+    message?: string;
+    embeddings?: EmbeddingStats | null;
 };
 
 type BrainAnalysisResponse = {
@@ -666,50 +669,51 @@ export const InvestmentBrain: React.FC = () => {
         setIsEmbedding(true);
         setEmbeddingMessage('');
         try {
-            let totalRequested = 0;
-            let totalEmbedded = 0;
-            let totalErrors = 0;
-            let latestCounts: BrainCounts | null = null;
-            let latestEmbeddings: EmbeddingStats | null = embeddingStats;
-            let model = llmStatus?.embeddingModel ?? 'embedding model';
-            const batchSize = 5;
-
-            for (let batch = 1; batch <= 100; batch += 1) {
-                const remaining = latestEmbeddings?.missing;
-                setEmbeddingMessage(`Embedding missing chunks... batch ${batch}${typeof remaining === 'number' ? `, ${remaining} left` : ''}`);
-                const response = await fetchWithTimeout(
-                    brainApiUrl('/api/brain/embeddings/backfill'),
-                    {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ limit: batchSize, force: false }),
-                    },
-                    90000
-                );
-                if (!response.ok) {
-                    const payload = await response.json().catch(() => null) as { detail?: string } | null;
-                    throw new Error(payload?.detail ?? 'Embedding failed');
-                }
-
-                const payload = await response.json() as EmbeddingBackfillResponse;
-                model = payload.model;
-                latestCounts = payload.counts ?? latestCounts;
-                latestEmbeddings = payload.embeddings ?? latestEmbeddings;
-                if (payload.embeddings) setEmbeddingStats(payload.embeddings);
-                totalRequested += payload.requested;
-                totalEmbedded += payload.embedded;
-                totalErrors += payload.errors.length;
-
-                if (payload.requested < batchSize || payload.embedded === 0 || (payload.embeddings?.missing ?? 1) === 0) break;
+            const startResponse = await fetchWithTimeout(
+                brainApiUrl('/api/brain/embeddings/backfill/start'),
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ batchSize: 5, maxChunks: 500, force: false }),
+                },
+                12000
+            );
+            if (!startResponse.ok) {
+                const payload = await startResponse.json().catch(() => null) as { detail?: string } | null;
+                throw new Error(payload?.detail ?? 'Embedding job failed to start');
             }
 
-            if (latestCounts) setBackendCounts(latestCounts);
-            if (latestEmbeddings) setEmbeddingStats(latestEmbeddings);
-            const coverage = latestEmbeddings ? ` ${formatEmbeddingCoverage(latestEmbeddings)}.` : '';
-            setEmbeddingMessage(`${totalEmbedded}/${totalRequested} embedded with ${model}.${coverage}${totalErrors ? ` ${totalErrors} error(s).` : ''}`);
+            let latestJob = await startResponse.json() as EmbeddingBackfillJob;
+            for (let poll = 1; poll <= 240; poll += 1) {
+                if (latestJob.embeddings) setEmbeddingStats(latestJob.embeddings);
+                const remaining = latestJob.embeddings?.missing;
+                setEmbeddingMessage(`${latestJob.message ?? 'Embedding in background'}${typeof remaining === 'number' ? ` ${remaining} left.` : ''}`);
+                if (!latestJob.running && poll > 1) break;
+
+                await new Promise(resolve => window.setTimeout(resolve, 3000));
+                const statusResponse = await fetchWithTimeout(
+                    brainApiUrl('/api/brain/embeddings/backfill/status'),
+                    {},
+                    12000
+                );
+                if (!statusResponse.ok) break;
+                latestJob = await statusResponse.json() as EmbeddingBackfillJob;
+            }
+
+            if (latestJob.embeddings) setEmbeddingStats(latestJob.embeddings);
+            const statusResponse = await fetchWithTimeout(brainApiUrl('/api/brain/status'), {}, 12000);
+            if (statusResponse.ok) {
+                const status = await statusResponse.json() as BrainStatus;
+                setBrainStatus(status);
+                setBackendCounts(status.counts ?? null);
+                setEmbeddingStats(status.embeddings ?? latestJob.embeddings ?? null);
+            }
+            const errors = latestJob.errors?.length ?? 0;
+            const coverage = latestJob.embeddings ? ` ${formatEmbeddingCoverage(latestJob.embeddings)}.` : '';
+            setEmbeddingMessage(`${latestJob.embedded ?? 0}/${latestJob.requested ?? 0} embedded in background.${coverage}${errors ? ` ${errors} recent error(s).` : ''}`);
         } catch (error) {
             setEmbeddingMessage(isAbortError(error)
-                ? 'Embedding batch timed out. Press Embed Missing again to continue from the remaining chunks.'
+                ? 'Embedding status timed out. Press Embed Missing again; the background job may still be running.'
                 : error instanceof Error ? error.message : 'Embedding failed');
         } finally {
             setIsEmbedding(false);
