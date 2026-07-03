@@ -655,6 +655,39 @@ class BrainStore:
             sql += " ORDER BY source_id, ordinal LIMIT ?"
             return [self._chunk_from_row_with_embedding(row) for row in conn.execute(sql, (limit,)).fetchall()]
 
+    def embedding_stats(self) -> dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    SUM(CASE WHEN embedding IS NOT NULL AND embedding != '' THEN 1 ELSE 0 END) AS embedded
+                  FROM chunks
+                """
+            ).fetchone()
+            model_rows = conn.execute(
+                """
+                SELECT embedding_model, COUNT(*) AS count
+                  FROM chunks
+                 WHERE embedding IS NOT NULL AND embedding != ''
+                 GROUP BY embedding_model
+                 ORDER BY count DESC
+                """
+            ).fetchall()
+
+        total = int(row["total"] or 0)
+        embedded = int(row["embedded"] or 0)
+        return {
+            "total": total,
+            "embedded": embedded,
+            "missing": max(0, total - embedded),
+            "coverage": (embedded / total) if total else 0,
+            "models": [
+                {"model": model_row["embedding_model"] or "unknown", "count": int(model_row["count"] or 0)}
+                for model_row in model_rows
+            ],
+        }
+
     @staticmethod
     def _chunk_from_row_with_embedding(row: sqlite3.Row) -> dict[str, Any]:
         chunk = BrainStore._chunk_from_row(row)

@@ -57,6 +57,14 @@ type BrainCounts = {
     indexed?: number;
 };
 
+type EmbeddingStats = {
+    total?: number;
+    embedded?: number;
+    missing?: number;
+    coverage?: number;
+    models?: { model: string; count: number }[];
+};
+
 type BrainStatus = {
     state?: string;
     database?: string;
@@ -64,6 +72,7 @@ type BrainStatus = {
     search?: string;
     vectorSearch?: string;
     counts?: BrainCounts;
+    embeddings?: EmbeddingStats;
     capabilities?: string[];
     llm?: BrainLlmStatus;
 };
@@ -121,6 +130,7 @@ type EmbeddingBackfillResponse = {
     embedded: number;
     errors: { id?: number; title?: string; error: string }[];
     counts?: BrainCounts;
+    embeddings?: EmbeddingStats;
 };
 
 type BrainAnalysisResponse = {
@@ -273,7 +283,15 @@ const formatStorage = (storage?: string) => {
     return 'Not connected';
 };
 
-const formatSearchDetail = (status: BrainStatus | null) => {
+const formatEmbeddingCoverage = (stats?: EmbeddingStats | null) => {
+    const total = stats?.total ?? 0;
+    const embedded = stats?.embedded ?? 0;
+    if (!total) return '0 chunks embedded';
+    return `${embedded}/${total} chunks embedded`;
+};
+
+const formatSearchDetail = (status: BrainStatus | null, stats?: EmbeddingStats | null) => {
+    if ((stats?.missing ?? 0) > 0) return formatEmbeddingCoverage(stats);
     if (status?.storage === 'postgres_pgvector') return 'Semantic search ready';
     if (status?.vectorSearch) return 'Semantic search after embeddings';
     if (status?.search) return 'Keyword search ready';
@@ -304,6 +322,7 @@ export const InvestmentBrain: React.FC = () => {
     const [searchMessage, setSearchMessage] = useState('');
     const [isSearching, setIsSearching] = useState(false);
     const [backendCounts, setBackendCounts] = useState<BrainCounts | null>(null);
+    const [embeddingStats, setEmbeddingStats] = useState<EmbeddingStats | null>(null);
     const [sourceTitle, setSourceTitle] = useState('Source note');
     const [sourceBody, setSourceBody] = useState('Paste a memo, transcript excerpt, book passage, framework, or article note here. The brain will store it as a source, split it into chunks, and make it searchable.');
     const [sourceTags, setSourceTags] = useState('framework, source');
@@ -364,6 +383,7 @@ export const InvestmentBrain: React.FC = () => {
                     setBackendState('ready');
                     setBrainStatus(status);
                     setBackendCounts(status.counts ?? null);
+                    setEmbeddingStats(status.embeddings ?? null);
                     setLlmStatus(status.llm ?? null);
                     setDriveStatus(nextDriveStatus);
                     setMemories(backendMemories);
@@ -528,7 +548,9 @@ export const InvestmentBrain: React.FC = () => {
                 ? 'Semantic timed out; '
                 : semanticUnavailable
                     ? 'Semantic unavailable; '
-                    : 'No vector hits yet; ';
+                    : (embeddingStats?.missing ?? 0) > 0
+                        ? `Only ${formatEmbeddingCoverage(embeddingStats)}; `
+                        : 'No vector hits yet; ';
             setSearchResults(results);
             setSearchMessage(results.length
                 ? `${prefix}top ${results.length} keyword match${results.length === 1 ? '' : 'es'}${totalSeconds}`
@@ -648,15 +670,22 @@ export const InvestmentBrain: React.FC = () => {
             let totalEmbedded = 0;
             let totalErrors = 0;
             let latestCounts: BrainCounts | null = null;
+            let latestEmbeddings: EmbeddingStats | null = embeddingStats;
             let model = llmStatus?.embeddingModel ?? 'embedding model';
+            const batchSize = 5;
 
-            for (let batch = 1; batch <= 20; batch += 1) {
-                setEmbeddingMessage(`Embedding missing chunks... batch ${batch}`);
-                const response = await fetch(brainApiUrl('/api/brain/embeddings/backfill'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ limit: 250, force: false }),
-                });
+            for (let batch = 1; batch <= 100; batch += 1) {
+                const remaining = latestEmbeddings?.missing;
+                setEmbeddingMessage(`Embedding missing chunks... batch ${batch}${typeof remaining === 'number' ? `, ${remaining} left` : ''}`);
+                const response = await fetchWithTimeout(
+                    brainApiUrl('/api/brain/embeddings/backfill'),
+                    {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ limit: batchSize, force: false }),
+                    },
+                    90000
+                );
                 if (!response.ok) {
                     const payload = await response.json().catch(() => null) as { detail?: string } | null;
                     throw new Error(payload?.detail ?? 'Embedding failed');
@@ -665,17 +694,23 @@ export const InvestmentBrain: React.FC = () => {
                 const payload = await response.json() as EmbeddingBackfillResponse;
                 model = payload.model;
                 latestCounts = payload.counts ?? latestCounts;
+                latestEmbeddings = payload.embeddings ?? latestEmbeddings;
+                if (payload.embeddings) setEmbeddingStats(payload.embeddings);
                 totalRequested += payload.requested;
                 totalEmbedded += payload.embedded;
                 totalErrors += payload.errors.length;
 
-                if (payload.requested < 250 || payload.embedded === 0) break;
+                if (payload.requested < batchSize || payload.embedded === 0 || (payload.embeddings?.missing ?? 1) === 0) break;
             }
 
             if (latestCounts) setBackendCounts(latestCounts);
-            setEmbeddingMessage(`${totalEmbedded}/${totalRequested} embedded with ${model}${totalErrors ? `, ${totalErrors} error(s)` : ''}.`);
+            if (latestEmbeddings) setEmbeddingStats(latestEmbeddings);
+            const coverage = latestEmbeddings ? ` ${formatEmbeddingCoverage(latestEmbeddings)}.` : '';
+            setEmbeddingMessage(`${totalEmbedded}/${totalRequested} embedded with ${model}.${coverage}${totalErrors ? ` ${totalErrors} error(s).` : ''}`);
         } catch (error) {
-            setEmbeddingMessage(error instanceof Error ? error.message : 'Embedding failed');
+            setEmbeddingMessage(isAbortError(error)
+                ? 'Embedding batch timed out. Press Embed Missing again to continue from the remaining chunks.'
+                : error instanceof Error ? error.message : 'Embedding failed');
         } finally {
             setIsEmbedding(false);
         }
@@ -782,7 +817,7 @@ export const InvestmentBrain: React.FC = () => {
         {
             label: 'Storage',
             value: storageLabel,
-            detail: formatSearchDetail(brainStatus),
+            detail: formatSearchDetail(brainStatus, embeddingStats),
             Icon: Database,
             className: brainStatus?.storage === 'postgres_pgvector' ? 'text-emerald-300' : 'text-amber-300',
         },
@@ -803,7 +838,7 @@ export const InvestmentBrain: React.FC = () => {
         {
             label: 'Indexed',
             value: `${counts.sources ?? 0} sources`,
-            detail: `${counts.chunks ?? 0} chunks, ${counts.memories ?? memories.length} memories`,
+            detail: `${formatEmbeddingCoverage(embeddingStats)}, ${counts.memories ?? memories.length} memories`,
             Icon: Layers3,
             className: 'text-sky-300',
         },

@@ -169,7 +169,7 @@ class BrainDriveIndexRequest(BaseModel):
 
 
 class BrainEmbeddingBackfillRequest(BaseModel):
-    limit: int = Field(default=250, ge=1, le=250)
+    limit: int = Field(default=5, ge=1, le=25)
     force: bool = False
 
 
@@ -382,6 +382,10 @@ async def get_status():
 async def get_brain_status():
     store = _brain_or_503()
     counts = await _run_brain_step("Brain counts", store.counts)
+    embeddings = await _run_brain_step(
+        "Embedding coverage",
+        store.embedding_stats if hasattr(store, "embedding_stats") else lambda: {},
+    )
     capabilities = [
         "manual_memories",
         "source_storage",
@@ -407,6 +411,7 @@ async def get_brain_status():
         "llm": gemini_client.status() if gemini_client else {"configured": False},
         "capabilities": capabilities,
         "counts": counts,
+        "embeddings": embeddings,
     }
 
 
@@ -415,6 +420,14 @@ async def get_brain_llm_status():
     if not gemini_client:
         return {"configured": False, "provider": None}
     return gemini_client.status()
+
+
+@app.get("/api/brain/embeddings/status")
+async def get_brain_embedding_status():
+    store = _brain_or_503()
+    if not hasattr(store, "embedding_stats"):
+        return {"total": 0, "embedded": 0, "missing": 0, "coverage": 0, "models": []}
+    return await _run_brain_step("Embedding coverage", store.embedding_stats)
 
 
 @app.get("/api/brain/index/local/status")
@@ -801,6 +814,10 @@ async def backfill_brain_embeddings(payload: BrainEmbeddingBackfillRequest):
                 "error": str(e),
             })
     counts = await _run_brain_step("Brain counts", store.counts)
+    embeddings = await _run_brain_step(
+        "Embedding coverage",
+        store.embedding_stats if hasattr(store, "embedding_stats") else lambda: {},
+    )
 
     return {
         "model": client.embedding_model,
@@ -809,6 +826,7 @@ async def backfill_brain_embeddings(payload: BrainEmbeddingBackfillRequest):
         "errors": errors,
         "items": indexed,
         "counts": counts,
+        "embeddings": embeddings,
     }
 
 

@@ -829,6 +829,39 @@ class PostgresBrainStore:
             params.append(limit)
             return [self._chunk_from_row_with_embedding(row) for row in conn.execute(sql, params).fetchall()]
 
+    def embedding_stats(self) -> dict[str, Any]:
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    COUNT(embedding) AS embedded
+                  FROM chunks
+                """
+            ).fetchone()
+            model_rows = conn.execute(
+                """
+                SELECT embedding_model, COUNT(*) AS count
+                  FROM chunks
+                 WHERE embedding IS NOT NULL
+                 GROUP BY embedding_model
+                 ORDER BY count DESC
+                """
+            ).fetchall()
+
+        total = int(row["total"] or 0)
+        embedded = int(row["embedded"] or 0)
+        return {
+            "total": total,
+            "embedded": embedded,
+            "missing": max(0, total - embedded),
+            "coverage": (embedded / total) if total else 0,
+            "models": [
+                {"model": model_row["embedding_model"] or "unknown", "count": int(model_row["count"] or 0)}
+                for model_row in model_rows
+            ],
+        }
+
     def update_chunk_embedding(
         self,
         chunk_id: int,
