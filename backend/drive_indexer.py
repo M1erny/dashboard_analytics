@@ -358,7 +358,7 @@ def index_drive_folder(
     *,
     folder_id: str | None = None,
     limit_files: int = 100,
-    max_bytes: int = 50 * 1024 * 1024,
+    max_bytes: int = 5 * 1024 * 1024,
     force: bool = False,
     changed_files_limit: int | None = None,
     progress_callback: Any | None = None,

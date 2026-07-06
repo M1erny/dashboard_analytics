@@ -423,7 +423,7 @@ class BrainLocalIndexRequest(BaseModel):
 class BrainDriveIndexRequest(BaseModel):
     folderId: str | None = None
     limitFiles: int = Field(default=2000, ge=1, le=2000)
-    maxBytes: int = Field(default=50 * 1024 * 1024, ge=1024)
+    maxBytes: int = Field(default=5 * 1024 * 1024, ge=1024)
     changedFilesLimit: int | None = Field(default=5, ge=1, le=100)
     force: bool = False
 

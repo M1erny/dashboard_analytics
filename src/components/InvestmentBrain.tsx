@@ -697,7 +697,8 @@ export const InvestmentBrain: React.FC = () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         limitFiles: 2000,
-                        changedFilesLimit: 3,
+                        maxBytes: 5 * 1024 * 1024,
+                        changedFilesLimit: 2,
                         force: false,
                     }),
                 },
