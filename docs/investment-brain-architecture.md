@@ -59,6 +59,43 @@ Google Drive folder -> Drive API -> Render backend -> Supabase/Postgres + pgvect
 Local folder indexing is disabled by default and should be treated only as an explicit development escape hatch.
 The Brain frontend defaults to the Render backend unless `VITE_BRAIN_API_URL` or `VITE_API_URL` is explicitly set.
 
+## Preferred Self-Use Build: Local Brain Worker
+
+For this project, the best near-term architecture is the local worker path:
+
+```text
+Google Drive synced folder on local PC
+        |
+        v
+backend/local_brain_worker.py
+        |
+        v
+Extract text, chunk, hash, embed
+        |
+        v
+Supabase Postgres + pgvector
+        |
+        v
+Render API + Vercel dashboard
+```
+
+This is better than asking Render to parse the library because Render memory is limited and PDF extraction can use far more RAM than the file size suggests. The local PC can do the heavy ingestion work, while Render remains a lightweight search and analysis API.
+
+Runbook:
+
+```powershell
+Copy-Item backend\.env.local-brain.example backend\.env
+python -m pip install -r backend\requirements.txt
+.\run_local_brain_worker.ps1 -Mode status
+.\run_local_brain_worker.ps1 -Mode all
+```
+
+Detailed instructions are in:
+
+```text
+docs/local-brain-worker.md
+```
+
 ## What The Brain Indexer Creates
 
 The indexer should not send only a short description to AI. It should create multiple layers.
@@ -208,6 +245,8 @@ Current capability:
 - company analysis through `POST /api/brain/analyze-company`
 - SQLite FTS keyword search
 - production Postgres/pgvector storage when `DATABASE_URL` or `BRAIN_DATABASE_URL` is configured
+- standalone local Brain Worker through `backend/local_brain_worker.py`
+- Windows launcher through `run_local_brain_worker.ps1`
 - Vercel frontend routing
 
 Current limitations:
@@ -217,6 +256,7 @@ Current limitations:
 - embeddings require a Google AI Studio API key and an explicit backfill run
 - Supabase/Postgres requires a private database connection string, not only the public Supabase project URL
 - local folder indexing is disabled by default; the cloud backend should read Google Drive through the Drive API, not files from your personal computer
+- the local worker can index local synced Drive files into Supabase, but the cloud dashboard cannot directly open arbitrary local files from your PC
 
 ## Google Drive API Store
 

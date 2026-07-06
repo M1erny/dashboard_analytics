@@ -56,6 +56,19 @@ SKIP_DIRS = {
     "dist",
     "build",
 }
+DEFAULT_LOCAL_MAX_BYTES = 250 * 1024 * 1024
+DEFAULT_LOCAL_MAX_PDF_PAGES = 2000
+DEFAULT_LOCAL_MAX_EXTRACTED_CHARS = 5_000_000
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def custom_paths_allowed() -> bool:
@@ -119,22 +132,56 @@ def strip_html(value: str) -> str:
     return html.unescape(text)
 
 
-def extract_pdf_text(path: Path) -> tuple[str, dict[str, Any]]:
+def extract_pdf_text(
+    path: Path,
+    *,
+    max_pages: int = DEFAULT_LOCAL_MAX_PDF_PAGES,
+    max_chars: int = DEFAULT_LOCAL_MAX_EXTRACTED_CHARS,
+) -> tuple[str, dict[str, Any]]:
     if PdfReader is None:
         raise RuntimeError("PDF extraction requires pypdf. Install backend requirements first.")
 
     reader = PdfReader(str(path))
     parts: list[str] = []
+    pages_read = 0
+    chars = 0
+    truncated = False
     for index, page in enumerate(reader.pages, start=1):
+        if pages_read >= max_pages:
+            truncated = True
+            break
         page_text = page.extract_text() or ""
         if page_text.strip():
-            parts.append(f"[Page {index}]\n{page_text.strip()}")
+            page_part = f"[Page {index}]\n{page_text.strip()}"
+            remaining = max_chars - chars
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(page_part) > remaining:
+                page_part = page_part[:remaining]
+                truncated = True
+            parts.append(page_part)
+            chars += len(page_part)
+        pages_read = index
 
-    return "\n\n".join(parts), {"pages": len(reader.pages), "extractor": "pypdf"}
+    return "\n\n".join(parts), {
+        "pages": len(reader.pages),
+        "pagesRead": pages_read,
+        "extractor": "pypdf",
+        "truncated": truncated,
+        "maxPdfPages": max_pages,
+        "maxExtractedChars": max_chars,
+    }
 
 
-def extract_docx_text(path: Path) -> tuple[str, dict[str, Any]]:
+def extract_docx_text(
+    path: Path,
+    *,
+    max_chars: int = DEFAULT_LOCAL_MAX_EXTRACTED_CHARS,
+) -> tuple[str, dict[str, Any]]:
     paragraphs: list[str] = []
+    chars = 0
+    truncated = False
     with zipfile.ZipFile(path) as archive:
         with archive.open("word/document.xml") as document:
             tree = ElementTree.parse(document)
@@ -143,23 +190,51 @@ def extract_docx_text(path: Path) -> tuple[str, dict[str, Any]]:
     for paragraph in tree.findall(".//w:p", namespace):
         text = "".join(node.text or "" for node in paragraph.findall(".//w:t", namespace)).strip()
         if text:
+            remaining = max_chars - chars
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(text) > remaining:
+                text = text[:remaining]
+                truncated = True
             paragraphs.append(text)
+            chars += len(text)
 
-    return "\n\n".join(paragraphs), {"paragraphs": len(paragraphs), "extractor": "docx-xml"}
+    return "\n\n".join(paragraphs), {
+        "paragraphs": len(paragraphs),
+        "extractor": "docx-xml",
+        "truncated": truncated,
+        "maxExtractedChars": max_chars,
+    }
 
 
-def extract_file_text(path: Path) -> tuple[str, dict[str, Any]]:
+def extract_file_text(
+    path: Path,
+    *,
+    max_pdf_pages: int = DEFAULT_LOCAL_MAX_PDF_PAGES,
+    max_extracted_chars: int = DEFAULT_LOCAL_MAX_EXTRACTED_CHARS,
+) -> tuple[str, dict[str, Any]]:
     suffix = path.suffix.lower()
     metadata: dict[str, Any] = {"extractor": "plain-text"}
 
     if suffix in TEXT_EXTENSIONS:
-        return read_text_file(path), metadata
+        text = read_text_file(path)
+        return text[:max_extracted_chars], {
+            **metadata,
+            "truncated": len(text) > max_extracted_chars,
+            "maxExtractedChars": max_extracted_chars,
+        }
     if suffix in {".html", ".htm"}:
-        return strip_html(read_text_file(path)), {"extractor": "html-stripper"}
+        text = strip_html(read_text_file(path))
+        return text[:max_extracted_chars], {
+            "extractor": "html-stripper",
+            "truncated": len(text) > max_extracted_chars,
+            "maxExtractedChars": max_extracted_chars,
+        }
     if suffix == ".pdf":
-        return extract_pdf_text(path)
+        return extract_pdf_text(path, max_pages=max_pdf_pages, max_chars=max_extracted_chars)
     if suffix == ".docx":
-        return extract_docx_text(path)
+        return extract_docx_text(path, max_chars=max_extracted_chars)
 
     raise RuntimeError(f"Unsupported file extension: {suffix}")
 
@@ -201,7 +276,10 @@ def index_local_library(
     root_path: str | None = None,
     extensions: list[str] | None = None,
     limit_files: int = 250,
-    max_bytes: int = 50 * 1024 * 1024,
+    max_bytes: int = DEFAULT_LOCAL_MAX_BYTES,
+    max_pdf_pages: int | None = None,
+    max_extracted_chars: int | None = None,
+    changed_files_limit: int | None = None,
     force: bool = False,
 ) -> dict[str, Any]:
     root = resolve_library_root(root_path)
@@ -214,9 +292,17 @@ def index_local_library(
         raise ValueError("No supported extensions selected")
 
     limit_files = max(1, min(int(limit_files), 5000))
-    max_bytes = max(1024, int(max_bytes))
+    max_bytes = max(1024, int(max_bytes or _env_int("BRAIN_LOCAL_MAX_BYTES", DEFAULT_LOCAL_MAX_BYTES)))
+    max_pdf_pages = max(1, min(int(max_pdf_pages or _env_int("BRAIN_LOCAL_MAX_PDF_PAGES", DEFAULT_LOCAL_MAX_PDF_PAGES)), 10000))
+    max_extracted_chars = max(20_000, min(int(max_extracted_chars or _env_int("BRAIN_LOCAL_MAX_EXTRACTED_CHARS", DEFAULT_LOCAL_MAX_EXTRACTED_CHARS)), 25_000_000))
+    changed_files_limit = (
+        max(1, min(int(changed_files_limit), 5000))
+        if changed_files_limit is not None
+        else None
+    )
     indexed_at = datetime.now(timezone.utc).isoformat()
     results: list[dict[str, Any]] = []
+    changed_files_started = 0
 
     for path in iter_library_files(root, allowed_extensions, limit_files):
         relative_path = path.relative_to(root).as_posix()
@@ -247,7 +333,22 @@ def index_local_library(
                 })
                 continue
 
-            extracted_text, extraction_metadata = extract_file_text(path)
+            if changed_files_limit is not None and changed_files_started >= changed_files_limit:
+                results.append({
+                    "path": str(path),
+                    "relativePath": relative_path,
+                    "status": "skipped",
+                    "reason": "deferred to next batch",
+                    "bytes": stat.st_size,
+                })
+                continue
+
+            changed_files_started += 1
+            extracted_text, extraction_metadata = extract_file_text(
+                path,
+                max_pdf_pages=max_pdf_pages,
+                max_extracted_chars=max_extracted_chars,
+            )
             clean_text = normalize_text(extracted_text)
             if not clean_text:
                 results.append({
@@ -274,6 +375,11 @@ def index_local_library(
                 "modifiedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                 "indexedAt": indexed_at,
                 "storageMode": "source_preview_chunks_full_text",
+                "localWorkerLimits": {
+                    "maxBytes": max_bytes,
+                    "maxPdfPages": max_pdf_pages,
+                    "maxExtractedChars": max_extracted_chars,
+                },
                 **extraction_metadata,
             }
             source, changed = store.upsert_file_source(
@@ -324,6 +430,10 @@ def index_local_library(
         "indexed": sum(1 for item in results if item["status"] == "indexed"),
         "skipped": sum(1 for item in results if item["status"] == "skipped"),
         "errors": sum(1 for item in results if item["status"] == "error"),
+        "deferred": sum(1 for item in results if item.get("reason") == "deferred to next batch"),
+        "maxBytes": max_bytes,
+        "maxPdfPages": max_pdf_pages,
+        "maxExtractedChars": max_extracted_chars,
     }
     return {
         "root": str(root),
