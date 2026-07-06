@@ -186,6 +186,22 @@ def _semantic_error_detail(error: Exception | str) -> dict[str, str]:
     }
 
 
+def _generation_error_detail(error: Exception | str) -> dict[str, str]:
+    reason = _clean_public_error(error)
+    lower_reason = reason.lower()
+    if "http 403" in lower_reason or "forbidden" in lower_reason:
+        return {
+            "message": "Google AI rejected the Gemini analysis request.",
+            "reason": "Generation API returned 403 Forbidden.",
+            "action": "Replace or fix the Render GOOGLE_AI_API_KEY value, then redeploy/restart the backend.",
+        }
+    return {
+        "message": "Gemini analysis failed.",
+        "reason": reason or "Unknown provider error.",
+        "action": "Check the Google AI key, model access, quota, and Render logs.",
+    }
+
+
 async def _run_drive_index_job(
     *,
     folder_id: str | None,
@@ -1509,7 +1525,7 @@ Be concise but not shallow: 5 short sections, maximum 3 bullets per section. If 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Gemini analysis failed: {str(e)[:300]}")
+        raise HTTPException(status_code=502, detail=_generation_error_detail(e))
 
     timings["generationMs"] = round((time.perf_counter() - step_started) * 1000, 1)
     timings["totalMs"] = round((time.perf_counter() - started_at) * 1000, 1)

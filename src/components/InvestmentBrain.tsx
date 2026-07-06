@@ -210,7 +210,7 @@ const compactProviderError = (error: string | undefined) => {
     if (!error) return '';
     const normalized = error.replace(/\s+/g, ' ').trim();
     if (/http 403|forbidden/i.test(normalized)) {
-        return 'Google AI rejected embeddings (403). Check the Render API key, quota, billing, and embedding model access.';
+        return 'Google AI rejected the request (403). The Render AI key is present but not accepted; replace it with a valid Google AI Studio key.';
     }
     if (/timed out/i.test(normalized)) return 'Embedding provider timed out. Try again after Render and Google are stable.';
     return normalized.slice(0, 220);
@@ -822,8 +822,8 @@ export const InvestmentBrain: React.FC = () => {
                 65000
             );
             if (!response.ok) {
-                const payload = await response.json().catch(() => null) as { detail?: string } | null;
-                throw new Error(payload?.detail ?? 'Analysis failed');
+                const payload = await response.json().catch(() => null) as ApiErrorPayload | null;
+                throw new Error(compactProviderError(apiErrorMessage(payload, 'Analysis failed')));
             }
 
             const payload = await response.json() as BrainAnalysisResponse;
@@ -906,8 +906,8 @@ export const InvestmentBrain: React.FC = () => {
         },
         {
             label: 'AI',
-            value: llmStatus?.configured ? 'Gemini ready' : 'Missing key',
-            detail: llmStatus?.embeddingModel ?? 'embedding model',
+            value: llmStatus?.configured ? 'Gemini configured' : 'Missing key',
+            detail: llmStatus?.configured ? `${llmStatus.embeddingModel ?? 'embedding model'}; provider not health-checked` : 'add Google AI key',
             Icon: Sparkles,
             className: llmStatus?.configured ? 'text-violet-300' : 'text-amber-300',
         },
@@ -1051,7 +1051,7 @@ export const InvestmentBrain: React.FC = () => {
                                     'inline-flex w-fit rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
                                     llmStatus?.configured ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
                                 )}>
-                                    {llmStatus?.configured ? 'Gemini ready' : 'API key missing'}
+                                    {llmStatus?.configured ? 'Gemini configured' : 'API key missing'}
                                 </span>
                             </div>
 
