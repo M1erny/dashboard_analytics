@@ -131,6 +131,12 @@ type DriveIndexJob = {
     folderId?: string | null;
     folderUrl?: string | null;
     summary?: DriveIndexResponse['summary'] | null;
+    progress?: {
+        processed?: number;
+        total?: number;
+        currentFile?: string | null;
+        summary?: DriveIndexResponse['summary'];
+    } | null;
     counts?: BrainCounts | null;
     results?: DriveIndexResult[];
     message?: string;
@@ -210,6 +216,12 @@ const compactProviderError = (error: string | undefined) => {
 };
 
 const driveJobMessage = (job: DriveIndexJob) => {
+    if (job.running && job.progress) {
+        const processed = job.progress.processed ?? 0;
+        const total = job.progress.total ?? 0;
+        const currentFile = job.progress.currentFile ? ` ${job.progress.currentFile.slice(0, 140)}` : '';
+        return `Syncing Drive ${processed}/${total} file(s).${currentFile}`;
+    }
     if (job.summary) {
         const summary = job.summary;
         return `${summary.indexed} indexed, ${summary.skipped} skipped, ${summary.errors} errors from ${summary.found} Drive file(s).`;

@@ -110,6 +110,7 @@ drive_index_job: dict[str, Any] = {
     "folderId": None,
     "folderUrl": None,
     "summary": None,
+    "progress": None,
     "counts": None,
     "results": [],
     "message": "Idle",
@@ -155,6 +156,7 @@ def _public_drive_job() -> dict[str, Any]:
         "folderId": drive_index_job.get("folderId"),
         "folderUrl": drive_index_job.get("folderUrl"),
         "summary": drive_index_job.get("summary"),
+        "progress": drive_index_job.get("progress"),
         "counts": drive_index_job.get("counts"),
         "results": drive_index_job.get("results", [])[-500:],
         "message": drive_index_job.get("message", "Idle"),
@@ -207,12 +209,25 @@ async def _run_drive_index_job(
         "folderId": folder_id,
         "folderUrl": None,
         "summary": None,
+        "progress": None,
         "counts": None,
         "results": [],
         "message": "Drive sync started.",
     })
 
     try:
+        def update_progress(progress: dict[str, Any]) -> None:
+            summary = progress.get("summary") or {}
+            current_file = progress.get("currentFile")
+            processed = progress.get("processed", 0)
+            total = progress.get("total", 0)
+            drive_index_job["progress"] = progress
+            drive_index_job["summary"] = summary
+            drive_index_job["message"] = (
+                f"Syncing Drive {processed}/{total} file(s)"
+                f"{f': {str(current_file)[:180]}' if current_file else ''}."
+            )
+
         result = await run_in_threadpool(
             index_drive_folder,
             store,
@@ -220,6 +235,7 @@ async def _run_drive_index_job(
             limit_files=limit_files,
             max_bytes=max_bytes,
             force=force,
+            progress_callback=update_progress,
         )
         summary = result.get("summary") or {}
         drive_index_job.update({

@@ -360,6 +360,7 @@ def index_drive_folder(
     limit_files: int = 100,
     max_bytes: int = 50 * 1024 * 1024,
     force: bool = False,
+    progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     clean_folder_id = parse_drive_folder_id(folder_id)
     if not clean_folder_id:
@@ -372,6 +373,26 @@ def index_drive_folder(
 
     results: list[dict[str, Any]] = []
     files = client.iter_files(clean_folder_id, limit_files=limit_files)
+
+    def emit_progress(current_file: str | None = None) -> None:
+        if not progress_callback:
+            return
+        summary = {
+            "found": len(results),
+            "indexed": sum(1 for item in results if item["status"] == "indexed"),
+            "skipped": sum(1 for item in results if item["status"] == "skipped"),
+            "errors": sum(1 for item in results if item["status"] == "error"),
+            "limitFiles": limit_files,
+            "limitReached": len(files) >= limit_files,
+        }
+        progress_callback({
+            "processed": len(results),
+            "total": len(files),
+            "currentFile": current_file,
+            "summary": summary,
+        })
+
+    emit_progress()
 
     for file in files:
         relative_path = file.get("relativePath") or file.get("name") or file["id"]
@@ -386,6 +407,7 @@ def index_drive_folder(
                     "reason": "unsupported file type",
                     "mimeType": file.get("mimeType"),
                 })
+                emit_progress(relative_path)
                 continue
 
             size = int(file.get("size") or 0)
@@ -398,6 +420,7 @@ def index_drive_folder(
                     "reason": f"File exceeds maxBytes ({size} > {max_bytes})",
                     "bytes": size,
                 })
+                emit_progress(relative_path)
                 continue
 
             file_identity = f"google-drive:{file['id']}"
@@ -414,6 +437,7 @@ def index_drive_folder(
                     "sourceId": existing["id"],
                     "bytes": size or None,
                 })
+                emit_progress(relative_path)
                 continue
 
             data, downloaded_extension, download_metadata = client.download_file(file)
@@ -426,6 +450,7 @@ def index_drive_folder(
                     "reason": f"Downloaded file exceeds maxBytes ({len(data)} > {max_bytes})",
                     "bytes": len(data),
                 })
+                emit_progress(relative_path)
                 continue
 
             file_hash = sha256_bytes(data)
@@ -440,6 +465,7 @@ def index_drive_folder(
                     "reason": "no extractable text",
                     "bytes": len(data),
                 })
+                emit_progress(relative_path)
                 continue
 
             title = str(file.get("name") or file["id"]).rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip()
@@ -504,6 +530,7 @@ def index_drive_folder(
                 "bytes": len(data),
                 "webViewLink": file.get("webViewLink"),
             })
+            emit_progress(relative_path)
         except Exception as exc:
             results.append({
                 "id": file.get("id"),
@@ -512,6 +539,7 @@ def index_drive_folder(
                 "status": "error",
                 "reason": str(exc),
             })
+            emit_progress(relative_path)
 
     summary = {
         "found": len(results),
