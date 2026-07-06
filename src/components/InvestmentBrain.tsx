@@ -117,6 +117,7 @@ type DriveIndexResponse = {
         indexed: number;
         skipped: number;
         errors: number;
+        deferred?: number;
         limitFiles?: number;
         limitReached?: boolean;
     };
@@ -224,7 +225,8 @@ const driveJobMessage = (job: DriveIndexJob) => {
     }
     if (job.summary) {
         const summary = job.summary;
-        return `${summary.indexed} indexed, ${summary.skipped} skipped, ${summary.errors} errors from ${summary.found} Drive file(s).`;
+        const deferred = summary.deferred ? ` ${summary.deferred} deferred for next batch.` : '';
+        return `${summary.indexed} indexed, ${summary.skipped} skipped, ${summary.errors} errors from ${summary.found} Drive file(s).${deferred}`;
     }
     return job.message ?? 'Drive sync running...';
 };
@@ -695,6 +697,7 @@ export const InvestmentBrain: React.FC = () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         limitFiles: 2000,
+                        changedFilesLimit: 3,
                         force: false,
                     }),
                 },

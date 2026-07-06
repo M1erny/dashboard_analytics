@@ -191,6 +191,7 @@ async def _run_drive_index_job(
     folder_id: str | None,
     limit_files: int,
     max_bytes: int,
+    changed_files_limit: int | None,
     force: bool,
 ) -> None:
     store = brain_store
@@ -223,9 +224,10 @@ async def _run_drive_index_job(
             total = progress.get("total", 0)
             drive_index_job["progress"] = progress
             drive_index_job["summary"] = summary
+            current_note = f": {str(current_file)[:180]}" if current_file else ""
             drive_index_job["message"] = (
                 f"Syncing Drive {processed}/{total} file(s)"
-                f"{f': {str(current_file)[:180]}' if current_file else ''}."
+                f"{current_note}."
             )
 
         result = await run_in_threadpool(
@@ -234,6 +236,7 @@ async def _run_drive_index_job(
             folder_id=folder_id,
             limit_files=limit_files,
             max_bytes=max_bytes,
+            changed_files_limit=changed_files_limit,
             force=force,
             progress_callback=update_progress,
         )
@@ -247,7 +250,8 @@ async def _run_drive_index_job(
             "message": (
                 f"{summary.get('indexed', 0)} indexed, "
                 f"{summary.get('skipped', 0)} skipped, "
-                f"{summary.get('errors', 0)} errors from "
+                f"{summary.get('errors', 0)} errors, "
+                f"{summary.get('deferred', 0)} deferred from "
                 f"{summary.get('found', 0)} Drive file(s)."
             ),
         })
@@ -420,6 +424,7 @@ class BrainDriveIndexRequest(BaseModel):
     folderId: str | None = None
     limitFiles: int = Field(default=2000, ge=1, le=2000)
     maxBytes: int = Field(default=50 * 1024 * 1024, ge=1024)
+    changedFilesLimit: int | None = Field(default=5, ge=1, le=100)
     force: bool = False
 
 
@@ -879,6 +884,7 @@ async def index_google_drive_brain_folder(payload: BrainDriveIndexRequest):
             folder_id=payload.folderId,
             limit_files=payload.limitFiles,
             max_bytes=payload.maxBytes,
+            changed_files_limit=payload.changedFilesLimit,
             force=payload.force,
             timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
         )
@@ -900,6 +906,7 @@ async def start_google_drive_brain_index(payload: BrainDriveIndexRequest):
         folder_id=payload.folderId,
         limit_files=payload.limitFiles,
         max_bytes=payload.maxBytes,
+        changed_files_limit=payload.changedFilesLimit,
         force=payload.force,
     ))
     return {

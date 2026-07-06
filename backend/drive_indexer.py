@@ -360,6 +360,7 @@ def index_drive_folder(
     limit_files: int = 100,
     max_bytes: int = 50 * 1024 * 1024,
     force: bool = False,
+    changed_files_limit: int | None = None,
     progress_callback: Any | None = None,
 ) -> dict[str, Any]:
     clean_folder_id = parse_drive_folder_id(folder_id)
@@ -369,10 +370,16 @@ def index_drive_folder(
     client = GoogleDriveClient(store=store)
     limit_files = max(1, min(int(limit_files), 2000))
     max_bytes = max(1024, int(max_bytes))
+    changed_files_limit = (
+        max(1, min(int(changed_files_limit), 100))
+        if changed_files_limit is not None
+        else None
+    )
     indexed_at = datetime.now(timezone.utc).isoformat()
 
     results: list[dict[str, Any]] = []
     files = client.iter_files(clean_folder_id, limit_files=limit_files)
+    changed_files_started = 0
 
     def emit_progress(current_file: str | None = None) -> None:
         if not progress_callback:
@@ -382,6 +389,7 @@ def index_drive_folder(
             "indexed": sum(1 for item in results if item["status"] == "indexed"),
             "skipped": sum(1 for item in results if item["status"] == "skipped"),
             "errors": sum(1 for item in results if item["status"] == "error"),
+            "deferred": sum(1 for item in results if item.get("reason") == "deferred to next batch"),
             "limitFiles": limit_files,
             "limitReached": len(files) >= limit_files,
         }
@@ -440,6 +448,19 @@ def index_drive_folder(
                 emit_progress(relative_path)
                 continue
 
+            if changed_files_limit is not None and changed_files_started >= changed_files_limit:
+                results.append({
+                    "id": file["id"],
+                    "name": file.get("name"),
+                    "relativePath": relative_path,
+                    "status": "skipped",
+                    "reason": "deferred to next batch",
+                    "bytes": size or None,
+                })
+                emit_progress(relative_path)
+                continue
+
+            changed_files_started += 1
             data, downloaded_extension, download_metadata = client.download_file(file)
             if len(data) > max_bytes:
                 results.append({
@@ -546,6 +567,7 @@ def index_drive_folder(
         "indexed": sum(1 for item in results if item["status"] == "indexed"),
         "skipped": sum(1 for item in results if item["status"] == "skipped"),
         "errors": sum(1 for item in results if item["status"] == "error"),
+        "deferred": sum(1 for item in results if item.get("reason") == "deferred to next batch"),
         "limitFiles": limit_files,
         "limitReached": len(files) >= limit_files,
     }
