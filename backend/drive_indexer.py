@@ -159,13 +159,17 @@ def extension_for_file(file: dict[str, Any]) -> str | None:
     if mime_type in GOOGLE_WORKSPACE_EXPORTS:
         return GOOGLE_WORKSPACE_EXPORTS[mime_type][1]
 
+    mime_extension = MIME_EXTENSION_MAP.get(mime_type)
+    if mime_extension:
+        return mime_extension
+
     name = str(file.get("name") or "")
     if "." in name:
         suffix = "." + name.rsplit(".", 1)[-1].lower()
         if suffix in SUPPORTED_EXTENSIONS:
             return suffix
 
-    return MIME_EXTENSION_MAP.get(mime_type)
+    return None
 
 
 class GoogleDriveClient:
