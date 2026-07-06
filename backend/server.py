@@ -103,6 +103,18 @@ embedding_backfill_job: dict[str, Any] = {
     "embeddings": None,
 }
 
+drive_index_job: dict[str, Any] = {
+    "running": False,
+    "startedAt": None,
+    "finishedAt": None,
+    "folderId": None,
+    "folderUrl": None,
+    "summary": None,
+    "counts": None,
+    "results": [],
+    "message": "Idle",
+}
+
 
 async def _run_brain_step(label: str, func, *args, timeout: float | None = None, **kwargs):
     try:
@@ -133,6 +145,101 @@ def _public_embedding_job() -> dict[str, Any]:
         "message": embedding_backfill_job.get("message", "Idle"),
         "embeddings": embedding_backfill_job.get("embeddings"),
     }
+
+
+def _public_drive_job() -> dict[str, Any]:
+    return {
+        "running": drive_index_job.get("running", False),
+        "startedAt": drive_index_job.get("startedAt"),
+        "finishedAt": drive_index_job.get("finishedAt"),
+        "folderId": drive_index_job.get("folderId"),
+        "folderUrl": drive_index_job.get("folderUrl"),
+        "summary": drive_index_job.get("summary"),
+        "counts": drive_index_job.get("counts"),
+        "results": drive_index_job.get("results", [])[-500:],
+        "message": drive_index_job.get("message", "Idle"),
+    }
+
+
+def _clean_public_error(error: Exception | str) -> str:
+    clean = _safe_backend_error(str(error))
+    clean = re.sub(r"<[^>]+>", " ", clean)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    return clean[:500]
+
+
+def _semantic_error_detail(error: Exception | str) -> dict[str, str]:
+    reason = _clean_public_error(error)
+    lower_reason = reason.lower()
+    if "http 403" in lower_reason or "forbidden" in lower_reason:
+        return {
+            "message": "Google AI rejected the embedding request.",
+            "reason": "Embedding API returned 403 Forbidden.",
+            "action": "Check the Render GOOGLE_AI_API_KEY value, API quota/billing, and access to gemini-embedding-001.",
+        }
+    return {
+        "message": "Semantic search could not create a query embedding.",
+        "reason": reason or "Unknown provider error.",
+        "action": "Check the Gemini embedding provider and try Embed Missing again after the provider is healthy.",
+    }
+
+
+async def _run_drive_index_job(
+    *,
+    folder_id: str | None,
+    limit_files: int,
+    max_bytes: int,
+    force: bool,
+) -> None:
+    store = brain_store
+    if not store or not index_drive_folder:
+        drive_index_job.update({
+            "running": False,
+            "finishedAt": _utc_now_iso(),
+            "message": "Drive sync cannot start: backend or Drive indexer is not configured.",
+        })
+        return
+
+    drive_index_job.update({
+        "running": True,
+        "startedAt": _utc_now_iso(),
+        "finishedAt": None,
+        "folderId": folder_id,
+        "folderUrl": None,
+        "summary": None,
+        "counts": None,
+        "results": [],
+        "message": "Drive sync started.",
+    })
+
+    try:
+        result = await run_in_threadpool(
+            index_drive_folder,
+            store,
+            folder_id=folder_id,
+            limit_files=limit_files,
+            max_bytes=max_bytes,
+            force=force,
+        )
+        summary = result.get("summary") or {}
+        drive_index_job.update({
+            "folderId": result.get("folderId"),
+            "folderUrl": result.get("folderUrl"),
+            "summary": summary,
+            "counts": result.get("counts"),
+            "results": result.get("results", []),
+            "message": (
+                f"{summary.get('indexed', 0)} indexed, "
+                f"{summary.get('skipped', 0)} skipped, "
+                f"{summary.get('errors', 0)} errors from "
+                f"{summary.get('found', 0)} Drive file(s)."
+            ),
+        })
+    except Exception as exc:
+        drive_index_job["message"] = f"Drive sync stopped: {_clean_public_error(exc)}"
+    finally:
+        drive_index_job["running"] = False
+        drive_index_job["finishedAt"] = _utc_now_iso()
 
 
 async def _run_embedding_backfill_job(*, batch_size: int, max_chunks: int, force: bool) -> None:
@@ -600,6 +707,11 @@ async def get_drive_indexer_status():
     return await _run_brain_step("Drive index status", client.status, folder_id)
 
 
+@app.get("/api/brain/index/drive/job/status")
+async def get_drive_index_job_status():
+    return _public_drive_job()
+
+
 @app.get("/api/brain/index/drive/files")
 async def list_google_drive_brain_files(limitFiles: int = 2000):
     client = _drive_or_503()
@@ -758,6 +870,26 @@ async def index_google_drive_brain_folder(payload: BrainDriveIndexRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/api/brain/index/drive/start")
+async def start_google_drive_brain_index(payload: BrainDriveIndexRequest):
+    _brain_or_503()
+    if not index_drive_folder:
+        raise HTTPException(status_code=503, detail="Google Drive indexer is not available")
+    if drive_index_job.get("running"):
+        return _public_drive_job()
+
+    asyncio.create_task(_run_drive_index_job(
+        folder_id=payload.folderId,
+        limit_files=payload.limitFiles,
+        max_bytes=payload.maxBytes,
+        force=payload.force,
+    ))
+    return {
+        **_public_drive_job(),
+        "message": "Drive sync queued.",
+    }
 
 
 @app.get("/api/brain/memories")
@@ -1045,20 +1177,38 @@ async def semantic_brain_search(q: str, limit: int = 10):
     store = _brain_or_503()
     client = _gemini_or_503()
     started_at = time.perf_counter()
-    query_embedding = await _run_brain_step(
-        "Semantic embedding",
-        client.embed_text,
-        q,
-        task_type="RETRIEVAL_QUERY",
-    )
+    try:
+        query_embedding = await _run_brain_step(
+            "Semantic embedding",
+            client.embed_text,
+            q,
+            task_type="RETRIEVAL_QUERY",
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=_semantic_error_detail(e))
+
     embedding_ms = round((time.perf_counter() - started_at) * 1000, 1)
     search_started_at = time.perf_counter()
-    chunks = await _run_brain_step(
-        "Supabase vector search",
-        store.semantic_search_chunks,
-        query_embedding,
-        limit=limit,
-    ) or []
+    try:
+        chunks = await _run_brain_step(
+            "Supabase vector search",
+            store.semantic_search_chunks,
+            query_embedding,
+            limit=limit,
+        ) or []
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "Supabase vector search failed.",
+                "reason": _clean_public_error(e),
+                "action": "Check pgvector schema, embedding dimensions, and database availability.",
+            },
+        )
     search_ms = round((time.perf_counter() - search_started_at) * 1000, 1)
     counts = await _run_brain_step("Brain counts", store.counts)
     return {
@@ -1251,7 +1401,7 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
                 timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
             ) or []
         except Exception as e:
-            timings["semanticError"] = str(e)[:240]
+            timings["semanticError"] = _clean_public_error(e)[:240]
             semantic_results = []
         timings["semanticSearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 

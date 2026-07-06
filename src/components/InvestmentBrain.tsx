@@ -124,6 +124,18 @@ type DriveIndexResponse = {
     counts?: BrainCounts;
 };
 
+type DriveIndexJob = {
+    running: boolean;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    folderId?: string | null;
+    folderUrl?: string | null;
+    summary?: DriveIndexResponse['summary'] | null;
+    counts?: BrainCounts | null;
+    results?: DriveIndexResult[];
+    message?: string;
+};
+
 type EmbeddingBackfillJob = {
     running: boolean;
     startedAt?: string | null;
@@ -153,6 +165,8 @@ type BrainAnalysisResponse = {
 };
 
 type BackendState = 'checking' | 'ready' | 'offline';
+type ApiErrorDetail = string | { message?: string; reason?: string; action?: string };
+type ApiErrorPayload = { detail?: ApiErrorDetail };
 
 const MEMORY_STORAGE_KEY = 'investment-brain-memories-v1';
 const DEFAULT_BRAIN_API_URL = 'https://dashboard-eo6k.onrender.com';
@@ -177,6 +191,31 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutM
 
 const isAbortError = (error: unknown) =>
     error instanceof DOMException && error.name === 'AbortError';
+
+const apiErrorMessage = (payload: ApiErrorPayload | null | undefined, fallback: string) => {
+    const detail = payload?.detail;
+    if (!detail) return fallback;
+    if (typeof detail === 'string') return detail;
+    return [detail.message, detail.reason, detail.action].filter(Boolean).join(' ');
+};
+
+const compactProviderError = (error: string | undefined) => {
+    if (!error) return '';
+    const normalized = error.replace(/\s+/g, ' ').trim();
+    if (/http 403|forbidden/i.test(normalized)) {
+        return 'Google AI rejected embeddings (403). Check the Render API key, quota, billing, and embedding model access.';
+    }
+    if (/timed out/i.test(normalized)) return 'Embedding provider timed out. Try again after Render and Google are stable.';
+    return normalized.slice(0, 220);
+};
+
+const driveJobMessage = (job: DriveIndexJob) => {
+    if (job.summary) {
+        const summary = job.summary;
+        return `${summary.indexed} indexed, ${summary.skipped} skipped, ${summary.errors} errors from ${summary.found} Drive file(s).`;
+    }
+    return job.message ?? 'Drive sync running...';
+};
 
 const memoryTypes: {
     type: MemoryType;
@@ -493,6 +532,7 @@ export const InvestmentBrain: React.FC = () => {
             const params = new URLSearchParams({ q: cleanedQuery, limit: '12' });
             let semanticTimedOut = false;
             let semanticUnavailable = false;
+            let semanticUnavailableReason = '';
 
             try {
                 const semanticResponse = await fetchWithTimeout(
@@ -513,15 +553,20 @@ export const InvestmentBrain: React.FC = () => {
                     }
                 } else {
                     semanticUnavailable = true;
+                    const payload = await semanticResponse.json().catch(() => null) as ApiErrorPayload | null;
+                    semanticUnavailableReason = apiErrorMessage(payload, 'Semantic search is not available');
                 }
             } catch (error) {
                 semanticTimedOut = isAbortError(error);
                 semanticUnavailable = !semanticTimedOut;
+                semanticUnavailableReason = error instanceof Error ? error.message : '';
             }
 
             setSearchMessage(semanticTimedOut
                 ? 'Semantic search timed out; checking keyword index...'
-                : 'No vector hits yet; checking keyword index...');
+                : semanticUnavailable
+                    ? `${compactProviderError(semanticUnavailableReason) || 'Semantic unavailable'}; checking keyword index...`
+                    : 'No vector hits yet; checking keyword index...');
 
             let keywordResponse: Response;
             try {
@@ -550,7 +595,7 @@ export const InvestmentBrain: React.FC = () => {
             const prefix = semanticTimedOut
                 ? 'Semantic timed out; '
                 : semanticUnavailable
-                    ? 'Semantic unavailable; '
+                    ? `${compactProviderError(semanticUnavailableReason) || 'Semantic unavailable'}; `
                     : (embeddingStats?.missing ?? 0) > 0
                         ? `Only ${formatEmbeddingCoverage(embeddingStats)}; `
                         : 'No vector hits yet; ';
@@ -631,26 +676,43 @@ export const InvestmentBrain: React.FC = () => {
         setDriveMessage('');
         setDriveResults([]);
         try {
-            const response = await fetch(brainApiUrl('/api/brain/index/drive'), {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    limitFiles: 2000,
-                    force: false,
-                }),
-            });
-            if (!response.ok) {
-                const payload = await response.json().catch(() => null) as { detail?: string } | null;
-                throw new Error(payload?.detail ?? 'Google Drive sync failed');
+            const startResponse = await fetchWithTimeout(
+                brainApiUrl('/api/brain/index/drive/start'),
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        limitFiles: 2000,
+                        force: false,
+                    }),
+                },
+                12000
+            );
+            if (!startResponse.ok) {
+                const payload = await startResponse.json().catch(() => null) as ApiErrorPayload | null;
+                throw new Error(apiErrorMessage(payload, 'Google Drive sync failed'));
             }
 
-            const payload = await response.json() as DriveIndexResponse;
-            setBackendCounts(payload.counts ?? null);
-            setDriveResults(payload.results ?? []);
-            const limitNote = payload.summary.limitReached
-                ? ` Limit reached at ${payload.summary.limitFiles ?? payload.summary.found}; add background sync for larger libraries.`
-                : '';
-            setDriveMessage(`${payload.summary.indexed} indexed, ${payload.summary.skipped} skipped, ${payload.summary.errors} errors from ${payload.summary.found} Drive file(s) scanned.${limitNote}`);
+            let latestJob = await startResponse.json() as DriveIndexJob;
+            for (let poll = 1; poll <= 240; poll += 1) {
+                setDriveMessage(driveJobMessage(latestJob));
+                if (latestJob.counts) setBackendCounts(latestJob.counts);
+                if (latestJob.results) setDriveResults(latestJob.results);
+                if (!latestJob.running && poll > 1) break;
+
+                await new Promise(resolve => window.setTimeout(resolve, 3000));
+                const statusResponse = await fetchWithTimeout(
+                    brainApiUrl('/api/brain/index/drive/job/status'),
+                    {},
+                    12000
+                );
+                if (!statusResponse.ok) break;
+                latestJob = await statusResponse.json() as DriveIndexJob;
+            }
+
+            if (latestJob.counts) setBackendCounts(latestJob.counts);
+            if (latestJob.results) setDriveResults(latestJob.results);
+            setDriveMessage(driveJobMessage(latestJob));
 
             const statusResponse = await fetch(brainApiUrl('/api/brain/index/drive/status'));
             if (statusResponse.ok) {
@@ -710,7 +772,8 @@ export const InvestmentBrain: React.FC = () => {
             }
             const errors = latestJob.errors?.length ?? 0;
             const coverage = latestJob.embeddings ? ` ${formatEmbeddingCoverage(latestJob.embeddings)}.` : '';
-            setEmbeddingMessage(`${latestJob.embedded ?? 0}/${latestJob.requested ?? 0} embedded in background.${coverage}${errors ? ` ${errors} recent error(s).` : ''}`);
+            const firstError = compactProviderError(latestJob.errors?.[0]?.error);
+            setEmbeddingMessage(`${latestJob.embedded ?? 0}/${latestJob.requested ?? 0} embedded in background.${coverage}${errors ? ` ${firstError || `${errors} recent error(s).`}` : ''}`);
         } catch (error) {
             setEmbeddingMessage(isAbortError(error)
                 ? 'Embedding status timed out. Press Embed Missing again; the background job may still be running.'
