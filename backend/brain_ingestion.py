@@ -5,7 +5,8 @@ from typing import Any
 
 def normalize_text(value: str) -> str:
     """Collapse noisy whitespace while preserving paragraph breaks."""
-    text = value.replace("\r\n", "\n").replace("\r", "\n")
+    text = value.replace("\x00", " ").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[\x01-\x08\x0b\x0c\x0e-\x1f]", " ", text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
