@@ -53,6 +53,19 @@ TEXT_EXTENSIONS = {
     ".json",
     ".jsonl",
 }
+DEFAULT_MAX_BYTES = 2 * 1024 * 1024
+DEFAULT_MAX_PDF_PAGES = 40
+DEFAULT_MAX_EXTRACTED_CHARS = 250_000
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
 
 
 def parse_drive_folder_id(value: str | None = None) -> str | None:
@@ -99,8 +112,10 @@ def google_drive_auth_url(redirect_uri: str) -> str:
     return f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
 
 
-def extract_docx_bytes(data: bytes) -> tuple[str, dict[str, Any]]:
+def extract_docx_bytes(data: bytes, *, max_chars: int = DEFAULT_MAX_EXTRACTED_CHARS) -> tuple[str, dict[str, Any]]:
     paragraphs: list[str] = []
+    chars = 0
+    truncated = False
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         with archive.open("word/document.xml") as document:
             tree = ElementTree.parse(document)
@@ -109,23 +124,64 @@ def extract_docx_bytes(data: bytes) -> tuple[str, dict[str, Any]]:
     for paragraph in tree.findall(".//w:p", namespace):
         text = "".join(node.text or "" for node in paragraph.findall(".//w:t", namespace)).strip()
         if text:
+            remaining = max_chars - chars
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(text) > remaining:
+                text = text[:remaining]
+                truncated = True
             paragraphs.append(text)
+            chars += len(text)
 
-    return "\n\n".join(paragraphs), {"paragraphs": len(paragraphs), "extractor": "docx-xml"}
+    return "\n\n".join(paragraphs), {
+        "paragraphs": len(paragraphs),
+        "extractor": "docx-xml",
+        "truncated": truncated,
+        "maxExtractedChars": max_chars,
+    }
 
 
-def extract_pdf_bytes(data: bytes) -> tuple[str, dict[str, Any]]:
+def extract_pdf_bytes(
+    data: bytes,
+    *,
+    max_pages: int = DEFAULT_MAX_PDF_PAGES,
+    max_chars: int = DEFAULT_MAX_EXTRACTED_CHARS,
+) -> tuple[str, dict[str, Any]]:
     if PdfReader is None:
         raise RuntimeError("PDF extraction requires pypdf. Install backend requirements first.")
 
     reader = PdfReader(io.BytesIO(data))
     parts: list[str] = []
+    pages_read = 0
+    chars = 0
+    truncated = False
     for index, page in enumerate(reader.pages, start=1):
+        if pages_read >= max_pages:
+            truncated = True
+            break
         page_text = page.extract_text() or ""
         if page_text.strip():
-            parts.append(f"[Page {index}]\n{page_text.strip()}")
+            page_part = f"[Page {index}]\n{page_text.strip()}"
+            remaining = max_chars - chars
+            if remaining <= 0:
+                truncated = True
+                break
+            if len(page_part) > remaining:
+                page_part = page_part[:remaining]
+                truncated = True
+            parts.append(page_part)
+            chars += len(page_part)
+        pages_read = index
 
-    return "\n\n".join(parts), {"pages": len(reader.pages), "extractor": "pypdf"}
+    return "\n\n".join(parts), {
+        "pages": len(reader.pages),
+        "pagesRead": pages_read,
+        "extractor": "pypdf",
+        "truncated": truncated,
+        "maxPdfPages": max_pages,
+        "maxExtractedChars": max_chars,
+    }
 
 
 def read_text_bytes(data: bytes) -> str:
@@ -137,16 +193,31 @@ def read_text_bytes(data: bytes) -> str:
     return data.decode("utf-8", errors="ignore")
 
 
-def extract_drive_file_text(data: bytes, extension: str) -> tuple[str, dict[str, Any]]:
+def extract_drive_file_text(
+    data: bytes,
+    extension: str,
+    *,
+    max_pdf_pages: int = DEFAULT_MAX_PDF_PAGES,
+    max_extracted_chars: int = DEFAULT_MAX_EXTRACTED_CHARS,
+) -> tuple[str, dict[str, Any]]:
     suffix = extension.lower()
     if suffix in TEXT_EXTENSIONS:
-        return read_text_bytes(data), {"extractor": "plain-text"}
+        return read_text_bytes(data)[:max_extracted_chars], {
+            "extractor": "plain-text",
+            "truncated": len(data) > max_extracted_chars,
+            "maxExtractedChars": max_extracted_chars,
+        }
     if suffix in {".html", ".htm"}:
-        return strip_html(read_text_bytes(data)), {"extractor": "html-stripper"}
+        text = strip_html(read_text_bytes(data))
+        return text[:max_extracted_chars], {
+            "extractor": "html-stripper",
+            "truncated": len(text) > max_extracted_chars,
+            "maxExtractedChars": max_extracted_chars,
+        }
     if suffix == ".pdf":
-        return extract_pdf_bytes(data)
+        return extract_pdf_bytes(data, max_pages=max_pdf_pages, max_chars=max_extracted_chars)
     if suffix == ".docx":
-        return extract_docx_bytes(data)
+        return extract_docx_bytes(data, max_chars=max_extracted_chars)
     raise RuntimeError(f"Unsupported Drive file extension: {html.escape(suffix)}")
 
 
@@ -323,7 +394,7 @@ class GoogleDriveClient:
 
         return files
 
-    def download_file(self, file: dict[str, Any]) -> tuple[bytes, str, dict[str, Any]]:
+    def download_file(self, file: dict[str, Any], *, max_bytes: int | None = None) -> tuple[bytes, str, dict[str, Any]]:
         file_id = file["id"]
         mime_type = str(file.get("mimeType") or "")
         extension = extension_for_file(file)
@@ -341,10 +412,15 @@ class GoogleDriveClient:
             params = {"alt": "media", "supportsAllDrives": "true"}
             download_mode = "download"
 
+        content = bytearray()
         with httpx.Client(timeout=120, follow_redirects=True) as client:
-            response = client.get(url, headers=self._headers(), params=params)
-            response.raise_for_status()
-            return response.content, extension, {"downloadMode": download_mode}
+            with client.stream("GET", url, headers=self._headers(), params=params) as response:
+                response.raise_for_status()
+                for chunk in response.iter_bytes(chunk_size=64 * 1024):
+                    content.extend(chunk)
+                    if max_bytes is not None and len(content) > max_bytes:
+                        raise RuntimeError(f"Downloaded file exceeds maxBytes ({len(content)} > {max_bytes})")
+        return bytes(content), extension, {"downloadMode": download_mode}
 
 
 def source_preview(file: dict[str, Any], text: str) -> str:
@@ -373,7 +449,9 @@ def index_drive_folder(
 
     client = GoogleDriveClient(store=store)
     limit_files = max(1, min(int(limit_files), 2000))
-    max_bytes = max(1024, int(max_bytes))
+    max_bytes = max(1024, int(max_bytes or _env_int("BRAIN_DRIVE_MAX_BYTES", DEFAULT_MAX_BYTES)))
+    max_pdf_pages = max(1, min(_env_int("BRAIN_DRIVE_MAX_PDF_PAGES", DEFAULT_MAX_PDF_PAGES), 250))
+    max_extracted_chars = max(20_000, min(_env_int("BRAIN_DRIVE_MAX_EXTRACTED_CHARS", DEFAULT_MAX_EXTRACTED_CHARS), 1_000_000))
     changed_files_limit = (
         max(1, min(int(changed_files_limit), 100))
         if changed_files_limit is not None
@@ -465,21 +543,15 @@ def index_drive_folder(
                 continue
 
             changed_files_started += 1
-            data, downloaded_extension, download_metadata = client.download_file(file)
-            if len(data) > max_bytes:
-                results.append({
-                    "id": file["id"],
-                    "name": file.get("name"),
-                    "relativePath": relative_path,
-                    "status": "skipped",
-                    "reason": f"Downloaded file exceeds maxBytes ({len(data)} > {max_bytes})",
-                    "bytes": len(data),
-                })
-                emit_progress(relative_path)
-                continue
+            data, downloaded_extension, download_metadata = client.download_file(file, max_bytes=max_bytes)
 
             file_hash = sha256_bytes(data)
-            extracted_text, extraction_metadata = extract_drive_file_text(data, downloaded_extension)
+            extracted_text, extraction_metadata = extract_drive_file_text(
+                data,
+                downloaded_extension,
+                max_pdf_pages=max_pdf_pages,
+                max_extracted_chars=max_extracted_chars,
+            )
             clean_text = normalize_text(extracted_text)
             if not clean_text:
                 results.append({
@@ -513,6 +585,11 @@ def index_drive_folder(
                 "indexedAt": indexed_at,
                 "webViewLink": file.get("webViewLink"),
                 "storageMode": "drive_metadata_source_preview_chunks_full_text",
+                "renderSafeLimits": {
+                    "maxBytes": max_bytes,
+                    "maxPdfPages": max_pdf_pages,
+                    "maxExtractedChars": max_extracted_chars,
+                },
                 **download_metadata,
                 **extraction_metadata,
             }
@@ -557,6 +634,18 @@ def index_drive_folder(
             })
             emit_progress(relative_path)
         except Exception as exc:
+            if "exceeds maxBytes" in str(exc):
+                results.append({
+                    "id": file.get("id"),
+                    "name": file.get("name"),
+                    "relativePath": relative_path,
+                    "status": "skipped",
+                    "reason": str(exc),
+                    "bytes": size or None,
+                })
+                emit_progress(relative_path)
+                continue
+
             results.append({
                 "id": file.get("id"),
                 "name": file.get("name"),
@@ -574,6 +663,9 @@ def index_drive_folder(
         "deferred": sum(1 for item in results if item.get("reason") == "deferred to next batch"),
         "limitFiles": limit_files,
         "limitReached": len(files) >= limit_files,
+        "maxBytes": max_bytes,
+        "maxPdfPages": max_pdf_pages,
+        "maxExtractedChars": max_extracted_chars,
     }
     return {
         "folderId": clean_folder_id,
