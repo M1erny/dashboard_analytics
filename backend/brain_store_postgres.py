@@ -329,14 +329,15 @@ class PostgresBrainStore:
         return cleaned[:20]
 
     @staticmethod
-    def _safe_fts_query(query: str | None) -> str | None:
+    def _safe_fts_query(query: str | None, *, operator: str = "|") -> str | None:
         if not query:
             return None
         tokens = re.findall(r"[\w]+", query.lower(), flags=re.UNICODE)
         tokens = [token for token in tokens if len(token) > 1]
         if not tokens:
             return None
-        return " | ".join(f"{token}:*" for token in tokens[:12])
+        joiner = " & " if operator == "&" else " | "
+        return joiner.join(f"{token}:*" for token in tokens[:12])
 
     @staticmethod
     def _embedding_literal(embedding: list[float] | None) -> str | None:
@@ -961,48 +962,56 @@ class PostgresBrainStore:
             return cur.rowcount > 0
 
     def search(self, query: str, limit: int = 50, entity_type: str | None = None) -> list[dict[str, Any]]:
-        fts_query = self._safe_fts_query(query)
-        if not fts_query:
+        strict_query = self._safe_fts_query(query, operator="&")
+        loose_query = self._safe_fts_query(query, operator="|")
+        if not strict_query:
             return []
 
         limit = max(1, min(int(limit), 200))
-        params: list[Any] = [fts_query, fts_query]
-        sql = """
-            SELECT i.entity_type,
-                   i.entity_id,
-                   i.title,
-                   i.body,
-                   i.tags,
-                   CASE
-                       WHEN i.entity_type = 'source' THEN i.entity_id
-                       ELSE c.source_id
-                   END AS source_id,
-                   ts_rank_cd(i.search_vector, to_tsquery('simple', %s)) AS rank
-              FROM brain_index i
-              LEFT JOIN chunks c
-                ON i.entity_type = 'chunk'
-               AND c.id = i.entity_id
-             WHERE i.search_vector @@ to_tsquery('simple', %s)
-        """
-        if entity_type:
-            sql += " AND i.entity_type = %s"
-            params.append(entity_type)
-        sql += " ORDER BY rank DESC LIMIT %s"
-        params.append(limit)
 
         with self._lock, self._connect() as conn:
-            return [
-                {
-                    "entityType": row["entity_type"],
-                    "entityId": int(row["entity_id"]),
-                    "title": row["title"],
-                    "body": row["body"],
-                    "tags": row["tags"].split() if row["tags"] else [],
-                    "rank": float(row["rank"]),
-                    "sourceId": int(row["source_id"]) if row["source_id"] is not None else None,
-                }
-                for row in conn.execute(sql, params).fetchall()
-            ]
+            def run_query(fts_query: str) -> list[dict[str, Any]]:
+                params: list[Any] = [fts_query, fts_query]
+                sql = """
+                    SELECT i.entity_type,
+                           i.entity_id,
+                           i.title,
+                           i.body,
+                           i.tags,
+                           CASE
+                               WHEN i.entity_type = 'source' THEN i.entity_id
+                               ELSE c.source_id
+                           END AS source_id,
+                           ts_rank_cd(i.search_vector, to_tsquery('simple', %s)) AS rank
+                      FROM brain_index i
+                      LEFT JOIN chunks c
+                        ON i.entity_type = 'chunk'
+                       AND c.id = i.entity_id
+                     WHERE i.search_vector @@ to_tsquery('simple', %s)
+                """
+                if entity_type:
+                    sql += " AND i.entity_type = %s"
+                    params.append(entity_type)
+                sql += " ORDER BY rank DESC LIMIT %s"
+                params.append(limit)
+
+                return [
+                    {
+                        "entityType": row["entity_type"],
+                        "entityId": int(row["entity_id"]),
+                        "title": row["title"],
+                        "body": row["body"],
+                        "tags": row["tags"].split() if row["tags"] else [],
+                        "rank": float(row["rank"]),
+                        "sourceId": int(row["source_id"]) if row["source_id"] is not None else None,
+                    }
+                    for row in conn.execute(sql, params).fetchall()
+                ]
+
+            results = run_query(strict_query)
+            if not results and loose_query and loose_query != strict_query:
+                results = run_query(loose_query)
+            return results
 
     def counts(self) -> dict[str, int]:
         with self._lock, self._connect() as conn:
