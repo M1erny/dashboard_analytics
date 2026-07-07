@@ -16,7 +16,7 @@ Current brain setup:
 - The Brain frontend defaults to the Render backend (`https://dashboard-eo6k.onrender.com`) so Drive/Supabase are used even when the UI is opened on localhost. Override with `VITE_BRAIN_API_URL` only for development.
 - Gemini support is wired through environment variables. Do not commit API keys.
   - `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`: Google AI Studio API key.
-  - `BRAIN_LLM_MODEL`: optional, defaults to `gemini-2.5-flash-lite`.
+  - `BRAIN_LLM_MODEL`: optional, defaults to `gemini-3.1-flash-lite`.
   - `BRAIN_EMBEDDING_MODEL`: optional, defaults to `gemini-embedding-001`.
   - Local option: copy `backend/.env.example` to `backend/.env`; `backend/.env` is ignored by git.
   - Use `/dashboard/brain` to connect Drive, sync files, embed missing chunks, search, and run company analysis.
