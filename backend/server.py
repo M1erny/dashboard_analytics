@@ -527,11 +527,17 @@ class BrainEmbeddingBackfillStartRequest(BaseModel):
     force: bool = False
 
 
+class BrainConversationTurn(BaseModel):
+    role: str = Field(..., min_length=1, max_length=20)
+    content: str = Field(..., min_length=1, max_length=5000)
+
+
 class BrainCompanyAnalysisRequest(BaseModel):
     ticker: str = Field(..., min_length=1, max_length=40)
     question: str | None = None
     limit: int = Field(default=8, ge=1, le=20)
     useSemantic: bool = True
+    conversation: list[BrainConversationTurn] = Field(default_factory=list, max_length=12)
 
 
 def _safe_backend_error(message: str | None) -> str:
@@ -1468,6 +1474,22 @@ def _format_deep_source_context(items: list[dict[str, Any]]) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
+def _format_conversation_history(turns: list[BrainConversationTurn], *, max_turns: int = 8, max_chars: int = 3500) -> str:
+    lines: list[str] = []
+    remaining = max_chars
+    for turn in turns[-max_turns:]:
+        role = "User" if turn.role.lower() == "user" else "Assistant"
+        content = re.sub(r"\s+", " ", turn.content).strip()
+        if not content:
+            continue
+        snippet = content[: min(remaining, 700)]
+        lines.append(f"{role}: {snippet}")
+        remaining -= len(snippet)
+        if remaining <= 0:
+            break
+    return "\n".join(lines)
+
+
 @app.post("/api/brain/analyze-company")
 async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     store = _brain_or_503()
@@ -1480,7 +1502,13 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         f"Analyze {ticker} using my investment brain. Focus on evidence, contradictions, risks, "
         "and what would change my mind."
     )
-    retrieval_query = f"{ticker} {question}"
+    conversation_history = _format_conversation_history(payload.conversation)
+    prior_user_questions = " ".join(
+        re.sub(r"\s+", " ", turn.content).strip()[:280]
+        for turn in payload.conversation[-6:]
+        if turn.role.lower() == "user"
+    )
+    retrieval_query = f"{ticker} {prior_user_questions} {question}".strip()[:4000]
 
     step_started = time.perf_counter()
     keyword_results = await _run_brain_step(
@@ -1565,6 +1593,9 @@ Prefer specific source titles and chunk numbers when explaining evidence.
 Company/ticker: {ticker}
 User question: {question}
 
+Previous conversation in this same brain thread:
+{conversation_history or "No previous turns in this thread."}
+
 Personal memories:
 {_format_context_block(memory_results, max_chars=900) or "No matching memories."}
 
@@ -1581,7 +1612,8 @@ Write the answer in this structure:
 4. What would change my mind
 5. Memory worth saving
 
-Be concise but not shallow: 5 short sections, maximum 3 bullets per section. If there is no retrieved or expanded source context, say that clearly.
+If there is previous conversation, answer as a continuation: avoid repeating earlier framing unless it is needed, say what changed or what the new evidence adds, and preserve the thread's context.
+Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per section. If there is no retrieved or expanded source context, say that clearly.
 """.strip()
 
     step_started = time.perf_counter()

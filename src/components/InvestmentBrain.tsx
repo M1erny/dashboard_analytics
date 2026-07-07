@@ -16,9 +16,11 @@ import {
     Heart,
     Layers3,
     Lightbulb,
+    MessageSquare,
     Plus,
     RotateCcw,
     Search,
+    Send,
     ServerCog,
     ShieldAlert,
     Sparkles,
@@ -193,6 +195,18 @@ type BrainAnalysisResponse = {
         semanticError?: string;
     };
     context?: BrainAnalysisContext;
+};
+
+type BrainConversationRole = 'user' | 'assistant';
+
+type BrainConversationTurn = {
+    role: BrainConversationRole;
+    content: string;
+};
+
+type BrainThreadMessage = BrainConversationTurn & {
+    id: string;
+    createdAt: string;
 };
 
 type BrainDeepSource = {
@@ -374,6 +388,19 @@ const sourceToneClass: Record<AnswerSourceCard['tone'], string> = {
     memory: 'border-amber-500/20 bg-amber-500/10 text-amber-200',
 };
 
+const createThreadMessage = (role: BrainConversationRole, content: string): BrainThreadMessage => ({
+    role,
+    content,
+    id: `${role}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    createdAt: new Date().toISOString(),
+});
+
+const threadForApi = (messages: BrainThreadMessage[]): BrainConversationTurn[] =>
+    messages
+        .filter(message => message.content.trim())
+        .slice(-10)
+        .map(({ role, content }) => ({ role, content }));
+
 const memoryTypes: {
     type: MemoryType;
     label: string;
@@ -540,6 +567,8 @@ export const InvestmentBrain: React.FC = () => {
     const [analysisMessage, setAnalysisMessage] = useState('');
     const [analysisAnswer, setAnalysisAnswer] = useState('');
     const [analysisContext, setAnalysisContext] = useState<BrainAnalysisContext | null>(null);
+    const [analysisThread, setAnalysisThread] = useState<BrainThreadMessage[]>([]);
+    const [followUpQuestion, setFollowUpQuestion] = useState('');
     const analysisOutputRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
@@ -547,11 +576,11 @@ export const InvestmentBrain: React.FC = () => {
     }, [memories]);
 
     useEffect(() => {
-        if (!isAnalyzing && !analysisAnswer) return;
+        if (!isAnalyzing && !analysisAnswer && analysisThread.length === 0) return;
         window.setTimeout(() => {
             analysisOutputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }, 80);
-    }, [isAnalyzing, analysisAnswer]);
+    }, [isAnalyzing, analysisAnswer, analysisThread.length]);
 
     useEffect(() => {
         let cancelled = false;
@@ -944,14 +973,26 @@ export const InvestmentBrain: React.FC = () => {
         }
     };
 
-    const runCompanyAnalysis = async () => {
+    const runCompanyAnalysis = async (mode: 'new' | 'follow-up' = 'new') => {
         const ticker = analysisTicker.trim();
         if (!ticker || backendState !== 'ready') return;
 
+        const question = mode === 'follow-up' ? followUpQuestion.trim() : analysisQuestion.trim();
+        if (!question) return;
+
+        const priorThread = mode === 'follow-up' ? analysisThread : [];
+        const userMessage = createThreadMessage('user', question);
+        const nextThread = [...priorThread, userMessage];
+
         setIsAnalyzing(true);
-        setAnalysisMessage('Retrieving your brain context, then asking Gemini...');
+        setAnalysisMessage(mode === 'follow-up'
+            ? 'Retrieving fresh context for the follow-up...'
+            : 'Retrieving your brain context, then asking Gemini...');
         setAnalysisAnswer('');
-        setAnalysisContext(null);
+        if (mode === 'new') {
+            setAnalysisContext(null);
+        }
+        setAnalysisThread(nextThread);
         try {
             const response = await fetchWithTimeout(
                 brainApiUrl('/api/brain/analyze-company'),
@@ -960,9 +1001,10 @@ export const InvestmentBrain: React.FC = () => {
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         ticker,
-                        question: analysisQuestion.trim(),
+                        question,
                         limit: 5,
                         useSemantic: true,
+                        conversation: threadForApi(priorThread),
                     }),
                 },
                 65000
@@ -975,6 +1017,8 @@ export const InvestmentBrain: React.FC = () => {
             const payload = await response.json() as BrainAnalysisResponse;
             setAnalysisAnswer(payload.answer);
             setAnalysisContext(payload.context ?? null);
+            setAnalysisThread([...nextThread, createThreadMessage('assistant', payload.answer)]);
+            if (mode === 'follow-up') setFollowUpQuestion('');
             const totalSeconds = typeof payload.timings?.totalMs === 'number'
                 ? ` in ${(payload.timings.totalMs / 1000).toFixed(1)}s`
                 : '';
@@ -983,9 +1027,11 @@ export const InvestmentBrain: React.FC = () => {
                 : '';
             setAnalysisMessage(`${payload.model} with ${payload.embeddingModel}${totalSeconds}${generationSeconds}`);
         } catch (error) {
-            setAnalysisMessage(isAbortError(error)
+            const message = isAbortError(error)
                 ? 'Ask Brain timed out. Try again after Render finishes waking up, or narrow the question.'
-                : error instanceof Error ? error.message : 'Analysis failed');
+                : error instanceof Error ? error.message : 'Analysis failed';
+            setAnalysisMessage(message);
+            setAnalysisThread([...nextThread, createThreadMessage('assistant', message)]);
         } finally {
             setIsAnalyzing(false);
         }
@@ -995,6 +1041,7 @@ export const InvestmentBrain: React.FC = () => {
     const storageLabel = formatStorage(brainStatus?.storage);
     const ActiveIcon = activeType.Icon;
     const counts = backendCounts ?? {};
+    const hasAssistantAnswer = analysisThread.some(message => message.role === 'assistant');
     const driveConnected = Boolean(driveStatus?.connected);
     const driveConfigured = Boolean(driveStatus?.configured);
     const driveAuthReady = Boolean(driveStatus?.authConfigured);
@@ -1005,6 +1052,13 @@ export const InvestmentBrain: React.FC = () => {
         } catch {
             setSearchMessage('Could not copy path');
         }
+    };
+    const resetBrainThread = () => {
+        setAnalysisThread([]);
+        setAnalysisAnswer('');
+        setAnalysisContext(null);
+        setAnalysisMessage('');
+        setFollowUpQuestion('');
     };
     const nextAction = !backendReady
         ? {
@@ -1230,7 +1284,7 @@ export const InvestmentBrain: React.FC = () => {
                                 />
                                 <button
                                     type="button"
-                                    onClick={runCompanyAnalysis}
+                                    onClick={() => void runCompanyAnalysis()}
                                     disabled={isAnalyzing || !backendReady}
                                     className={cn(
                                         'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
@@ -1244,7 +1298,7 @@ export const InvestmentBrain: React.FC = () => {
                                 </button>
                             </div>
 
-                            {(analysisMessage || analysisAnswer || isAnalyzing) && (
+                            {(analysisMessage || analysisThread.length > 0 || isAnalyzing) && (
                                 <div
                                     ref={analysisOutputRef}
                                     aria-live="polite"
@@ -1252,19 +1306,67 @@ export const InvestmentBrain: React.FC = () => {
                                 >
                                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                         <div className="flex items-center gap-2">
-                                            <BrainCircuit className="h-4 w-4 text-rose-300" />
-                                            <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-rose-100">Brain Answer</h3>
+                                            <MessageSquare className="h-4 w-4 text-rose-300" />
+                                            <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-rose-100">Brain Thread</h3>
                                         </div>
-                                        {analysisMessage && (
-                                            <span className="w-fit rounded border border-white/[0.08] bg-black/20 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-400">
-                                                {analysisMessage}
-                                            </span>
-                                        )}
+                                        <div className="flex flex-wrap gap-2">
+                                            {analysisMessage && (
+                                                <span className="w-fit rounded border border-white/[0.08] bg-black/20 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-400">
+                                                    {analysisMessage}
+                                                </span>
+                                            )}
+                                            {analysisThread.length > 0 && (
+                                                <button
+                                                    type="button"
+                                                    onClick={resetBrainThread}
+                                                    className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.08]"
+                                                >
+                                                    <RotateCcw className="h-3 w-3" />
+                                                    New
+                                                </button>
+                                            )}
+                                        </div>
                                     </div>
 
-                                    {analysisAnswer ? (
-                                        <div className="mt-3 max-h-[520px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-white/[0.08] bg-black/25 p-4 text-sm leading-6 text-gray-100">
-                                            {analysisAnswer}
+                                    {analysisThread.length > 0 ? (
+                                        <div className="mt-3 max-h-[540px] space-y-3 overflow-auto rounded-lg border border-white/[0.08] bg-black/25 p-3">
+                                            {analysisThread.map(message => (
+                                                <article
+                                                    key={message.id}
+                                                    className={cn(
+                                                        'rounded-lg border p-3',
+                                                        message.role === 'user'
+                                                            ? 'ml-auto max-w-[92%] border-sky-500/15 bg-sky-500/10'
+                                                            : 'mr-auto max-w-[96%] border-rose-500/15 bg-rose-500/10'
+                                                    )}
+                                                >
+                                                    <div className="mb-2 flex items-center gap-2">
+                                                        {message.role === 'user' ? (
+                                                            <Target className="h-3.5 w-3.5 text-sky-300" />
+                                                        ) : (
+                                                            <BrainCircuit className="h-3.5 w-3.5 text-rose-300" />
+                                                        )}
+                                                        <span className={cn(
+                                                            'text-[10px] font-bold uppercase tracking-[0.12em]',
+                                                            message.role === 'user' ? 'text-sky-200' : 'text-rose-100'
+                                                        )}>
+                                                            {message.role === 'user' ? 'You' : 'Brain'}
+                                                        </span>
+                                                    </div>
+                                                    <div className="whitespace-pre-wrap break-words text-sm leading-6 text-gray-100">
+                                                        {message.content}
+                                                    </div>
+                                                </article>
+                                            ))}
+                                            {isAnalyzing && (
+                                                <article className="mr-auto max-w-[96%] rounded-lg border border-rose-500/15 bg-rose-500/10 p-3">
+                                                    <div className="mb-2 flex items-center gap-2">
+                                                        <BrainCircuit className="h-3.5 w-3.5 text-rose-300" />
+                                                        <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-rose-100">Brain</span>
+                                                    </div>
+                                                    <p className="text-sm leading-6 text-gray-400">Retrieving context and preparing the answer here.</p>
+                                                </article>
+                                            )}
                                         </div>
                                     ) : (
                                         <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/20 p-4 text-sm leading-6 text-gray-400">
@@ -1272,7 +1374,7 @@ export const InvestmentBrain: React.FC = () => {
                                         </div>
                                     )}
 
-                                    {analysisAnswer && (
+                                    {hasAssistantAnswer && (
                                         <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/15 p-3">
                                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                                 <div className="flex items-center gap-2">
@@ -1349,6 +1451,41 @@ export const InvestmentBrain: React.FC = () => {
                                                     The model did not receive retrieved file context for this answer. Try a narrower question or wait for embeddings to finish.
                                                 </p>
                                             )}
+                                        </div>
+                                    )}
+
+                                    {hasAssistantAnswer && (
+                                        <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/15 p-3">
+                                            <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_auto]">
+                                                <textarea
+                                                    value={followUpQuestion}
+                                                    onChange={event => setFollowUpQuestion(event.target.value)}
+                                                    onKeyDown={event => {
+                                                        if (event.key === 'Enter' && !event.shiftKey) {
+                                                            event.preventDefault();
+                                                            void runCompanyAnalysis('follow-up');
+                                                        }
+                                                    }}
+                                                    rows={2}
+                                                    className="min-h-[54px] resize-none rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm leading-5 text-white outline-none transition-colors placeholder:text-gray-700 focus:border-rose-500/40"
+                                                    placeholder="Ask a follow-up in this thread..."
+                                                    aria-label="Follow-up question"
+                                                />
+                                                <button
+                                                    type="button"
+                                                    onClick={() => void runCompanyAnalysis('follow-up')}
+                                                    disabled={isAnalyzing || !backendReady || !followUpQuestion.trim()}
+                                                    className={cn(
+                                                        'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors md:min-w-[132px]',
+                                                        backendReady && followUpQuestion.trim()
+                                                            ? 'border-rose-500/30 bg-rose-500/15 text-rose-100 hover:bg-rose-500/20'
+                                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                                    )}
+                                                >
+                                                    <Send className="h-4 w-4" />
+                                                    Follow Up
+                                                </button>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
