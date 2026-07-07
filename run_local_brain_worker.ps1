@@ -4,6 +4,8 @@ param(
 
     [string]$Root = $env:BRAIN_LOCAL_LIBRARY_DIR,
     [string]$MaxBytes = "250MB",
+    [int]$MaxPdfPages = 2000,
+    [int]$MaxExtractedChars = 5000000,
     [int]$ChangedFilesLimit = 25,
     [int]$EmbedMaxChunks = 250,
     [int]$EmbedBatchSize = 10,
@@ -20,6 +22,8 @@ $workerArgs = @(
     $Worker,
     "--mode", $Mode,
     "--max-bytes", $MaxBytes,
+    "--max-pdf-pages", "$MaxPdfPages",
+    "--max-extracted-chars", "$MaxExtractedChars",
     "--changed-files-limit", "$ChangedFilesLimit",
     "--embed-max-chunks", "$EmbedMaxChunks",
     "--embed-batch-size", "$EmbedBatchSize"

@@ -83,6 +83,52 @@ Keep it running every 30 minutes:
 .\run_local_brain_worker.ps1 -Mode all -WatchMinutes 30
 ```
 
+## Automatic Background Sync
+
+The online dashboard cannot directly execute PowerShell on your computer. Browser security blocks websites from running local scripts.
+
+For self-use, the practical solution is a Windows scheduled task. It keeps the Supabase brain fresh while your PC is on:
+
+```text
+new/changed Drive file appears locally
+        -> scheduled local worker run
+        -> chunks + embeddings go to Supabase
+        -> website can search them
+```
+
+Install autosync:
+
+```powershell
+.\install_local_brain_autosync.ps1 -IntervalMinutes 15 -RunNow
+```
+
+If Windows blocks Task Scheduler registration for your user, the installer falls back to a hidden per-user startup loop. The behavior is the same while you are logged into Windows: it runs autosync every `IntervalMinutes`.
+
+The default autosync is conservative:
+
+```text
+changed files per run:  10
+max file size:          50 MB
+max PDF pages:          300
+max extracted chars:    750,000
+embedding chunks/run:   500
+```
+
+Logs are written to:
+
+```text
+outputs/local_brain_autosync.log
+outputs/local_brain_autosync_loop.log
+```
+
+Remove autosync:
+
+```powershell
+.\uninstall_local_brain_autosync.ps1
+```
+
+If you need a bigger one-off run, use `run_local_brain_worker.ps1` manually rather than making the scheduled task aggressive.
+
 ## Defaults
 
 The local worker is intentionally stronger than the Render importer:
