@@ -2,20 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     ArrowLeft,
     Archive,
-    BookOpen,
     BrainCircuit,
     CheckCircle2,
     Cloud,
     Copy,
     Database,
-    Download,
     ExternalLink,
     FileText,
     FolderSync,
-    GitBranch,
-    Heart,
     Layers3,
-    Lightbulb,
     MessageSquare,
     Plus,
     RotateCcw,
@@ -25,21 +20,8 @@ import {
     ShieldAlert,
     Sparkles,
     Target,
-    Trash2,
-    XCircle,
-    type LucideIcon,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
-
-type MemoryType = 'liked' | 'passed' | 'trend' | 'framework' | 'question';
-
-type BrainMemory = {
-    id: number;
-    type: MemoryType;
-    title: string;
-    body: string;
-    tags: string[];
-};
 
 type BrainSourceReference = {
     id?: number;
@@ -218,7 +200,6 @@ type BrainDeepSource = {
 };
 
 type BrainAnalysisContext = {
-    memories?: BrainMemory[];
     retrieved?: SearchResult[];
     deepSources?: BrainDeepSource[];
 };
@@ -233,21 +214,19 @@ type AnswerSourceCard = {
     source?: BrainSourceReference | null;
     path?: string;
     webUrl?: string;
-    tone: 'retrieved' | 'expanded' | 'memory';
+    tone: 'retrieved' | 'expanded';
 };
 
 type BackendState = 'checking' | 'ready' | 'offline';
 type ApiErrorDetail = string | { message?: string; reason?: string; action?: string };
 type ApiErrorPayload = { detail?: ApiErrorDetail };
 
-const MEMORY_STORAGE_KEY = 'investment-brain-memories-v1';
 const DEFAULT_BRAIN_API_URL = 'https://dashboard-eo6k.onrender.com';
 const API_BASE = (
     import.meta.env.VITE_BRAIN_API_URL
     ?? import.meta.env.VITE_API_URL
     ?? DEFAULT_BRAIN_API_URL
 ).replace(/\/$/, '');
-const memoryTypeValues: MemoryType[] = ['liked', 'passed', 'trend', 'framework', 'question'];
 
 const brainApiUrl = (path: string) => `${API_BASE}${path}`;
 
@@ -377,24 +356,12 @@ const buildAnswerSources = (context?: BrainAnalysisContext | null): AnswerSource
         });
     });
 
-    (context.memories ?? []).slice(0, 2).forEach((memory, index) => {
-        cards.push({
-            key: `memory-${memory.id}`,
-            marker: `Memory ${index + 1}`,
-            title: memory.title,
-            detail: memory.tags.length ? memory.tags.slice(0, 3).join(' · ') : memory.type,
-            excerpt: shortExcerpt(memory.body),
-            tone: 'memory',
-        });
-    });
-
     return cards.slice(0, 10);
 };
 
 const sourceToneClass: Record<AnswerSourceCard['tone'], string> = {
     retrieved: 'border-sky-500/20 bg-sky-500/10 text-sky-200',
     expanded: 'border-violet-500/20 bg-violet-500/10 text-violet-200',
-    memory: 'border-amber-500/20 bg-amber-500/10 text-amber-200',
 };
 
 const createThreadMessage = (role: BrainConversationRole, content: string): BrainThreadMessage => ({
@@ -410,107 +377,12 @@ const threadForApi = (messages: BrainThreadMessage[]): BrainConversationTurn[] =
         .slice(-10)
         .map(({ role, content }) => ({ role, content }));
 
-const memoryTypes: {
-    type: MemoryType;
-    label: string;
-    Icon: LucideIcon;
-    activeClass: string;
-}[] = [
-    { type: 'liked', label: 'Liked', Icon: Heart, activeClass: 'border-emerald-500/35 bg-emerald-500/15 text-emerald-200' },
-    { type: 'passed', label: 'Passed', Icon: XCircle, activeClass: 'border-rose-500/35 bg-rose-500/15 text-rose-200' },
-    { type: 'trend', label: 'Megatrend', Icon: GitBranch, activeClass: 'border-sky-500/35 bg-sky-500/15 text-sky-200' },
-    { type: 'framework', label: 'Framework', Icon: BookOpen, activeClass: 'border-amber-500/35 bg-amber-500/15 text-amber-200' },
-    { type: 'question', label: 'Question', Icon: Search, activeClass: 'border-violet-500/35 bg-violet-500/15 text-violet-200' },
-];
-
-const memoryTone: Record<MemoryType, { Icon: LucideIcon; className: string; label: string }> = {
-    liked: { Icon: Heart, className: 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300', label: 'Liked' },
-    passed: { Icon: XCircle, className: 'border-rose-500/25 bg-rose-500/10 text-rose-300', label: 'Passed' },
-    trend: { Icon: GitBranch, className: 'border-sky-500/25 bg-sky-500/10 text-sky-300', label: 'Megatrend' },
-    framework: { Icon: BookOpen, className: 'border-amber-500/25 bg-amber-500/10 text-amber-300', label: 'Framework' },
-    question: { Icon: Search, className: 'border-violet-500/25 bg-violet-500/10 text-violet-300', label: 'Question' },
-};
-
-const seedMemories: BrainMemory[] = [
-    {
-        id: 1,
-        type: 'trend',
-        title: 'Urbanization as a long-running force',
-        body: 'More dense cities should keep pushing demand toward infrastructure, logistics, utilities, housing quality, elevators, payments, and energy resilience. Watch for capital intensity and regulation.',
-        tags: ['urbanization', 'infrastructure', 'multi-decade'],
-    },
-    {
-        id: 2,
-        type: 'passed',
-        title: 'Pass memory example: cyclically cheap industrial',
-        body: 'Passed because earnings looked peak-cycle, leverage was rising, and the cheap multiple did not compensate for weak pricing power.',
-        tags: ['pass', 'cyclical', 'leverage'],
-    },
-    {
-        id: 3,
-        type: 'liked',
-        title: 'Like memory example: founder-led compounder',
-        body: 'Liked because reinvestment runway, owner-operator incentives, high gross margins, and conservative balance sheet matched my preferred pattern.',
-        tags: ['compounder', 'owner-operator', 'quality'],
-    },
-];
-
 const formatTags = (value: string) =>
     value
         .split(',')
         .map(tag => tag.trim())
         .filter(Boolean)
         .slice(0, 6);
-
-const isMemoryType = (value: unknown): value is MemoryType =>
-    typeof value === 'string' && memoryTypeValues.includes(value as MemoryType);
-
-const normalizeStoredMemory = (value: unknown): BrainMemory | null => {
-    if (!value || typeof value !== 'object') return null;
-
-    const item = value as Record<string, unknown>;
-    if (
-        typeof item.id !== 'number' ||
-        !isMemoryType(item.type) ||
-        typeof item.title !== 'string' ||
-        typeof item.body !== 'string'
-    ) {
-        return null;
-    }
-
-    const tags = Array.isArray(item.tags)
-        ? item.tags.filter((tag): tag is string => typeof tag === 'string').slice(0, 6)
-        : [];
-
-    return {
-        id: item.id,
-        type: item.type,
-        title: item.title,
-        body: item.body,
-        tags,
-    };
-};
-
-const normalizeMemoryArray = (value: unknown) => {
-    if (!Array.isArray(value)) return [];
-    return value
-        .map(normalizeStoredMemory)
-        .filter((memory): memory is BrainMemory => memory !== null);
-};
-
-const loadStoredMemories = () => {
-    if (typeof window === 'undefined') return seedMemories;
-
-    const raw = window.localStorage.getItem(MEMORY_STORAGE_KEY);
-    if (!raw) return seedMemories;
-
-    try {
-        const parsed = JSON.parse(raw) as unknown;
-        return normalizeMemoryArray(parsed);
-    } catch {
-        return seedMemories;
-    }
-};
 
 const formatStorage = (storage?: string) => {
     if (storage === 'postgres_pgvector') return 'Supabase pgvector';
@@ -545,11 +417,6 @@ const resultTone = (status: 'indexed' | 'skipped' | 'error') => {
 };
 
 export const InvestmentBrain: React.FC = () => {
-    const [memoryType, setMemoryType] = useState<MemoryType>('trend');
-    const [title, setTitle] = useState('Urbanization');
-    const [body, setBody] = useState('A durable megatrend that may support infrastructure, logistics, housing quality, energy resilience, and city services over decades.');
-    const [tags, setTags] = useState('urbanization, infrastructure, long-term');
-    const [memories, setMemories] = useState<BrainMemory[]>(loadStoredMemories);
     const [backendState, setBackendState] = useState<BackendState>('checking');
     const [brainStatus, setBrainStatus] = useState<BrainStatus | null>(null);
     const [searchQuery, setSearchQuery] = useState('pricing power AI infrastructure');
@@ -581,10 +448,6 @@ export const InvestmentBrain: React.FC = () => {
     const analysisOutputRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
-        window.localStorage.setItem(MEMORY_STORAGE_KEY, JSON.stringify(memories));
-    }, [memories]);
-
-    useEffect(() => {
         if (!isAnalyzing && !analysisAnswer && analysisThread.length === 0) return;
         window.setTimeout(() => {
             analysisOutputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -611,12 +474,6 @@ export const InvestmentBrain: React.FC = () => {
                     nextDriveStatus = null;
                 }
 
-                const memoriesResponse = await fetch(brainApiUrl('/api/brain/memories?limit=200'));
-                if (!memoriesResponse.ok) throw new Error('Brain memories unavailable');
-
-                const payload = await memoriesResponse.json() as { memories?: unknown };
-                const backendMemories = normalizeMemoryArray(payload.memories);
-
                 if (!cancelled) {
                     setBackendState('ready');
                     setBrainStatus(status);
@@ -624,7 +481,6 @@ export const InvestmentBrain: React.FC = () => {
                     setEmbeddingStats(status.embeddings ?? null);
                     setLlmStatus(status.llm ?? null);
                     setDriveStatus(nextDriveStatus);
-                    setMemories(backendMemories);
                 }
             } catch {
                 if (!cancelled) {
@@ -640,83 +496,7 @@ export const InvestmentBrain: React.FC = () => {
         };
     }, []);
 
-    const activeType = useMemo(
-        () => memoryTypes.find(item => item.type === memoryType) ?? memoryTypes[0],
-        [memoryType]
-    );
     const answerSources = useMemo(() => buildAnswerSources(analysisContext), [analysisContext]);
-
-    const addMemory = async () => {
-        const cleanedTitle = title.trim();
-        const cleanedBody = body.trim();
-        if (!cleanedTitle || !cleanedBody) return;
-
-        const nextMemory: BrainMemory = {
-            id: Date.now(),
-            type: memoryType,
-            title: cleanedTitle,
-            body: cleanedBody,
-            tags: formatTags(tags),
-        };
-
-        if (backendState === 'ready') {
-            try {
-                const response = await fetch(brainApiUrl('/api/brain/memories'), {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(nextMemory),
-                });
-
-                if (response.ok) {
-                    const payload = await response.json() as { memory?: unknown };
-                    const saved = normalizeStoredMemory(payload.memory) ?? nextMemory;
-                    setMemories(current => [saved, ...current]);
-                    setBackendCounts(current => ({ ...(current ?? {}), memories: (current?.memories ?? memories.length) + 1 }));
-                } else {
-                    setMemories(current => [nextMemory, ...current]);
-                }
-            } catch {
-                setMemories(current => [nextMemory, ...current]);
-            }
-        } else {
-            setMemories(current => [nextMemory, ...current]);
-        }
-
-        setTitle('');
-        setBody('');
-        setTags('');
-    };
-
-    const deleteMemory = async (id: number) => {
-        setMemories(current => current.filter(memory => memory.id !== id));
-        setSearchResults(current => current.filter(result => result.entityType !== 'memory' || result.entityId !== id));
-
-        if (backendState === 'ready') {
-            try {
-                await fetch(brainApiUrl(`/api/brain/memories/${id}`), { method: 'DELETE' });
-                setBackendCounts(current => ({
-                    ...(current ?? {}),
-                    memories: Math.max(0, (current?.memories ?? memories.length) - 1),
-                }));
-            } catch {
-                // The visual removal should still honor the user's intent.
-            }
-        }
-    };
-
-    const resetMemories = () => {
-        setMemories(seedMemories);
-    };
-
-    const exportMemories = () => {
-        const file = new Blob([JSON.stringify(memories, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(file);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = 'investment-brain-memories.json';
-        link.click();
-        URL.revokeObjectURL(url);
-    };
 
     const runBackendSearch = async () => {
         const cleanedQuery = searchQuery.trim();
@@ -1054,7 +834,6 @@ export const InvestmentBrain: React.FC = () => {
 
     const backendReady = backendState === 'ready';
     const storageLabel = formatStorage(brainStatus?.storage);
-    const ActiveIcon = activeType.Icon;
     const counts = backendCounts ?? {};
     const hasAssistantAnswer = analysisThread.some(message => message.role === 'assistant');
     const driveConnected = Boolean(driveStatus?.connected);
@@ -1112,8 +891,8 @@ export const InvestmentBrain: React.FC = () => {
                         disabled: isEmbedding,
                     }
                     : {
-                        title: 'Start with one source or memory',
-                        detail: 'Paste a note, save a thesis memory, or connect Drive to seed the brain.',
+                        title: 'Start with one source',
+                        detail: 'Paste a note or connect Drive to seed the brain.',
                         label: 'Ready',
                         Icon: CheckCircle2,
                         onClick: undefined,
@@ -1145,7 +924,7 @@ export const InvestmentBrain: React.FC = () => {
         {
             label: 'Indexed',
             value: `${counts.sources ?? 0} sources`,
-            detail: `${formatEmbeddingCoverage(embeddingStats)}, ${counts.memories ?? memories.length} memories`,
+            detail: formatEmbeddingCoverage(embeddingStats),
             Icon: Layers3,
             className: 'text-sky-300',
         },
@@ -1268,7 +1047,7 @@ export const InvestmentBrain: React.FC = () => {
                                         <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Ask The Brain</h2>
                                     </div>
                                     <p className="mt-2 text-sm leading-6 text-gray-500">
-                                        Uses your memories, indexed chunks, and semantic retrieval to answer in your investing style.
+                                        Uses indexed Drive/source chunks and semantic retrieval to answer in your investing style.
                                     </p>
                                 </div>
                                 <span className={cn(
@@ -1780,168 +1559,20 @@ export const InvestmentBrain: React.FC = () => {
                     </section>
                 )}
 
-                <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
-                    <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <div className="flex items-center gap-2">
-                                <Lightbulb className="h-4 w-4 text-amber-300" />
-                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Save A Memory</h2>
-                            </div>
-                            <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
-                                {memoryTypes.map(item => {
-                                    const Icon = item.Icon;
-                                    const active = item.type === memoryType;
-                                    return (
-                                        <button
-                                            key={item.type}
-                                            type="button"
-                                            onClick={() => setMemoryType(item.type)}
-                                            aria-pressed={active}
-                                            className={cn(
-                                                'inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-lg border px-2 text-[9px] font-bold uppercase tracking-[0.08em] transition-colors',
-                                                active ? item.activeClass : 'border-white/10 bg-white/[0.03] text-gray-500 hover:text-gray-300'
-                                            )}
-                                        >
-                                            <Icon className="h-3.5 w-3.5 shrink-0" />
-                                            {item.label}
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        </div>
-
-                        <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,220px)_minmax(0,1fr)]">
-                            <div className="space-y-3">
-                                <input
-                                    value={title}
-                                    onChange={event => setTitle(event.target.value)}
-                                    className="h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-emerald-500/40"
-                                    placeholder="Company or idea"
-                                />
-                                <input
-                                    value={tags}
-                                    onChange={event => setTags(event.target.value)}
-                                    className="h-11 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-emerald-500/40"
-                                    placeholder="tags"
-                                />
-                            </div>
-                            <textarea
-                                value={body}
-                                onChange={event => setBody(event.target.value)}
-                                className="min-h-[110px] w-full resize-y rounded-lg border border-white/10 bg-white/[0.04] px-3 py-3 text-sm leading-6 text-white outline-none transition-colors placeholder:text-gray-700 focus:border-emerald-500/40"
-                                placeholder="Why did you like, pass, sell, or question this?"
-                            />
-                        </div>
-
-                        <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                            <p className="inline-flex items-center gap-2 text-xs text-gray-500">
-                                <ActiveIcon className="h-4 w-4 text-emerald-300" />
-                                Saved to backend when available and mirrored in browser storage.
-                            </p>
-                            <button
-                                type="button"
-                                onClick={addMemory}
-                                className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/15 px-4 text-xs font-bold uppercase tracking-[0.1em] text-emerald-200 transition-colors hover:bg-emerald-500/20"
-                            >
-                                <Plus className="h-4 w-4" />
-                                Add Memory
-                            </button>
-                        </div>
-                    </section>
-
-                    <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
-                        <div className="flex items-center gap-2">
-                            <ServerCog className="h-4 w-4 text-gray-300" />
-                            <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Guardrails</h2>
-                        </div>
-                        <div className="mt-4 space-y-3 text-xs leading-5 text-gray-500">
-                            <p className="flex gap-2">
-                                <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
-                                Sources stay in Drive; the brain stores metadata, extracted text, chunks, and embeddings.
-                            </p>
-                            <p className="flex gap-2">
-                                <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
-                                Fund-grade use still needs access controls, logs, backups, data licenses, and compliance review.
-                            </p>
-                        </div>
-                    </section>
-                </section>
-
                 <section className="mt-5 rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                        <div className="flex items-center gap-2">
-                            <Layers3 className="h-4 w-4 text-violet-300" />
-                            <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Memory Stream</h2>
-                            <span className="rounded border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 font-mono text-[10px] font-bold text-gray-500">
-                                {memories.length}
-                            </span>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2 sm:flex">
-                            <button
-                                type="button"
-                                onClick={exportMemories}
-                                className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.07]"
-                            >
-                                <Download className="h-3.5 w-3.5" />
-                                Export
-                            </button>
-                            <button
-                                type="button"
-                                onClick={resetMemories}
-                                className="inline-flex min-h-[34px] items-center justify-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.07]"
-                            >
-                                <RotateCcw className="h-3.5 w-3.5" />
-                                Reset
-                            </button>
-                        </div>
+                    <div className="flex items-center gap-2">
+                        <ServerCog className="h-4 w-4 text-gray-300" />
+                        <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Guardrails</h2>
                     </div>
-
-                    <div className="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
-                        {memories.length === 0 && (
-                            <div className="rounded-lg border border-dashed border-white/[0.12] bg-white/[0.025] p-5 text-center xl:col-span-2">
-                                <Archive className="mx-auto h-5 w-5 text-gray-500" />
-                                <p className="mt-3 text-sm font-bold text-gray-300">No saved memories yet</p>
-                                <p className="mt-1 text-xs leading-5 text-gray-500">Add a thesis, pass reason, framework, or megatrend to start building the brain.</p>
-                            </div>
-                        )}
-                        {memories.map(memory => {
-                            const tone = memoryTone[memory.type];
-                            const Icon = tone.Icon;
-                            return (
-                                <article key={memory.id} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
-                                    <div className="flex items-start justify-between gap-3">
-                                        <div className="min-w-0">
-                                            <div className="flex min-w-0 items-center gap-2">
-                                                <span className={cn('inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border', tone.className)}>
-                                                    <Icon className="h-3.5 w-3.5" />
-                                                </span>
-                                                <h3 className="truncate text-sm font-black text-white">{memory.title}</h3>
-                                            </div>
-                                            <p className="mt-2 line-clamp-3 text-xs leading-5 text-gray-400">{memory.body}</p>
-                                        </div>
-                                        <button
-                                            type="button"
-                                            onClick={() => deleteMemory(memory.id)}
-                                            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-white/[0.03] text-gray-600 transition-colors hover:border-rose-500/30 hover:text-rose-300"
-                                            title="Delete memory"
-                                            aria-label={`Delete ${memory.title}`}
-                                        >
-                                            <Trash2 className="h-3.5 w-3.5" />
-                                        </button>
-                                    </div>
-                                    <div className="mt-3 flex flex-wrap gap-1.5">
-                                        <span className={cn('rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]', tone.className)}>
-                                            {tone.label}
-                                        </span>
-                                        {memory.tags.slice(0, 5).map(tag => (
-                                            <span key={tag} className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[10px] font-semibold text-gray-500">
-                                                {tag}
-                                            </span>
-                                        ))}
-                                    </div>
-                                </article>
-                            );
-                        })}
+                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
+                        <p className="flex gap-2 rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 text-xs leading-5 text-gray-500">
+                            <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                            Sources stay in Drive; the brain stores metadata, extracted text, chunks, and embeddings in Supabase.
+                        </p>
+                        <p className="flex gap-2 rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 text-xs leading-5 text-gray-500">
+                            <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
+                            Fund-grade use still needs access controls, logs, backups, data licenses, and compliance review.
+                        </p>
                     </div>
                 </section>
             </main>
