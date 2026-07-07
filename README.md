@@ -1,135 +1,295 @@
 # Institutional Portfolio Dashboard
 
-## Overview
-The **Institutional Portfolio Dashboard** is a high-performance risk analytics platform designed for monitoring hedge fund portfolios. It provides real-time insights into portfolio health, risk exposure, and performance attribution, utilizing institutional-grade financial models.
+Private portfolio analytics dashboard with a Python/FastAPI backend, a React/Vite frontend, and an Investment Brain powered by Google Drive, Supabase Postgres, pgvector, and Gemini.
 
-The application features a robust **Python/FastAPI backend** for heavy quantitative lifting (VaR, CVaR, Monte Carlo) and a sleek **React/TypeScript frontend** for data visualization.
+The dashboard is built for one main job: show portfolio performance, risk, exposure, attribution, rebalancing continuity, and source-backed investment research in one place.
 
-## Investment Brain Roadmap
+## What It Does
 
-The long-term architecture notes for the synthetic investment brain are saved in [`docs/investment-brain-architecture.md`](docs/investment-brain-architecture.md).
+- Tracks long/short portfolio performance in USD.
+- Calculates YTD return, alpha, beta, volatility, drawdown, Sharpe, correlations, VaR/CVaR, and stress results.
+- Preserves portfolio continuity across rebalances, so old and new position periods remain part of YTD history.
+- Shows position-level contribution, including YTD total contribution and since-last-rebalance contribution.
+- Provides portfolio exports and investor-facing PNG/report views.
+- Includes an Investment Brain for semantic search and company analysis over your own files.
 
-Current brain setup:
-- Manual memories, text ingestion, Google Drive API indexing, Supabase/Postgres chunk storage, keyword search, and semantic vector search are available.
-- Google Drive files are read through the Drive API. The dashboard should not scan arbitrary local folders from your computer.
-- Local folder indexing is disabled by default and requires `BRAIN_ENABLE_LOCAL_INDEXING=true` if intentionally used for development.
-- The Brain frontend defaults to the Render backend (`https://dashboard-eo6k.onrender.com`) so Drive/Supabase are used even when the UI is opened on localhost. Override with `VITE_BRAIN_API_URL` only for development.
-- Gemini support is wired through environment variables. Do not commit API keys.
-  - `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`: Google AI Studio API key.
-  - `BRAIN_LLM_MODEL`: optional, defaults to `gemini-3.1-flash-lite`.
-  - `BRAIN_EMBEDDING_MODEL`: optional, defaults to `gemini-embedding-001`.
-  - Local option: copy `backend/.env.example` to `backend/.env`; `backend/.env` is ignored by git.
-  - Use `/dashboard/brain` to connect Drive, sync files, embed missing chunks, search, and run company analysis.
+## Architecture
 
-## Key Features
+```text
+React / Vite dashboard
+        |
+        v
+FastAPI backend on Render
+        |
+        +--> portfolio analytics / yfinance / risk engine
+        |
+        +--> Investment Brain API
+                 |
+                 +--> Google Drive API for source files
+                 +--> Supabase Postgres + pgvector for text chunks and embeddings
+                 +--> Gemini for embeddings and analysis
+```
 
-### 📊 Performance & Risk Analytics
-- **Standardized YTD Calculation:** Tracks performance using the previous year's closing price (Dec 31) as the base, ensuring industry-standard accuracy.
-- **Advanced Risk Metrics:** Real-time calculation of **Value at Risk (VaR 95%)**, **CVaR (Expected Shortfall)**, **Sharpe Ratio**, **Sortino Ratio**, and **Beta**.
-- **Dynamic Benchmarking:** Compare performance against major indices:
-    - **SPY** (S&P 500)
-    - **WIG20** (Warsaw Stock Exchange)
-    - **URTH** (MSCI World)
-
-### 🧪 Simulation & Stress Testing
-- **Monte Carlo Simulation:** Runs 1,000 path simulations over a 60-day horizon to forecast potential portfolio trajectories.
-- **Stress Testing:** Evaluates portfolio resilience under hypothetical market scenarios (e.g., Market Crash -10%, Surge +10%).
-
-### 📉 Risk Attribution
-- **Marginal Contribution to Total Risk (MCTR):** Decomposes portfolio volatility to identify which assets are the primary drivers of risk.
-- **Correlation Heatmap:** Visualizes cross-asset correlations to detect diversification breakdowns.
-
----
+The browser does not read arbitrary files from your computer. Production Brain data comes from Google Drive through the Drive API, then lands in Supabase as metadata, extracted text chunks, and embeddings.
 
 ## Tech Stack
 
-### Backend (Quantitative Engine)
-- **Language:** Python 3.12+
-- **Framework:** FastAPI
-- **Key Libraries:** `pandas`, `numpy`, `yfinance`, `scipy`
+Backend:
 
-### Frontend (User Interface)
-- **Framework:** React 19 + TypeScript
-- **Build Tool:** Vite
-- **Styling:** TailwindCSS v4
-- **Visualization:** Recharts, Lucide React
+- Python 3.12+
+- FastAPI
+- pandas, numpy, scipy, yfinance
+- psycopg, pgvector on Supabase
+- Google Drive API
+- Google AI Studio / Gemini
 
----
+Frontend:
 
-## Installation & Setup
+- React 19
+- TypeScript
+- Vite
+- TailwindCSS
+- Recharts
+- Lucide React
 
-### Prerequisites
-- **Python 3.10+**
-- **Node.js 18+**
+## Local Setup
 
-### Installation Steps
+Install backend dependencies:
 
-1.  **Clone the Repository**
-    ```bash
-    git clone https://github.com/yourusername/portfolio-dashboard-2026.git
-    cd portfolio-dashboard-2026
-    ```
+```powershell
+cd backend
+python -m pip install -r requirements.txt
+cd ..
+```
 
-2.  **Install Backend Dependencies**
-    ```bash
-    cd backend
-    pip install -r requirements.txt
-    cd ..
-    ```
+Install frontend dependencies:
 
-3.  **Install Frontend Dependencies**
-    ```bash
-    npm install
-    ```
+```powershell
+npm install
+```
 
----
+Run backend:
 
-## Usage
-
-### 🚀 One-Click Launcher (Recommended)
-This project comes with a **Desktop Shortcut** integration for Windows.
-1.  Locate the **"Portfolio Dashboard"** shortcut on your Desktop.
-2.  Double-click to launch.
-3.  This script automatically:
-    - Starts the FastAPI backend.
-    - Starts the Vite frontend.
-    - Opens your default browser to the dashboard.
-
-### Manual Startup
-If you prefer to run the services manually:
-
-**Terminal 1 (Backend):**
-```bash
+```powershell
 cd backend
 python server.py
 ```
 
-**Terminal 2 (Frontend):**
-```bash
+Run frontend:
+
+```powershell
 npm run dev
 ```
 
-Open [http://localhost:2137](http://localhost:2137) in your browser.
+Open:
 
----
-
-## Architecture
-
-```
-portfolio-dashboard-2026/
-├── backend/
-│   ├── risk.py            # Core financial modeling & data engine
-│   ├── server.py          # FastAPI server endpoints
-│   └── debug_*.py         # Verification tools
-├── src/
-│   ├── components/        # React UI components (Dashboard, Charts)
-│   ├── utils/             # Helper functions
-│   └── App.tsx            # Main application entry
-├── start_dashboard.bat    # Windows launcher script
-└── README.md              # Project documentation
+```text
+http://127.0.0.1:5176
 ```
 
----
+The Vite dev server proxies `/api` to the local backend at `http://127.0.0.1:8000`.
+
+## Environment Variables
+
+Do not commit secrets. Put local secrets in `backend/.env`; that file is ignored by git.
+
+Minimum Brain variables:
+
+```text
+DATABASE_URL=postgresql://...
+GOOGLE_AI_API_KEY=...
+GOOGLE_DRIVE_FOLDER_ID=...
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+GOOGLE_OAUTH_REDIRECT_URI=https://dashboard-eo6k.onrender.com/api/brain/drive/oauth/callback
+```
+
+Optional Brain variables:
+
+```text
+BRAIN_LLM_MODEL=gemini-3.1-flash-lite
+BRAIN_EMBEDDING_MODEL=gemini-embedding-001
+GOOGLE_DRIVE_REFRESH_TOKEN=...
+BRAIN_SEARCH_TIMEOUT_SECONDS=18
+BRAIN_ANALYSIS_TIMEOUT_SECONDS=8
+BRAIN_INDEX_TIMEOUT_SECONDS=240
+```
+
+Frontend override for development:
+
+```text
+VITE_BRAIN_API_URL=http://127.0.0.1:8000
+```
+
+Without `VITE_BRAIN_API_URL`, the Brain frontend can default to the hosted Render backend so localhost still uses the production Drive/Supabase setup.
+
+## Investment Brain
+
+The Brain is a retrieval system, not just a chatbot.
+
+Current flow:
+
+```text
+Google Drive file
+-> Drive API indexer
+-> extracted text
+-> chunks with stable hashes
+-> Gemini embeddings
+-> Supabase Postgres + pgvector
+-> semantic search / source expansion
+-> Gemini company analysis
+```
+
+Main Brain capabilities:
+
+- Google Drive OAuth connection.
+- Drive folder sync.
+- PDF, DOCX, Google Docs/Sheets/Slides exports, TXT, Markdown, CSV, JSON, and HTML extraction.
+- Chunk storage with stable file and chunk hashes.
+- Full-text keyword search.
+- pgvector cosine semantic search.
+- Source-backed Ask Brain company analysis.
+- Follow-up questions in the same Brain thread.
+- Source references when Drive metadata is available.
+
+Useful endpoints:
+
+```text
+GET  /api/brain/status
+GET  /api/brain/index/drive/status
+GET  /api/brain/index/drive/files
+POST /api/brain/index/drive/start
+GET  /api/brain/embeddings/status
+POST /api/brain/embeddings/backfill
+POST /api/brain/embeddings/backfill/start
+GET  /api/brain/search
+GET  /api/brain/search/semantic
+POST /api/brain/analyze-company
+```
+
+Detailed architecture notes are in:
+
+```text
+docs/investment-brain-architecture.md
+docs/local-brain-worker.md
+```
+
+## Supabase Security
+
+The Brain tables live in the Supabase `public` schema, but browser clients should not access them directly.
+
+Security migrations:
+
+```text
+backend/migrations/001_supabase_brain_pgvector.sql
+backend/migrations/002_enable_brain_rls.sql
+backend/migrations/003_add_missing_embedding_index.sql
+```
+
+Current security posture:
+
+- Row-Level Security is enabled on all Brain tables.
+- Public `anon` and `authenticated` table grants are revoked.
+- The dashboard uses the Render backend, which connects through the private Postgres connection string.
+- Do not expose `DATABASE_URL` or service credentials in the frontend.
+
+Brain tables:
+
+```text
+memories
+sources
+chunks
+ideas
+theses
+edges
+brain_settings
+brain_index
+```
+
+Quick SQL audit:
+
+```sql
+SELECT c.relname, c.relrowsecurity
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind = 'r'
+  AND n.nspname = 'public'
+ORDER BY c.relname;
+```
+
+There should be no direct grants for `anon` or `authenticated`:
+
+```sql
+SELECT grantee, table_name, privilege_type
+FROM information_schema.table_privileges
+WHERE table_schema = 'public'
+  AND grantee IN ('anon', 'authenticated');
+```
+
+## Local Brain Worker
+
+For large libraries, use the local worker instead of asking Render to parse everything. This keeps heavy PDF extraction on your computer while still writing chunks and embeddings to Supabase.
+
+```powershell
+python -m pip install -r backend\requirements.txt
+.\run_local_brain_worker.ps1 -Mode status
+.\run_local_brain_worker.ps1 -Mode all
+```
+
+More detail:
+
+```text
+docs/local-brain-worker.md
+```
+
+## Portfolio Data And Rebalancing
+
+Portfolio state is stored in backend portfolio JSON/config files. The analytics engine is designed to preserve continuity:
+
+- exited positions remain in historical contribution where relevant
+- new positions start contributing from their effective date
+- existing positions carry forward unless explicitly changed
+- YTD metrics remain based on the full year path, not only the latest portfolio snapshot
+- since-last-rebalance metrics are shown separately from YTD total contribution
+
+This separation is important: changing the book should not erase what happened earlier in the year.
+
+## Verification
+
+Backend syntax check:
+
+```powershell
+python -m py_compile backend\server.py backend\brain_store_postgres.py backend\gemini_client.py
+```
+
+Frontend build:
+
+```powershell
+npm run build
+```
+
+Brain health:
+
+```text
+GET https://dashboard-eo6k.onrender.com/api/brain/status
+```
+
+Expected healthy signs:
+
+- `state` is `ready`
+- `storage` is `postgres_pgvector`
+- `vectorSearch` is `pgvector_cosine`
+- `embeddings.missing` is `0` after backfill
+- `embeddings.coverage` is `1.0` after backfill
+
+## Deployment Notes
+
+- Frontend is designed for Vercel.
+- Backend is designed for Render.
+- Supabase stores Brain metadata, text chunks, embeddings, and search indexes.
+- Google Drive stores the original files.
+- Original PDFs/books should not be stored directly in Postgres.
 
 ## License
-Private / Proprietary. 
+
+Private / proprietary.
