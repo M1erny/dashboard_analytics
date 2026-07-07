@@ -1425,12 +1425,9 @@ def _expand_semantic_hits_into_sources(
         source_summary = None
         if source:
             source_summary = {
-                "id": source.get("id"),
-                "kind": source.get("kind"),
-                "title": source.get("title"),
+                **(_public_source_reference(source) or {}),
                 "author": source.get("author"),
                 "sourceDate": source.get("sourceDate"),
-                "tags": source.get("tags", []),
                 "metadata": source.get("metadata", {}),
             }
 
@@ -1546,6 +1543,7 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         context_items.append(item)
         if len(context_items) >= payload.limit:
             break
+    context_items = await _attach_source_references(store, context_items)
 
     step_started = time.perf_counter()
     deep_sources = await _run_brain_step(

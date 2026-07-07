@@ -39,6 +39,22 @@ type BrainMemory = {
     tags: string[];
 };
 
+type BrainSourceReference = {
+    id?: number;
+    title?: string;
+    kind?: string;
+    tags?: string[];
+    sourceType?: string;
+    fileName?: string;
+    relativePath?: string;
+    webUrl?: string;
+    localPath?: string;
+    driveFileId?: string;
+    author?: string | null;
+    sourceDate?: string | null;
+    metadata?: Record<string, unknown>;
+};
+
 type SearchResult = {
     entityType: string;
     entityId: number;
@@ -47,18 +63,11 @@ type SearchResult = {
     tags: string[];
     rank?: number;
     score?: number;
+    ordinal?: number;
+    pageStart?: number | null;
+    pageEnd?: number | null;
     sourceId?: number;
-    source?: {
-        id?: number;
-        title?: string;
-        kind?: string;
-        sourceType?: string;
-        fileName?: string;
-        relativePath?: string;
-        webUrl?: string;
-        localPath?: string;
-        driveFileId?: string;
-    };
+    source?: BrainSourceReference;
 };
 
 type BrainCounts = {
@@ -183,6 +192,33 @@ type BrainAnalysisResponse = {
         memorySearchMs?: number;
         semanticError?: string;
     };
+    context?: BrainAnalysisContext;
+};
+
+type BrainDeepSource = {
+    sourceId?: number;
+    source?: BrainSourceReference | null;
+    hitOrdinals?: number[];
+    chunks?: SearchResult[];
+};
+
+type BrainAnalysisContext = {
+    memories?: BrainMemory[];
+    retrieved?: SearchResult[];
+    deepSources?: BrainDeepSource[];
+};
+
+type AnswerSourceCard = {
+    key: string;
+    marker: string;
+    title: string;
+    detail?: string;
+    excerpt?: string;
+    score?: number;
+    source?: BrainSourceReference | null;
+    path?: string;
+    webUrl?: string;
+    tone: 'retrieved' | 'expanded' | 'memory';
 };
 
 type BackendState = 'checking' | 'ready' | 'offline';
@@ -245,11 +281,98 @@ const driveJobMessage = (job: DriveIndexJob) => {
     return job.message ?? 'Drive sync running...';
 };
 
+const sourceReferenceDisplayName = (source?: BrainSourceReference | null, fallback = '') =>
+    source?.title
+    ?? source?.fileName
+    ?? source?.relativePath
+    ?? fallback;
+
 const sourceDisplayName = (result: SearchResult) =>
-    result.source?.title
-    ?? result.source?.fileName
-    ?? result.source?.relativePath
-    ?? (result.sourceId ? `Source ${result.sourceId}` : '');
+    sourceReferenceDisplayName(result.source, result.sourceId ? `Source ${result.sourceId}` : '');
+
+const shortExcerpt = (value?: string, maxLength = 260) => {
+    const cleaned = (value ?? '').replace(/\s+/g, ' ').trim();
+    if (cleaned.length <= maxLength) return cleaned;
+    return `${cleaned.slice(0, maxLength).trim()}...`;
+};
+
+const chunkDetail = (item: SearchResult) => {
+    const details = [];
+    if (typeof item.ordinal === 'number') details.push(`chunk ${item.ordinal}`);
+    if (typeof item.pageStart === 'number') {
+        const pageEnd = typeof item.pageEnd === 'number' && item.pageEnd !== item.pageStart ? `-${item.pageEnd}` : '';
+        details.push(`p. ${item.pageStart}${pageEnd}`);
+    }
+    return details.join(' · ');
+};
+
+const buildAnswerSources = (context?: BrainAnalysisContext | null): AnswerSourceCard[] => {
+    if (!context) return [];
+
+    const cards: AnswerSourceCard[] = [];
+    const seenExpandedSources = new Set<string>();
+
+    (context.retrieved ?? []).forEach((item, index) => {
+        const source = item.source ?? null;
+        const fallbackSource = item.sourceId ? `Source ${item.sourceId}` : item.entityType;
+        const sourceName = sourceReferenceDisplayName(source, fallbackSource);
+        const detail = [sourceName, chunkDetail(item)].filter(Boolean).join(' · ');
+        cards.push({
+            key: `retrieved-${item.entityType}-${item.entityId}-${index}`,
+            marker: `[${index + 1}]`,
+            title: item.title || sourceName || `Evidence ${index + 1}`,
+            detail,
+            excerpt: shortExcerpt(item.body),
+            score: item.score ?? item.rank,
+            source,
+            path: source?.localPath ?? source?.relativePath,
+            webUrl: source?.webUrl,
+            tone: 'retrieved',
+        });
+    });
+
+    (context.deepSources ?? []).forEach((item, index) => {
+        const source = item.source ?? null;
+        const sourceKey = String(item.sourceId ?? source?.id ?? index);
+        if (seenExpandedSources.has(sourceKey)) return;
+        seenExpandedSources.add(sourceKey);
+
+        const chunks = item.chunks ?? [];
+        const hitOrdinals = item.hitOrdinals?.length ? `semantic hits ${item.hitOrdinals.join(', ')}` : '';
+        const chunkCount = chunks.length ? `${chunks.length} expanded chunks` : '';
+        const title = sourceReferenceDisplayName(source, item.sourceId ? `Source ${item.sourceId}` : `Expanded file ${index + 1}`);
+        cards.push({
+            key: `expanded-${sourceKey}`,
+            marker: `File ${index + 1}`,
+            title,
+            detail: [hitOrdinals, chunkCount].filter(Boolean).join(' · '),
+            excerpt: shortExcerpt(chunks.find(chunk => chunk.body)?.body),
+            source,
+            path: source?.localPath ?? source?.relativePath,
+            webUrl: source?.webUrl,
+            tone: 'expanded',
+        });
+    });
+
+    (context.memories ?? []).slice(0, 2).forEach((memory, index) => {
+        cards.push({
+            key: `memory-${memory.id}`,
+            marker: `Memory ${index + 1}`,
+            title: memory.title,
+            detail: memory.tags.length ? memory.tags.slice(0, 3).join(' · ') : memory.type,
+            excerpt: shortExcerpt(memory.body),
+            tone: 'memory',
+        });
+    });
+
+    return cards.slice(0, 10);
+};
+
+const sourceToneClass: Record<AnswerSourceCard['tone'], string> = {
+    retrieved: 'border-sky-500/20 bg-sky-500/10 text-sky-200',
+    expanded: 'border-violet-500/20 bg-violet-500/10 text-violet-200',
+    memory: 'border-amber-500/20 bg-amber-500/10 text-amber-200',
+};
 
 const memoryTypes: {
     type: MemoryType;
@@ -416,6 +539,7 @@ export const InvestmentBrain: React.FC = () => {
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisMessage, setAnalysisMessage] = useState('');
     const [analysisAnswer, setAnalysisAnswer] = useState('');
+    const [analysisContext, setAnalysisContext] = useState<BrainAnalysisContext | null>(null);
     const analysisOutputRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
@@ -482,6 +606,7 @@ export const InvestmentBrain: React.FC = () => {
         () => memoryTypes.find(item => item.type === memoryType) ?? memoryTypes[0],
         [memoryType]
     );
+    const answerSources = useMemo(() => buildAnswerSources(analysisContext), [analysisContext]);
 
     const addMemory = async () => {
         const cleanedTitle = title.trim();
@@ -826,6 +951,7 @@ export const InvestmentBrain: React.FC = () => {
         setIsAnalyzing(true);
         setAnalysisMessage('Retrieving your brain context, then asking Gemini...');
         setAnalysisAnswer('');
+        setAnalysisContext(null);
         try {
             const response = await fetchWithTimeout(
                 brainApiUrl('/api/brain/analyze-company'),
@@ -848,6 +974,7 @@ export const InvestmentBrain: React.FC = () => {
 
             const payload = await response.json() as BrainAnalysisResponse;
             setAnalysisAnswer(payload.answer);
+            setAnalysisContext(payload.context ?? null);
             const totalSeconds = typeof payload.timings?.totalMs === 'number'
                 ? ` in ${(payload.timings.totalMs / 1000).toFixed(1)}s`
                 : '';
@@ -1142,6 +1269,86 @@ export const InvestmentBrain: React.FC = () => {
                                     ) : (
                                         <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/20 p-4 text-sm leading-6 text-gray-400">
                                             Retrieving context and preparing the answer here.
+                                        </div>
+                                    )}
+
+                                    {analysisAnswer && (
+                                        <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/15 p-3">
+                                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                                <div className="flex items-center gap-2">
+                                                    <FileText className="h-4 w-4 text-sky-300" />
+                                                    <h3 className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-300">Sources Used</h3>
+                                                </div>
+                                                <span className="w-fit rounded border border-white/[0.08] bg-white/[0.03] px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em] text-gray-500">
+                                                    {answerSources.length ? `${answerSources.length} context item${answerSources.length === 1 ? '' : 's'}` : 'No retrieved source context'}
+                                                </span>
+                                            </div>
+
+                                            {answerSources.length > 0 ? (
+                                                <div className="mt-3 grid grid-cols-1 gap-2 xl:grid-cols-2">
+                                                    {answerSources.map(source => (
+                                                        <article key={source.key} className="min-w-0 rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
+                                                            <div className="flex items-start justify-between gap-3">
+                                                                <div className="min-w-0">
+                                                                    <div className="flex flex-wrap items-center gap-2">
+                                                                        <span className={cn(
+                                                                            'rounded border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em]',
+                                                                            sourceToneClass[source.tone]
+                                                                        )}>
+                                                                            {source.marker}
+                                                                        </span>
+                                                                        {typeof source.score === 'number' && (
+                                                                            <span className="text-[10px] font-semibold text-gray-600">
+                                                                                score {source.score.toFixed(3)}
+                                                                            </span>
+                                                                        )}
+                                                                    </div>
+                                                                    <h4 className="mt-2 line-clamp-2 text-sm font-black leading-5 text-white">
+                                                                        {source.title}
+                                                                    </h4>
+                                                                    {source.detail && (
+                                                                        <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-gray-500">
+                                                                            {source.detail}
+                                                                        </p>
+                                                                    )}
+                                                                </div>
+                                                                <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
+                                                                    {source.webUrl && (
+                                                                        <a
+                                                                            href={source.webUrl}
+                                                                            target="_blank"
+                                                                            rel="noreferrer"
+                                                                            className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded border border-emerald-500/25 bg-emerald-500/10 px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-emerald-200 transition-colors hover:bg-emerald-500/20"
+                                                                        >
+                                                                            <ExternalLink className="h-3 w-3" />
+                                                                            Open
+                                                                        </a>
+                                                                    )}
+                                                                    {source.path && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => void copySourcePath(source.path ?? '')}
+                                                                            className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.08]"
+                                                                        >
+                                                                            <Copy className="h-3 w-3" />
+                                                                            Path
+                                                                        </button>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                            {source.excerpt && (
+                                                                <p className="mt-2 line-clamp-3 text-xs leading-5 text-gray-400">
+                                                                    {source.excerpt}
+                                                                </p>
+                                                            )}
+                                                        </article>
+                                                    ))}
+                                                </div>
+                                            ) : (
+                                                <p className="mt-3 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 text-xs leading-5 text-gray-500">
+                                                    The model did not receive retrieved file context for this answer. Try a narrower question or wait for embeddings to finish.
+                                                </p>
+                                            )}
                                         </div>
                                     )}
                                 </div>
