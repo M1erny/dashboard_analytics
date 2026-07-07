@@ -968,17 +968,24 @@ class PostgresBrainStore:
         limit = max(1, min(int(limit), 200))
         params: list[Any] = [fts_query, fts_query]
         sql = """
-            SELECT entity_type,
-                   entity_id,
-                   title,
-                   body,
-                   tags,
-                   ts_rank_cd(search_vector, to_tsquery('simple', %s)) AS rank
-              FROM brain_index
-             WHERE search_vector @@ to_tsquery('simple', %s)
+            SELECT i.entity_type,
+                   i.entity_id,
+                   i.title,
+                   i.body,
+                   i.tags,
+                   CASE
+                       WHEN i.entity_type = 'source' THEN i.entity_id
+                       ELSE c.source_id
+                   END AS source_id,
+                   ts_rank_cd(i.search_vector, to_tsquery('simple', %s)) AS rank
+              FROM brain_index i
+              LEFT JOIN chunks c
+                ON i.entity_type = 'chunk'
+               AND c.id = i.entity_id
+             WHERE i.search_vector @@ to_tsquery('simple', %s)
         """
         if entity_type:
-            sql += " AND entity_type = %s"
+            sql += " AND i.entity_type = %s"
             params.append(entity_type)
         sql += " ORDER BY rank DESC LIMIT %s"
         params.append(limit)
@@ -992,6 +999,7 @@ class PostgresBrainStore:
                     "body": row["body"],
                     "tags": row["tags"].split() if row["tags"] else [],
                     "rank": float(row["rank"]),
+                    "sourceId": int(row["source_id"]) if row["source_id"] is not None else None,
                 }
                 for row in conn.execute(sql, params).fetchall()
             ]

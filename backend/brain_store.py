@@ -806,12 +806,24 @@ class BrainStore:
         limit = max(1, min(int(limit), 200))
         params: list[Any] = [fts_query]
         sql = """
-            SELECT entity_type, entity_id, title, body, tags, bm25(brain_index) AS rank
+            SELECT brain_index.entity_type,
+                   brain_index.entity_id,
+                   brain_index.title,
+                   brain_index.body,
+                   brain_index.tags,
+                   CASE
+                       WHEN brain_index.entity_type = 'source' THEN CAST(brain_index.entity_id AS INTEGER)
+                       ELSE c.source_id
+                   END AS source_id,
+                   bm25(brain_index) AS rank
             FROM brain_index
+            LEFT JOIN chunks c
+              ON brain_index.entity_type = 'chunk'
+             AND c.id = CAST(brain_index.entity_id AS INTEGER)
             WHERE brain_index MATCH ?
         """
         if entity_type:
-            sql += " AND entity_type = ?"
+            sql += " AND brain_index.entity_type = ?"
             params.append(entity_type)
         sql += " ORDER BY rank LIMIT ?"
         params.append(limit)
@@ -825,6 +837,7 @@ class BrainStore:
                     "body": row["body"],
                     "tags": row["tags"].split() if row["tags"] else [],
                     "rank": row["rank"],
+                    "sourceId": int(row["source_id"]) if row["source_id"] is not None else None,
                 }
                 for row in conn.execute(sql, params).fetchall()
             ]

@@ -202,6 +202,78 @@ def _generation_error_detail(error: Exception | str) -> dict[str, str]:
     }
 
 
+def _public_source_reference(source: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not source:
+        return None
+
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    drive_file_id = metadata.get("driveFileId")
+    web_url = (
+        metadata.get("webViewLink")
+        or metadata.get("driveWebViewLink")
+        or (f"https://drive.google.com/file/d/{drive_file_id}/view" if drive_file_id else None)
+    )
+    local_path = metadata.get("absolutePath") or metadata.get("localPath")
+    relative_path = metadata.get("relativePath")
+
+    return {
+        "id": source.get("id"),
+        "title": source.get("title"),
+        "kind": source.get("kind"),
+        "tags": source.get("tags", []),
+        "sourceType": metadata.get("sourceType"),
+        "fileName": metadata.get("fileName"),
+        "relativePath": relative_path,
+        "webUrl": web_url,
+        "localPath": local_path,
+        "driveFileId": drive_file_id,
+    }
+
+
+async def _attach_source_references(store: Any, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    source_ids: set[int] = set()
+    for item in results:
+        value = item.get("sourceId") or item.get("source_id")
+        if value is None and item.get("entityType") == "source":
+            value = item.get("entityId") or item.get("id")
+        try:
+            if value is not None:
+                source_ids.add(int(value))
+        except (TypeError, ValueError):
+            continue
+
+    if not source_ids or not hasattr(store, "get_source"):
+        return results
+
+    references: dict[int, dict[str, Any] | None] = {}
+    for source_id in sorted(source_ids):
+        source = await _run_brain_step(
+            "Search source reference",
+            store.get_source,
+            source_id,
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+        references[source_id] = _public_source_reference(source)
+
+    enriched = []
+    for item in results:
+        next_item = dict(item)
+        value = next_item.get("sourceId") or next_item.get("source_id")
+        if value is None and next_item.get("entityType") == "source":
+            value = next_item.get("entityId") or next_item.get("id")
+        try:
+            source_id = int(value) if value is not None else None
+        except (TypeError, ValueError):
+            source_id = None
+        if source_id is not None:
+            next_item["sourceId"] = source_id
+            reference = references.get(source_id)
+            if reference:
+                next_item["source"] = reference
+        enriched.append(next_item)
+    return enriched
+
+
 async def _run_drive_index_job(
     *,
     folder_id: str | None,
@@ -1125,6 +1197,7 @@ async def search_brain(q: str, limit: int = 50, entity_type: str | None = None):
         limit=limit,
         entity_type=entity_type,
     )
+    results = await _attach_source_references(store, results)
     counts = await _run_brain_step("Brain counts", store.counts)
     return {
         "query": q,
@@ -1250,22 +1323,23 @@ async def semantic_brain_search(q: str, limit: int = 10):
         )
     search_ms = round((time.perf_counter() - search_started_at) * 1000, 1)
     counts = await _run_brain_step("Brain counts", store.counts)
+    results = await _attach_source_references(store, [
+        {
+            "entityType": "chunk",
+            "entityId": int(chunk["id"]),
+            "title": chunk["title"],
+            "body": chunk["body"],
+            "tags": chunk.get("tags", []),
+            "rank": chunk.get("score"),
+            "score": chunk.get("score"),
+            "sourceId": chunk.get("sourceId"),
+        }
+        for chunk in chunks
+    ])
     return {
         "query": q,
         "model": client.embedding_model,
-        "results": [
-            {
-                "entityType": "chunk",
-                "entityId": int(chunk["id"]),
-                "title": chunk["title"],
-                "body": chunk["body"],
-                "tags": chunk.get("tags", []),
-                "rank": chunk.get("score"),
-                "score": chunk.get("score"),
-                "sourceId": chunk.get("sourceId"),
-            }
-            for chunk in chunks
-        ],
+        "results": results,
         "counts": counts,
         "timings": {
             "embeddingMs": embedding_ms,

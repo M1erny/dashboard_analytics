@@ -6,6 +6,7 @@ import {
     BrainCircuit,
     CheckCircle2,
     Cloud,
+    Copy,
     Database,
     Download,
     ExternalLink,
@@ -45,6 +46,19 @@ type SearchResult = {
     body: string;
     tags: string[];
     rank?: number;
+    score?: number;
+    sourceId?: number;
+    source?: {
+        id?: number;
+        title?: string;
+        kind?: string;
+        sourceType?: string;
+        fileName?: string;
+        relativePath?: string;
+        webUrl?: string;
+        localPath?: string;
+        driveFileId?: string;
+    };
 };
 
 type BrainCounts = {
@@ -230,6 +244,12 @@ const driveJobMessage = (job: DriveIndexJob) => {
     }
     return job.message ?? 'Drive sync running...';
 };
+
+const sourceDisplayName = (result: SearchResult) =>
+    result.source?.title
+    ?? result.source?.fileName
+    ?? result.source?.relativePath
+    ?? (result.sourceId ? `Source ${result.sourceId}` : '');
 
 const memoryTypes: {
     type: MemoryType;
@@ -851,6 +871,14 @@ export const InvestmentBrain: React.FC = () => {
     const driveConnected = Boolean(driveStatus?.connected);
     const driveConfigured = Boolean(driveStatus?.configured);
     const driveAuthReady = Boolean(driveStatus?.authConfigured);
+    const copySourcePath = async (path: string) => {
+        try {
+            await navigator.clipboard.writeText(path);
+            setSearchMessage('Local file path copied');
+        } catch {
+            setSearchMessage('Could not copy path');
+        }
+    };
     const nextAction = !backendReady
         ? {
             title: 'Backend offline',
@@ -1166,26 +1194,63 @@ export const InvestmentBrain: React.FC = () => {
 
                             {searchResults.length > 0 && (
                                 <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
-                                    {searchResults.map(result => (
-                                        <article key={`${result.entityType}-${result.entityId}`} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
-                                            <div className="flex items-start justify-between gap-3">
-                                                <h3 className="min-w-0 text-sm font-black text-white">{result.title}</h3>
-                                                <span className="shrink-0 rounded border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-sky-300">
-                                                    {result.entityType}
-                                                </span>
-                                            </div>
-                                            <p className="mt-2 line-clamp-3 text-xs leading-5 text-gray-400">{result.body}</p>
-                                            {result.tags.length > 0 && (
-                                                <div className="mt-3 flex flex-wrap gap-1.5">
-                                                    {result.tags.slice(0, 5).map(tag => (
-                                                        <span key={tag} className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[10px] font-semibold text-gray-500">
-                                                            {tag}
-                                                        </span>
-                                                    ))}
+                                    {searchResults.map(result => {
+                                        const sourceName = sourceDisplayName(result);
+                                        const sourcePath = result.source?.localPath || result.source?.relativePath || '';
+                                        return (
+                                            <article key={`${result.entityType}-${result.entityId}`} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <h3 className="min-w-0 text-sm font-black text-white">{result.title}</h3>
+                                                    <span className="shrink-0 rounded border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-sky-300">
+                                                        {result.entityType}
+                                                    </span>
                                                 </div>
-                                            )}
-                                        </article>
-                                    ))}
+                                                {sourceName && (
+                                                    <div className="mt-2 flex flex-col gap-2 rounded-md border border-white/[0.06] bg-black/10 px-2.5 py-2 sm:flex-row sm:items-center sm:justify-between">
+                                                        <div className="min-w-0">
+                                                            <p className="truncate text-[11px] font-bold text-slate-200">{sourceName}</p>
+                                                            {result.source?.relativePath && (
+                                                                <p className="mt-0.5 truncate text-[10px] text-gray-600">{result.source.relativePath}</p>
+                                                            )}
+                                                        </div>
+                                                        <div className="flex shrink-0 flex-wrap gap-1.5">
+                                                            {result.source?.webUrl && (
+                                                                <a
+                                                                    href={result.source.webUrl}
+                                                                    target="_blank"
+                                                                    rel="noreferrer"
+                                                                    className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded border border-emerald-500/25 bg-emerald-500/10 px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-emerald-200 transition-colors hover:bg-emerald-500/20"
+                                                                >
+                                                                    <ExternalLink className="h-3 w-3" />
+                                                                    Open
+                                                                </a>
+                                                            )}
+                                                            {sourcePath && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => void copySourcePath(sourcePath)}
+                                                                    className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.08]"
+                                                                >
+                                                                    <Copy className="h-3 w-3" />
+                                                                    Path
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                )}
+                                                <p className="mt-2 line-clamp-3 text-xs leading-5 text-gray-400">{result.body}</p>
+                                                {result.tags.length > 0 && (
+                                                    <div className="mt-3 flex flex-wrap gap-1.5">
+                                                        {result.tags.slice(0, 5).map(tag => (
+                                                            <span key={tag} className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[10px] font-semibold text-gray-500">
+                                                                {tag}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                            </article>
+                                        );
+                                    })}
                                 </div>
                             )}
                         </section>
