@@ -1458,11 +1458,11 @@ def _expand_semantic_hits_into_sources(
     store: Any,
     hits: list[dict[str, Any]],
     *,
-    max_sources: int = 2,
+    max_sources: int = 1,
     window: int = 1,
-    max_source_chunks: int = 24,
-    max_chunks_per_source: int = 4,
-    max_chars_per_chunk: int = 550,
+    max_source_chunks: int = 16,
+    max_chunks_per_source: int = 3,
+    max_chars_per_chunk: int = 500,
 ) -> list[dict[str, Any]]:
     expanded: list[dict[str, Any]] = []
     source_ids: list[int] = []
@@ -1587,16 +1587,7 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     )
     retrieval_query = f"{ticker} {prior_user_questions} {question}".strip()[:4000]
 
-    step_started = time.perf_counter()
-    keyword_results = await _run_brain_step(
-        "Keyword brain search",
-        store.search,
-        retrieval_query,
-        limit=payload.limit,
-        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
-    )
-    timings["keywordSearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
-
+    keyword_results = []
     semantic_results = []
     if payload.useSemantic:
         step_started = time.perf_counter()
@@ -1620,22 +1611,27 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
             semantic_results = []
         timings["semanticSearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
+    if not semantic_results:
+        step_started = time.perf_counter()
+        keyword_results = await _run_brain_step(
+            "Keyword brain search",
+            store.search,
+            retrieval_query,
+            limit=payload.limit,
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+        timings["keywordSearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
+    else:
+        timings["keywordSearchMs"] = 0.0
+
     step_started = time.perf_counter()
     memory_results = await _run_brain_step(
         "Memory search",
         store.list_memories,
         query=ticker,
-        limit=payload.limit,
+        limit=min(payload.limit, 3),
         timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
     )
-    if not memory_results:
-        memory_results = await _run_brain_step(
-            "Memory search",
-            store.list_memories,
-            query=question,
-            limit=min(payload.limit, 6),
-            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
-        )
     timings["memorySearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
     context_items = []
