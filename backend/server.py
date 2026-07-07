@@ -88,7 +88,7 @@ def _env_float(name: str, default: float) -> float:
 
 
 BRAIN_SEARCH_TIMEOUT_SECONDS = _env_float("BRAIN_SEARCH_TIMEOUT_SECONDS", 18.0)
-BRAIN_ANALYSIS_TIMEOUT_SECONDS = _env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 60.0)
+BRAIN_ANALYSIS_TIMEOUT_SECONDS = _env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 8.0)
 BRAIN_INDEX_TIMEOUT_SECONDS = _env_float("BRAIN_INDEX_TIMEOUT_SECONDS", 240.0)
 
 embedding_backfill_job: dict[str, Any] = {
@@ -1700,7 +1700,7 @@ Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per sect
             client.generate_text,
             prompt,
             temperature=0.2,
-            max_output_tokens=1200,
+            max_output_tokens=850,
             timeout=BRAIN_ANALYSIS_TIMEOUT_SECONDS,
         )
     except Exception as e:
