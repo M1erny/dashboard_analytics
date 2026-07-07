@@ -1459,10 +1459,10 @@ def _expand_semantic_hits_into_sources(
     hits: list[dict[str, Any]],
     *,
     max_sources: int = 2,
-    window: int = 4,
-    max_source_chunks: int = 80,
-    max_chunks_per_source: int = 10,
-    max_chars_per_chunk: int = 900,
+    window: int = 1,
+    max_source_chunks: int = 24,
+    max_chunks_per_source: int = 4,
+    max_chars_per_chunk: int = 550,
 ) -> list[dict[str, Any]]:
     expanded: list[dict[str, Any]] = []
     source_ids: list[int] = []
@@ -1694,14 +1694,16 @@ Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per sect
 """.strip()
 
     step_started = time.perf_counter()
+    generation_timeout = min(BRAIN_ANALYSIS_TIMEOUT_SECONDS, 7.0)
     try:
         answer = await _run_brain_step(
             "Gemini analysis",
             client.generate_text,
             prompt,
             temperature=0.2,
-            max_output_tokens=850,
-            timeout=BRAIN_ANALYSIS_TIMEOUT_SECONDS,
+            max_output_tokens=700,
+            timeout_seconds=generation_timeout,
+            timeout=generation_timeout + 1.0,
         )
     except Exception as e:
         timings["generationError"] = _public_exception_reason(e)[:300]

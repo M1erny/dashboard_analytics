@@ -144,6 +144,7 @@ class GeminiClient:
         *,
         temperature: float = 0.25,
         max_output_tokens: int = 900,
+        timeout_seconds: float | None = None,
     ) -> str:
         api_key = self._require_key()
         clean_prompt = (prompt or "").strip()
@@ -168,11 +169,12 @@ class GeminiClient:
             "generationConfig": generation_config,
         }
 
-        with httpx.Client(timeout=self.request_timeout) as client:
+        request_timeout = timeout_seconds or self.request_timeout
+        with httpx.Client(timeout=request_timeout) as client:
             try:
                 response = client.post(url, params={"key": api_key}, json=payload)
             except httpx.TimeoutException as exc:
-                raise RuntimeError(f"Gemini request timed out after {self.request_timeout:.0f}s") from exc
+                raise RuntimeError(f"Gemini request timed out after {request_timeout:.0f}s") from exc
 
             if (
                 response.status_code == 400

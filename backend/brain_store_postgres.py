@@ -70,6 +70,55 @@ class PostgresBrainStore:
     storage_label = "postgres_pgvector"
     search_label = "postgres_full_text"
     vector_search_label = "pgvector_cosine"
+    search_stopwords = {
+        "about",
+        "again",
+        "against",
+        "also",
+        "and",
+        "answer",
+        "are",
+        "brain",
+        "can",
+        "could",
+        "does",
+        "for",
+        "from",
+        "have",
+        "how",
+        "into",
+        "its",
+        "just",
+        "like",
+        "look",
+        "make",
+        "might",
+        "more",
+        "most",
+        "must",
+        "my",
+        "need",
+        "needs",
+        "not",
+        "our",
+        "question",
+        "say",
+        "should",
+        "show",
+        "that",
+        "the",
+        "their",
+        "this",
+        "through",
+        "using",
+        "what",
+        "when",
+        "where",
+        "which",
+        "with",
+        "would",
+        "your",
+    }
 
     def __init__(self, database_url: str | None = None):
         self.database_url = self._normalize_database_url(
@@ -333,7 +382,11 @@ class PostgresBrainStore:
         if not query:
             return None
         tokens = re.findall(r"[\w]+", query.lower(), flags=re.UNICODE)
-        tokens = [token for token in tokens if len(token) > 1]
+        tokens = [
+            token
+            for token in tokens
+            if len(token) > 1 and token not in PostgresBrainStore.search_stopwords
+        ]
         if not tokens:
             return None
         joiner = " & " if operator == "&" else " | "
