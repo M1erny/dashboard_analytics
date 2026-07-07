@@ -332,6 +332,13 @@ class PostgresBrainStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_hash ON chunks(content_hash)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_embedding_model ON chunks(embedding_model)")
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chunks_missing_embedding_order
+                ON chunks(source_id, ordinal)
+                WHERE embedding IS NULL
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_theses_company ON theses(company)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_index_search ON brain_index USING GIN(search_vector)")
