@@ -193,6 +193,7 @@ type BrainAnalysisResponse = {
         keywordSearchMs?: number;
         memorySearchMs?: number;
         semanticError?: string;
+        generationError?: string;
     };
     context?: BrainAnalysisContext;
 };
@@ -276,7 +277,15 @@ const compactProviderError = (error: string | undefined) => {
     if (/http 403|forbidden/i.test(normalized)) {
         return 'Google AI rejected the request (403). The Render AI key is present but not accepted; replace it with a valid Google AI Studio key.';
     }
-    if (/timed out/i.test(normalized)) return 'Embedding provider timed out. Try again after Render and Google are stable.';
+    if (/timed out/i.test(normalized)) {
+        if (/semantic|embedding|vector/i.test(normalized)) {
+            return 'Semantic embedding timed out; keyword search will still be used.';
+        }
+        if (/gemini|analysis|generation|answer/i.test(normalized)) {
+            return 'Gemini answer timed out; retrieved sources are still shown when available.';
+        }
+        return 'Brain request timed out. Try again after Render and Google are stable.';
+    }
     return normalized.slice(0, 220);
 };
 
@@ -339,7 +348,7 @@ const buildAnswerSources = (context?: BrainAnalysisContext | null): AnswerSource
             excerpt: shortExcerpt(item.body),
             score: item.score ?? item.rank,
             source,
-            path: source?.localPath ?? source?.relativePath,
+            path: source?.webUrl ? undefined : source?.relativePath,
             webUrl: source?.webUrl,
             tone: 'retrieved',
         });
@@ -362,7 +371,7 @@ const buildAnswerSources = (context?: BrainAnalysisContext | null): AnswerSource
             detail: [hitOrdinals, chunkCount].filter(Boolean).join(' · '),
             excerpt: shortExcerpt(chunks.find(chunk => chunk.body)?.body),
             source,
-            path: source?.localPath ?? source?.relativePath,
+            path: source?.webUrl ? undefined : source?.relativePath,
             webUrl: source?.webUrl,
             tone: 'expanded',
         });
@@ -1025,7 +1034,13 @@ export const InvestmentBrain: React.FC = () => {
             const generationSeconds = typeof payload.timings?.generationMs === 'number'
                 ? `, Gemini ${(payload.timings.generationMs / 1000).toFixed(1)}s`
                 : '';
-            setAnalysisMessage(`${payload.model} with ${payload.embeddingModel}${totalSeconds}${generationSeconds}`);
+            const semanticFallback = payload.timings?.semanticError ? 'keyword fallback; ' : '';
+            const generationFallback = payload.timings?.generationError
+                ? `sources retrieved; ${compactProviderError(payload.timings.generationError).toLowerCase()}`
+                : '';
+            setAnalysisMessage(generationFallback
+                ? generationFallback
+                : `${semanticFallback}${payload.model} with ${payload.embeddingModel}${totalSeconds}${generationSeconds}`);
         } catch (error) {
             const message = isAbortError(error)
                 ? 'Ask Brain timed out. Try again after Render finishes waking up, or narrow the question.'
@@ -1540,7 +1555,7 @@ export const InvestmentBrain: React.FC = () => {
                                 <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
                                     {searchResults.map(result => {
                                         const sourceName = sourceDisplayName(result);
-                                        const sourcePath = result.source?.localPath || result.source?.relativePath || '';
+                                        const sourcePath = result.source?.webUrl ? '' : (result.source?.relativePath || '');
                                         return (
                                             <article key={`${result.entityType}-${result.entityId}`} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
                                                 <div className="flex items-start justify-between gap-3">

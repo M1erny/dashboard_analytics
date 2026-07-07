@@ -170,8 +170,17 @@ def _clean_public_error(error: Exception | str) -> str:
     return clean[:500]
 
 
+def _public_exception_reason(error: Exception | str) -> str:
+    if isinstance(error, HTTPException):
+        detail = error.detail
+        if isinstance(detail, dict):
+            detail = " ".join(str(value) for value in detail.values() if value)
+        return _clean_public_error(str(detail))
+    return _clean_public_error(error)
+
+
 def _semantic_error_detail(error: Exception | str) -> dict[str, str]:
-    reason = _clean_public_error(error)
+    reason = _public_exception_reason(error)
     lower_reason = reason.lower()
     if "http 403" in lower_reason or "forbidden" in lower_reason:
         return {
@@ -187,7 +196,7 @@ def _semantic_error_detail(error: Exception | str) -> dict[str, str]:
 
 
 def _generation_error_detail(error: Exception | str) -> dict[str, str]:
-    reason = _clean_public_error(error)
+    reason = _public_exception_reason(error)
     lower_reason = reason.lower()
     if "http 403" in lower_reason or "forbidden" in lower_reason:
         return {
@@ -1367,6 +1376,64 @@ def _format_context_block(items: list[dict], *, max_chars: int = 1000) -> str:
     return "\n\n".join(blocks)
 
 
+def _context_excerpt(item: dict[str, Any], *, max_chars: int = 360) -> str:
+    body = re.sub(r"\s+", " ", str(item.get("body") or "")).strip()
+    if len(body) <= max_chars:
+        return body
+    return body[: max_chars - 3].rstrip() + "..."
+
+
+def _format_retrieval_fallback_answer(
+    *,
+    error: Exception | str,
+    memory_results: list[dict[str, Any]],
+    context_items: list[dict[str, Any]],
+    deep_sources: list[dict[str, Any]],
+) -> str:
+    reason = _public_exception_reason(error) or "Gemini did not return an answer in time."
+    lines = [
+        "Gemini timed out before writing the final analysis, but I did retrieve brain context.",
+        "",
+        "1. Retrieved evidence",
+    ]
+
+    evidence_lines: list[str] = []
+    for item in context_items[:4]:
+        source = item.get("source") or {}
+        source_title = source.get("title") or item.get("title") or "Untitled source"
+        excerpt = _context_excerpt(item)
+        if excerpt:
+            evidence_lines.append(f"- {source_title}: {excerpt}")
+
+    if not evidence_lines:
+        for source_item in deep_sources[:2]:
+            source = source_item.get("source") or {}
+            source_title = source.get("title") or f"Source {source_item.get('sourceId')}"
+            first_chunk = next((chunk for chunk in source_item.get("chunks", []) if chunk.get("body")), {})
+            excerpt = _context_excerpt(first_chunk)
+            if excerpt:
+                evidence_lines.append(f"- {source_title}: {excerpt}")
+
+    if evidence_lines:
+        lines.extend(evidence_lines)
+    else:
+        lines.append("- No source excerpt was available from the retrieval step.")
+
+    if memory_results:
+        lines.extend(["", "2. Matching memory"])
+        for memory in memory_results[:2]:
+            excerpt = _context_excerpt(memory, max_chars=260)
+            lines.append(f"- {memory.get('title') or 'Memory'}: {excerpt}")
+
+    lines.extend([
+        "",
+        "3. What happened",
+        f"- {reason}",
+        "- Retry the same question; if Google is slow again, the retrieved sources below are still the right place to inspect.",
+    ])
+    return "\n".join(lines)
+
+
 def _source_id_from_context(item: dict[str, Any]) -> int | None:
     value = item.get("sourceId") or item.get("source_id")
     if value is None and item.get("entityType") == "source":
@@ -1626,10 +1693,28 @@ Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per sect
             max_output_tokens=1200,
             timeout=BRAIN_ANALYSIS_TIMEOUT_SECONDS,
         )
-    except HTTPException:
-        raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail=_generation_error_detail(e))
+        timings["generationError"] = _public_exception_reason(e)[:300]
+        timings["generationMs"] = round((time.perf_counter() - step_started) * 1000, 1)
+        timings["totalMs"] = round((time.perf_counter() - started_at) * 1000, 1)
+        return {
+            "ticker": ticker,
+            "question": question,
+            "model": client.generation_model,
+            "embeddingModel": client.embedding_model,
+            "answer": _format_retrieval_fallback_answer(
+                error=e,
+                memory_results=memory_results,
+                context_items=context_items,
+                deep_sources=deep_sources,
+            ),
+            "timings": timings,
+            "context": {
+                "memories": memory_results,
+                "retrieved": context_items,
+                "deepSources": deep_sources,
+            },
+        }
 
     timings["generationMs"] = round((time.perf_counter() - step_started) * 1000, 1)
     timings["totalMs"] = round((time.perf_counter() - started_at) * 1000, 1)
