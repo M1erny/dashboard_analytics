@@ -390,11 +390,26 @@ const formatStorage = (storage?: string) => {
     return 'Not connected';
 };
 
+const formatModelLabel = (model?: string) => {
+    if (!model) return 'Gemini';
+    return model
+        .replace(/^gemini-/i, 'Gemini ')
+        .replace(/-/g, ' ')
+        .replace(/\bflash lite\b/i, 'Flash Lite');
+};
+
 const formatEmbeddingCoverage = (stats?: EmbeddingStats | null) => {
     const total = stats?.total ?? 0;
     const embedded = stats?.embedded ?? 0;
     if (!total) return '0 chunks embedded';
     return `${embedded}/${total} chunks embedded`;
+};
+
+const formatEmbeddingPercent = (stats?: EmbeddingStats | null) => {
+    const total = stats?.total ?? 0;
+    const embedded = stats?.embedded ?? 0;
+    if (!total) return '0%';
+    return `${Math.round((embedded / total) * 100)}%`;
 };
 
 const formatSearchDetail = (status: BrainStatus | null, stats?: EmbeddingStats | null) => {
@@ -425,9 +440,9 @@ export const InvestmentBrain: React.FC = () => {
     const [isSearching, setIsSearching] = useState(false);
     const [backendCounts, setBackendCounts] = useState<BrainCounts | null>(null);
     const [embeddingStats, setEmbeddingStats] = useState<EmbeddingStats | null>(null);
-    const [sourceTitle, setSourceTitle] = useState('Source note');
-    const [sourceBody, setSourceBody] = useState('Paste a memo, transcript excerpt, book passage, framework, or article note here. The brain will store it as a source, split it into chunks, and make it searchable.');
-    const [sourceTags, setSourceTags] = useState('framework, source');
+    const [sourceTitle, setSourceTitle] = useState('');
+    const [sourceBody, setSourceBody] = useState('');
+    const [sourceTags, setSourceTags] = useState('');
     const [ingestMessage, setIngestMessage] = useState('');
     const [isIngesting, setIsIngesting] = useState(false);
     const [driveStatus, setDriveStatus] = useState<DriveIndexerStatus | null>(null);
@@ -839,6 +854,11 @@ export const InvestmentBrain: React.FC = () => {
     const driveConnected = Boolean(driveStatus?.connected);
     const driveConfigured = Boolean(driveStatus?.configured);
     const driveAuthReady = Boolean(driveStatus?.authConfigured);
+    const totalChunks = embeddingStats?.total ?? counts.chunks ?? 0;
+    const embeddedChunks = embeddingStats?.embedded ?? 0;
+    const missingChunks = embeddingStats?.missing ?? Math.max(0, totalChunks - embeddedChunks);
+    const embeddingPercent = formatEmbeddingPercent(embeddingStats);
+    const libraryReady = totalChunks > 0 && missingChunks <= 0;
     const copySourcePath = async (path: string) => {
         try {
             await navigator.clipboard.writeText(path);
@@ -866,7 +886,7 @@ export const InvestmentBrain: React.FC = () => {
         : driveConfigured && driveAuthReady && !driveConnected
             ? {
                 title: 'Connect Google Drive',
-                detail: 'Authorize the Drive folder once, then this page can sync your research library.',
+                detail: 'Authorize Drive once to sync the research library.',
                 label: 'Connect Drive',
                 Icon: ExternalLink,
                 onClick: connectGoogleDrive,
@@ -875,25 +895,27 @@ export const InvestmentBrain: React.FC = () => {
             : driveConnected && (counts.chunks ?? 0) === 0
                 ? {
                     title: 'Sync your Drive library',
-                    detail: 'Index supported PDFs, docs, notes, and text files into Supabase.',
+                    detail: 'Index supported PDFs, docs, notes, and text files.',
                     label: isDriveSyncing ? 'Syncing' : 'Sync Drive',
                     Icon: FolderSync,
                     onClick: runDriveIndex,
                     disabled: isDriveSyncing,
                 }
-                : (counts.chunks ?? 0) > 0
+                : (counts.chunks ?? 0) > 0 && missingChunks > 0
                     ? {
-                        title: 'Keep semantic search fresh',
-                        detail: 'Embed missing chunks so the brain can retrieve ideas by meaning.',
+                        title: `${missingChunks.toLocaleString()} chunks need embeddings`,
+                        detail: `${formatEmbeddingCoverage(embeddingStats)}. Finish the semantic layer before relying on retrieval.`,
                         label: isEmbedding ? 'Embedding' : 'Embed Missing',
                         Icon: Sparkles,
                         onClick: backfillEmbeddings,
                         disabled: isEmbedding,
                     }
                     : {
-                        title: 'Start with one source',
-                        detail: 'Paste a note or connect Drive to seed the brain.',
-                        label: 'Ready',
+                        title: libraryReady ? 'Research library ready' : 'Start with one source',
+                        detail: libraryReady
+                            ? `${(counts.sources ?? 0).toLocaleString()} sources and ${totalChunks.toLocaleString()} embedded chunks are queryable.`
+                            : 'Paste a note or connect Drive to seed the library.',
+                        label: libraryReady ? 'Ready' : 'Waiting',
                         Icon: CheckCircle2,
                         onClick: undefined,
                         disabled: true,
@@ -902,60 +924,61 @@ export const InvestmentBrain: React.FC = () => {
     const statusCards = [
         {
             label: 'Storage',
-            value: storageLabel,
-            detail: formatSearchDetail(brainStatus, embeddingStats),
+            value: brainStatus?.storage === 'postgres_pgvector' ? 'Supabase' : storageLabel,
+            detail: brainStatus?.storage === 'postgres_pgvector' ? 'vector store online' : formatSearchDetail(brainStatus, embeddingStats),
             Icon: Database,
             className: brainStatus?.storage === 'postgres_pgvector' ? 'text-emerald-300' : 'text-amber-300',
         },
         {
             label: 'AI',
-            value: llmStatus?.configured ? 'Gemini configured' : 'Missing key',
-            detail: llmStatus?.configured ? `${llmStatus.embeddingModel ?? 'embedding model'}; provider not health-checked` : 'add Google AI key',
+            value: llmStatus?.configured ? formatModelLabel(llmStatus.generationModel) : 'Missing key',
+            detail: llmStatus?.configured ? llmStatus.embeddingModel ?? 'embedding model' : 'add Google AI key',
             Icon: Sparkles,
             className: llmStatus?.configured ? 'text-violet-300' : 'text-amber-300',
         },
         {
             label: 'Drive',
             value: driveConnected ? 'Connected' : driveAuthReady ? 'Needs auth' : 'Not connected',
-            detail: driveStatus?.folderId ? 'folder configured' : 'folder missing',
+            detail: driveStatus?.folderId ? 'folder linked' : 'folder missing',
             Icon: Cloud,
             className: driveConnected ? 'text-emerald-300' : driveAuthReady ? 'text-amber-300' : 'text-gray-400',
         },
         {
             label: 'Indexed',
             value: `${counts.sources ?? 0} sources`,
-            detail: formatEmbeddingCoverage(embeddingStats),
+            detail: `${embeddingPercent} embedded`,
             Icon: Layers3,
             className: 'text-sky-300',
+            progress: totalChunks ? Math.min(100, Math.round((embeddedChunks / totalChunks) * 100)) : 0,
         },
     ];
 
     const latestIndexResults = driveResults;
 
     return (
-        <div className="min-h-screen bg-[#05070d] text-foreground">
+        <div className="min-h-screen bg-[#06080d] text-foreground">
             <div className="animated-top-bar h-[2px] w-full" />
 
-            <main className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6 lg:px-8">
-                <header className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <main className="mx-auto max-w-[1560px] px-4 py-4 sm:px-6 lg:px-8">
+                <header className="flex flex-col gap-4 border-b border-white/[0.07] pb-4 lg:flex-row lg:items-end lg:justify-between">
                     <div className="min-w-0">
                         <a
                             href="/"
-                            className="inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.12em] text-gray-500 transition-colors hover:text-gray-300"
+                            className="inline-flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500 transition-colors hover:text-slate-300"
                         >
                             <ArrowLeft className="h-3.5 w-3.5" />
                             Dashboard
                         </a>
-                        <div className="mt-4 flex items-start gap-3">
-                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10">
-                                <BrainCircuit className="h-6 w-6 text-emerald-300" />
+                        <div className="mt-3 flex items-center gap-3">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-emerald-400/20 bg-emerald-400/10">
+                                <BrainCircuit className="h-5 w-5 text-emerald-300" />
                             </div>
                             <div className="min-w-0">
-                                <h1 className="text-3xl font-black tracking-tight text-white md:text-4xl">
+                                <h1 className="text-2xl font-black tracking-normal text-white md:text-3xl">
                                     Investment Brain
                                 </h1>
-                                <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-400">
-                                    Search your sources, save your reasoning, and ask company questions against your own frameworks.
+                                <p className="mt-1 max-w-3xl text-sm leading-5 text-slate-400">
+                                    Semantic equity research cockpit for source retrieval, file-backed questions, and company work.
                                 </p>
                             </div>
                         </div>
@@ -963,43 +986,54 @@ export const InvestmentBrain: React.FC = () => {
 
                     <div className="flex flex-wrap gap-2">
                         <span className={cn(
-                            'inline-flex min-h-[34px] items-center rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em]',
+                            'inline-flex min-h-[32px] items-center rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em]',
                             backendReady ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
                         )}>
                             {backendReady ? 'Backend ready' : backendState === 'checking' ? 'Checking' : 'Offline'}
                         </span>
-                        <span className="inline-flex min-h-[34px] items-center rounded-lg border border-white/10 bg-white/[0.04] px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-gray-300">
+                        <span className="inline-flex min-h-[32px] items-center rounded-md border border-white/10 bg-white/[0.035] px-3 text-[10px] font-bold uppercase tracking-[0.1em] text-slate-300">
                             {storageLabel}
                         </span>
                     </div>
                 </header>
 
-                <section className="mt-5 grid grid-cols-1 gap-3 lg:grid-cols-4">
+                <section className="mt-4 grid grid-cols-2 gap-2 lg:grid-cols-4">
                     {statusCards.map(item => {
                         const Icon = item.Icon;
                         return (
-                            <div key={item.label} className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-4">
-                                <div className="flex items-center justify-between gap-3">
-                                    <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-gray-500">{item.label}</span>
+                            <div key={item.label} className="min-w-0 rounded-lg border border-white/[0.08] bg-[#0b1019]/90 px-3 py-3">
+                                <div className="flex items-center justify-between gap-2">
+                                    <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">{item.label}</span>
                                     <Icon className={cn('h-4 w-4', item.className)} />
                                 </div>
-                                <p className="mt-3 truncate text-lg font-black text-white">{item.value}</p>
-                                <p className="mt-1 truncate text-xs text-gray-500">{item.detail}</p>
+                                <p className="mt-2 break-words text-sm font-black leading-5 text-white sm:text-base">{item.value}</p>
+                                <p className="mt-0.5 truncate text-[11px] text-slate-500">{item.detail}</p>
+                                {'progress' in item && (
+                                    <div className="mt-2 h-1 overflow-hidden rounded-full bg-white/[0.06]">
+                                        <div
+                                            className="h-full rounded-full bg-cyan-300/80"
+                                            style={{ width: `${item.progress}%` }}
+                                        />
+                                    </div>
+                                )}
                             </div>
                         );
                     })}
                 </section>
 
-                <section className="mt-4 rounded-xl border border-white/[0.08] bg-gradient-to-r from-slate-900/85 to-slate-950/95 p-4 sm:p-5">
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+                <section className="mt-3 rounded-lg border border-white/[0.08] bg-[#0a1020]/95 p-3 sm:p-4">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                         <div className="flex min-w-0 items-start gap-3">
-                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-emerald-500/20 bg-emerald-500/10">
-                                <nextAction.Icon className="h-5 w-5 text-emerald-300" />
+                            <div className={cn(
+                                'flex h-9 w-9 shrink-0 items-center justify-center rounded-md border',
+                                libraryReady ? 'border-emerald-500/20 bg-emerald-500/10' : 'border-cyan-500/20 bg-cyan-500/10'
+                            )}>
+                                <nextAction.Icon className={cn('h-[18px] w-[18px]', libraryReady ? 'text-emerald-300' : 'text-cyan-300')} />
                             </div>
                             <div className="min-w-0">
-                                <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-gray-500">Next action</p>
-                                <h2 className="mt-1 text-xl font-black text-white">{nextAction.title}</h2>
-                                <p className="mt-1 text-sm leading-6 text-gray-400">{nextAction.detail}</p>
+                                <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Readiness</p>
+                                <h2 className="mt-0.5 text-lg font-black text-white">{nextAction.title}</h2>
+                                <p className="mt-0.5 text-sm leading-5 text-slate-400">{nextAction.detail}</p>
                                 {(driveMessage || embeddingMessage) && (
                                     <p className="mt-2 text-xs font-semibold text-emerald-100/80">
                                         {driveMessage || embeddingMessage}
@@ -1013,7 +1047,7 @@ export const InvestmentBrain: React.FC = () => {
                                     href={driveStatus.folderUrl}
                                     target="_blank"
                                     rel="noreferrer"
-                                    className="inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-4 text-xs font-bold uppercase tracking-[0.1em] text-gray-300 transition-colors hover:bg-white/[0.07]"
+                                    className="inline-flex min-h-[38px] items-center justify-center gap-2 rounded-md border border-white/10 bg-white/[0.035] px-4 text-xs font-bold uppercase tracking-[0.1em] text-slate-300 transition-colors hover:bg-white/[0.07]"
                                 >
                                     <ExternalLink className="h-4 w-4" />
                                     Drive
@@ -1024,9 +1058,9 @@ export const InvestmentBrain: React.FC = () => {
                                 onClick={nextAction.onClick}
                                 disabled={nextAction.disabled}
                                 className={cn(
-                                    'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
+                                    'inline-flex min-h-[38px] items-center justify-center gap-2 rounded-md border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
                                     nextAction.disabled
-                                        ? 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                        ? 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
                                         : 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
                                 )}
                             >
@@ -1037,42 +1071,41 @@ export const InvestmentBrain: React.FC = () => {
                     </div>
                 </section>
 
-                <section className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.08fr)_minmax(360px,0.92fr)]">
-                    <div className="space-y-5">
-                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
-                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                                <div>
-                                    <div className="flex items-center gap-2">
-                                        <Target className="h-4 w-4 text-rose-300" />
-                                        <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Ask The Brain</h2>
-                                    </div>
-                                    <p className="mt-2 text-sm leading-6 text-gray-500">
-                                        Uses indexed Drive/source chunks and semantic retrieval to answer in your investing style.
-                                    </p>
+                <section className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.18fr)_380px]">
+                    <div className="space-y-4">
+                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-3 sm:p-4">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="flex items-center gap-2">
+                                    <Target className="h-4 w-4 text-rose-300" />
+                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Company Query</h2>
                                 </div>
                                 <span className={cn(
-                                    'inline-flex w-fit rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                    'inline-flex w-fit rounded-md border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
                                     llmStatus?.configured ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
                                 )}>
-                                    {llmStatus?.configured ? 'Gemini configured' : 'API key missing'}
+                                    {llmStatus?.configured ? llmStatus.generationModel ?? 'Gemini ready' : 'API key missing'}
                                 </span>
                             </div>
 
-                            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[120px_1fr_auto]">
+                            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-[96px_minmax(0,1fr)_132px]">
                                 <input
                                     value={analysisTicker}
                                     onChange={event => setAnalysisTicker(event.target.value.toUpperCase())}
-                                    className="h-11 rounded-lg border border-white/10 bg-white/[0.04] px-3 font-mono text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-rose-500/40"
+                                    className="h-10 rounded-md border border-white/10 bg-white/[0.035] px-3 font-mono text-sm font-bold text-white outline-none transition-colors placeholder:text-slate-700 focus:border-rose-500/40"
                                     placeholder="META"
                                     aria-label="Ticker"
                                 />
-                                <input
+                                <textarea
                                     value={analysisQuestion}
                                     onChange={event => setAnalysisQuestion(event.target.value)}
                                     onKeyDown={event => {
-                                        if (event.key === 'Enter') void runCompanyAnalysis();
+                                        if (event.key === 'Enter' && !event.shiftKey) {
+                                            event.preventDefault();
+                                            void runCompanyAnalysis();
+                                        }
                                     }}
-                                    className="h-11 min-w-0 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-rose-500/40"
+                                    rows={3}
+                                    className="min-h-[96px] min-w-0 resize-none rounded-md border border-white/10 bg-white/[0.035] px-3 py-2 text-sm leading-5 text-white outline-none transition-colors placeholder:text-slate-700 focus:border-rose-500/40 md:h-10 md:min-h-10"
                                     placeholder="Moat, risks, valuation lens, what changes my mind..."
                                     aria-label="Analysis question"
                                 />
@@ -1081,10 +1114,10 @@ export const InvestmentBrain: React.FC = () => {
                                     onClick={() => void runCompanyAnalysis()}
                                     disabled={isAnalyzing || !backendReady}
                                     className={cn(
-                                        'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
+                                        'inline-flex min-h-10 items-center justify-center gap-2 rounded-md border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
                                         backendReady
                                             ? 'border-rose-500/30 bg-rose-500/15 text-rose-100 hover:bg-rose-500/20'
-                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                            : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
                                     )}
                                 >
                                     <Sparkles className="h-4 w-4" />
@@ -1096,16 +1129,16 @@ export const InvestmentBrain: React.FC = () => {
                                 <div
                                     ref={analysisOutputRef}
                                     aria-live="polite"
-                                    className="mt-4 rounded-xl border border-rose-500/20 bg-rose-950/10 p-3 sm:p-4"
+                                    className="mt-3 rounded-lg border border-white/[0.08] bg-black/20 p-3"
                                 >
                                     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                         <div className="flex items-center gap-2">
-                                            <MessageSquare className="h-4 w-4 text-rose-300" />
-                                            <h3 className="text-[11px] font-bold uppercase tracking-[0.14em] text-rose-100">Brain Thread</h3>
+                                            <MessageSquare className="h-4 w-4 text-slate-300" />
+                                            <h3 className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-300">Thread</h3>
                                         </div>
                                         <div className="flex flex-wrap gap-2">
                                             {analysisMessage && (
-                                                <span className="w-fit rounded border border-white/[0.08] bg-black/20 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-gray-400">
+                                                <span className="w-fit rounded-md border border-white/[0.08] bg-white/[0.025] px-2 py-1 text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500">
                                                     {analysisMessage}
                                                 </span>
                                             )}
@@ -1113,7 +1146,7 @@ export const InvestmentBrain: React.FC = () => {
                                                 <button
                                                     type="button"
                                                     onClick={resetBrainThread}
-                                                    className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.08]"
+                                                    className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/[0.035] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-300 transition-colors hover:bg-white/[0.08]"
                                                 >
                                                     <RotateCcw className="h-3 w-3" />
                                                     New
@@ -1123,15 +1156,15 @@ export const InvestmentBrain: React.FC = () => {
                                     </div>
 
                                     {analysisThread.length > 0 ? (
-                                        <div className="mt-3 max-h-[540px] space-y-3 overflow-auto rounded-lg border border-white/[0.08] bg-black/25 p-3">
+                                        <div className="mt-3 max-h-[560px] space-y-2 overflow-auto rounded-md border border-white/[0.08] bg-[#05080e] p-2">
                                             {analysisThread.map(message => (
                                                 <article
                                                     key={message.id}
                                                     className={cn(
-                                                        'rounded-lg border p-3',
+                                                        'rounded-md border p-3',
                                                         message.role === 'user'
                                                             ? 'ml-auto max-w-[92%] border-sky-500/15 bg-sky-500/10'
-                                                            : 'mr-auto max-w-[96%] border-rose-500/15 bg-rose-500/10'
+                                                            : 'mr-auto max-w-[96%] border-white/[0.08] bg-white/[0.035]'
                                                     )}
                                                 >
                                                     <div className="mb-2 flex items-center gap-2">
@@ -1142,40 +1175,40 @@ export const InvestmentBrain: React.FC = () => {
                                                         )}
                                                         <span className={cn(
                                                             'text-[10px] font-bold uppercase tracking-[0.12em]',
-                                                            message.role === 'user' ? 'text-sky-200' : 'text-rose-100'
+                                                            message.role === 'user' ? 'text-sky-200' : 'text-slate-300'
                                                         )}>
-                                                            {message.role === 'user' ? 'You' : 'Brain'}
+                                                            {message.role === 'user' ? 'Query' : 'Answer'}
                                                         </span>
                                                     </div>
-                                                    <div className="whitespace-pre-wrap break-words text-sm leading-6 text-gray-100">
+                                                    <div className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-100">
                                                         {message.content}
                                                     </div>
                                                 </article>
                                             ))}
                                             {isAnalyzing && (
-                                                <article className="mr-auto max-w-[96%] rounded-lg border border-rose-500/15 bg-rose-500/10 p-3">
+                                                <article className="mr-auto max-w-[96%] rounded-md border border-white/[0.08] bg-white/[0.035] p-3">
                                                     <div className="mb-2 flex items-center gap-2">
-                                                        <BrainCircuit className="h-3.5 w-3.5 text-rose-300" />
-                                                        <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-rose-100">Brain</span>
+                                                        <BrainCircuit className="h-3.5 w-3.5 text-slate-300" />
+                                                        <span className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-300">Answer</span>
                                                     </div>
-                                                    <p className="text-sm leading-6 text-gray-400">Retrieving context and preparing the answer here.</p>
+                                                    <p className="text-sm leading-6 text-slate-500">Retrieving context and preparing the answer.</p>
                                                 </article>
                                             )}
                                         </div>
                                     ) : (
-                                        <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/20 p-4 text-sm leading-6 text-gray-400">
-                                            Retrieving context and preparing the answer here.
+                                        <div className="mt-3 rounded-md border border-white/[0.08] bg-black/20 p-4 text-sm leading-6 text-slate-500">
+                                            Retrieving context and preparing the answer.
                                         </div>
                                     )}
 
                                     {hasAssistantAnswer && (
-                                        <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/15 p-3">
+                                        <div className="mt-3 rounded-md border border-white/[0.08] bg-black/15 p-3">
                                             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                                 <div className="flex items-center gap-2">
                                                     <FileText className="h-4 w-4 text-sky-300" />
-                                                    <h3 className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-300">Sources Used</h3>
+                                                    <h3 className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-300">Sources</h3>
                                                 </div>
-                                                <span className="w-fit rounded border border-white/[0.08] bg-white/[0.03] px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em] text-gray-500">
+                                                <span className="w-fit rounded-md border border-white/[0.08] bg-white/[0.03] px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em] text-slate-500">
                                                     {answerSources.length ? `${answerSources.length} context item${answerSources.length === 1 ? '' : 's'}` : 'No retrieved source context'}
                                                 </span>
                                             </div>
@@ -1183,18 +1216,18 @@ export const InvestmentBrain: React.FC = () => {
                                             {answerSources.length > 0 ? (
                                                 <div className="mt-3 grid grid-cols-1 gap-2 xl:grid-cols-2">
                                                     {answerSources.map(source => (
-                                                        <article key={source.key} className="min-w-0 rounded-lg border border-white/[0.07] bg-white/[0.025] p-3">
+                                                        <article key={source.key} className="min-w-0 rounded-md border border-white/[0.07] bg-white/[0.025] p-3">
                                                             <div className="flex items-start justify-between gap-3">
                                                                 <div className="min-w-0">
                                                                     <div className="flex flex-wrap items-center gap-2">
                                                                         <span className={cn(
-                                                                            'rounded border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em]',
+                                                                            'rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em]',
                                                                             sourceToneClass[source.tone]
                                                                         )}>
                                                                             {source.marker}
                                                                         </span>
                                                                         {typeof source.score === 'number' && (
-                                                                            <span className="text-[10px] font-semibold text-gray-600">
+                                                                            <span className="text-[10px] font-semibold text-slate-600">
                                                                                 score {source.score.toFixed(3)}
                                                                             </span>
                                                                         )}
@@ -1214,7 +1247,7 @@ export const InvestmentBrain: React.FC = () => {
                                                                             href={source.webUrl}
                                                                             target="_blank"
                                                                             rel="noreferrer"
-                                                                            className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded border border-emerald-500/25 bg-emerald-500/10 px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-emerald-200 transition-colors hover:bg-emerald-500/20"
+                                                                            className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-emerald-200 transition-colors hover:bg-emerald-500/20"
                                                                         >
                                                                             <ExternalLink className="h-3 w-3" />
                                                                             Open
@@ -1224,7 +1257,7 @@ export const InvestmentBrain: React.FC = () => {
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => void copySourcePath(source.path ?? '')}
-                                                                            className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.08]"
+                                                                            className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/[0.035] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-300 transition-colors hover:bg-white/[0.08]"
                                                                         >
                                                                             <Copy className="h-3 w-3" />
                                                                             Path
@@ -1241,15 +1274,15 @@ export const InvestmentBrain: React.FC = () => {
                                                     ))}
                                                 </div>
                                             ) : (
-                                                <p className="mt-3 rounded-lg border border-white/[0.06] bg-white/[0.02] p-3 text-xs leading-5 text-gray-500">
-                                                    The model did not receive retrieved file context for this answer. Try a narrower question or wait for embeddings to finish.
+                                                <p className="mt-3 rounded-md border border-white/[0.06] bg-white/[0.02] p-3 text-xs leading-5 text-slate-500">
+                                                    No retrieved source context for this answer.
                                                 </p>
                                             )}
                                         </div>
                                     )}
 
                                     {hasAssistantAnswer && (
-                                        <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/15 p-3">
+                                        <div className="mt-3 rounded-md border border-white/[0.08] bg-black/15 p-3">
                                             <div className="grid grid-cols-1 gap-2 md:grid-cols-[1fr_auto]">
                                                 <textarea
                                                     value={followUpQuestion}
@@ -1261,7 +1294,7 @@ export const InvestmentBrain: React.FC = () => {
                                                         }
                                                     }}
                                                     rows={2}
-                                                    className="min-h-[54px] resize-none rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm leading-5 text-white outline-none transition-colors placeholder:text-gray-700 focus:border-rose-500/40"
+                                                    className="min-h-[52px] resize-none rounded-md border border-white/10 bg-white/[0.035] px-3 py-2 text-sm leading-5 text-white outline-none transition-colors placeholder:text-slate-700 focus:border-rose-500/40"
                                                     placeholder="Ask a follow-up in this thread..."
                                                     aria-label="Follow-up question"
                                                 />
@@ -1270,10 +1303,10 @@ export const InvestmentBrain: React.FC = () => {
                                                     onClick={() => void runCompanyAnalysis('follow-up')}
                                                     disabled={isAnalyzing || !backendReady || !followUpQuestion.trim()}
                                                     className={cn(
-                                                        'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors md:min-w-[132px]',
+                                                        'inline-flex min-h-[42px] items-center justify-center gap-2 rounded-md border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors md:min-w-[132px]',
                                                         backendReady && followUpQuestion.trim()
                                                             ? 'border-rose-500/30 bg-rose-500/15 text-rose-100 hover:bg-rose-500/20'
-                                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                                            : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
                                                     )}
                                                 >
                                                     <Send className="h-4 w-4" />
@@ -1286,32 +1319,27 @@ export const InvestmentBrain: React.FC = () => {
                             )}
                         </section>
 
-                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
-                            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                                <div>
-                                    <div className="flex items-center gap-2">
-                                        <Search className="h-4 w-4 text-sky-300" />
-                                        <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Search</h2>
-                                    </div>
-                                    <p className="mt-2 text-sm leading-6 text-gray-500">
-                                        Searches Supabase embeddings first, then keyword index if no vector match exists.
-                                    </p>
+                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-3 sm:p-4">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="flex items-center gap-2">
+                                    <Search className="h-4 w-4 text-sky-300" />
+                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Source Retrieval</h2>
                                 </div>
                                 {searchMessage && (
-                                    <span className="inline-flex w-fit rounded border border-sky-500/20 bg-sky-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-sky-300">
+                                    <span className="inline-flex w-fit rounded-md border border-sky-500/20 bg-sky-500/10 px-2 py-1 text-[10px] font-bold uppercase tracking-[0.1em] text-sky-300">
                                         {searchMessage}
                                     </span>
                                 )}
                             </div>
 
-                            <div className="mt-4 flex flex-col gap-3 md:flex-row">
+                            <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_118px]">
                                 <input
                                     value={searchQuery}
                                     onChange={event => setSearchQuery(event.target.value)}
                                     onKeyDown={event => {
                                         if (event.key === 'Enter') void runBackendSearch();
                                     }}
-                                    className="h-11 min-w-0 flex-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-sky-500/40"
+                                    className="h-10 min-w-0 rounded-md border border-white/10 bg-white/[0.035] px-3 text-sm text-white outline-none transition-colors placeholder:text-slate-700 focus:border-sky-500/40"
                                     placeholder="pricing power, AI infrastructure, pass reasons..."
                                 />
                                 <button
@@ -1319,10 +1347,10 @@ export const InvestmentBrain: React.FC = () => {
                                     onClick={runBackendSearch}
                                     disabled={isSearching || !backendReady}
                                     className={cn(
-                                        'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
+                                        'inline-flex min-h-10 items-center justify-center gap-2 rounded-md border px-4 text-xs font-bold uppercase tracking-[0.1em] transition-colors',
                                         backendReady
                                             ? 'border-sky-500/30 bg-sky-500/15 text-sky-200 hover:bg-sky-500/20'
-                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                            : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
                                     )}
                                 >
                                     <Search className="h-4 w-4" />
@@ -1331,15 +1359,15 @@ export const InvestmentBrain: React.FC = () => {
                             </div>
 
                             {searchResults.length > 0 && (
-                                <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                                <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
                                     {searchResults.map(result => {
                                         const sourceName = sourceDisplayName(result);
                                         const sourcePath = result.source?.webUrl ? '' : (result.source?.relativePath || '');
                                         return (
-                                            <article key={`${result.entityType}-${result.entityId}`} className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3">
+                                            <article key={`${result.entityType}-${result.entityId}`} className="rounded-md border border-white/[0.08] bg-white/[0.025] p-3">
                                                 <div className="flex items-start justify-between gap-3">
-                                                    <h3 className="min-w-0 text-sm font-black text-white">{result.title}</h3>
-                                                    <span className="shrink-0 rounded border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-sky-300">
+                                                    <h3 className="min-w-0 line-clamp-2 text-sm font-black leading-5 text-white">{result.title}</h3>
+                                                    <span className="shrink-0 rounded-md border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-sky-300">
                                                         {result.entityType}
                                                     </span>
                                                 </div>
@@ -1348,7 +1376,7 @@ export const InvestmentBrain: React.FC = () => {
                                                         <div className="min-w-0">
                                                             <p className="truncate text-[11px] font-bold text-slate-200">{sourceName}</p>
                                                             {result.source?.relativePath && (
-                                                                <p className="mt-0.5 truncate text-[10px] text-gray-600">{result.source.relativePath}</p>
+                                                                <p className="mt-0.5 truncate text-[10px] text-slate-600">{result.source.relativePath}</p>
                                                             )}
                                                         </div>
                                                         <div className="flex shrink-0 flex-wrap gap-1.5">
@@ -1357,7 +1385,7 @@ export const InvestmentBrain: React.FC = () => {
                                                                     href={result.source.webUrl}
                                                                     target="_blank"
                                                                     rel="noreferrer"
-                                                                    className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded border border-emerald-500/25 bg-emerald-500/10 px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-emerald-200 transition-colors hover:bg-emerald-500/20"
+                                                                    className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-emerald-200 transition-colors hover:bg-emerald-500/20"
                                                                 >
                                                                     <ExternalLink className="h-3 w-3" />
                                                                     Open
@@ -1367,7 +1395,7 @@ export const InvestmentBrain: React.FC = () => {
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => void copySourcePath(sourcePath)}
-                                                                    className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded border border-white/10 bg-white/[0.04] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-gray-300 transition-colors hover:bg-white/[0.08]"
+                                                                    className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/[0.035] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-300 transition-colors hover:bg-white/[0.08]"
                                                                 >
                                                                     <Copy className="h-3 w-3" />
                                                                     Path
@@ -1376,11 +1404,11 @@ export const InvestmentBrain: React.FC = () => {
                                                         </div>
                                                     </div>
                                                 )}
-                                                <p className="mt-2 line-clamp-3 text-xs leading-5 text-gray-400">{result.body}</p>
+                                                <p className="mt-2 line-clamp-3 text-xs leading-5 text-slate-400">{result.body}</p>
                                                 {result.tags.length > 0 && (
                                                     <div className="mt-3 flex flex-wrap gap-1.5">
                                                         {result.tags.slice(0, 5).map(tag => (
-                                                            <span key={tag} className="rounded border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[10px] font-semibold text-gray-500">
+                                                            <span key={tag} className="rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[10px] font-semibold text-slate-500">
                                                                 {tag}
                                                             </span>
                                                         ))}
@@ -1394,15 +1422,15 @@ export const InvestmentBrain: React.FC = () => {
                         </section>
                     </div>
 
-                    <aside className="space-y-5">
-                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                    <aside className="space-y-4">
+                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-3 sm:p-4">
                             <div className="flex items-center justify-between gap-3">
                                 <div className="flex items-center gap-2">
                                     <Cloud className="h-4 w-4 text-emerald-300" />
-                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Drive Library</h2>
+                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Drive Library</h2>
                                 </div>
                                 <span className={cn(
-                                    'rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                    'rounded-md border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
                                     driveConnected
                                         ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
                                         : driveAuthReady
@@ -1412,19 +1440,19 @@ export const InvestmentBrain: React.FC = () => {
                                     {driveConnected ? 'Connected' : driveAuthReady ? 'Needs auth' : 'Needs env'}
                                 </span>
                             </div>
-                            <p className="mt-3 text-xs leading-5 text-gray-500">
+                            <p className="mt-2 text-xs leading-5 text-slate-500">
                                 {formatDriveFolder(driveStatus)}
                             </p>
-                            <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                                 <button
                                     type="button"
                                     onClick={connectGoogleDrive}
                                     disabled={!backendReady || !driveAuthReady}
                                     className={cn(
-                                        'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                        'inline-flex min-h-9 items-center justify-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
                                         backendReady && driveAuthReady
                                             ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
-                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                            : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
                                     )}
                                 >
                                     <ExternalLink className="h-3.5 w-3.5" />
@@ -1435,10 +1463,10 @@ export const InvestmentBrain: React.FC = () => {
                                     onClick={runDriveIndex}
                                     disabled={isDriveSyncing || !backendReady || !driveConnected || !driveConfigured}
                                     className={cn(
-                                        'inline-flex min-h-[40px] items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                        'inline-flex min-h-9 items-center justify-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
                                         backendReady && driveConnected && driveConfigured
                                             ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
-                                            : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                            : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
                                     )}
                                 >
                                     <FolderSync className="h-3.5 w-3.5" />
@@ -1459,62 +1487,62 @@ export const InvestmentBrain: React.FC = () => {
                             {driveMessage && <p className="mt-3 text-xs font-semibold text-emerald-100/80">{driveMessage}</p>}
                         </section>
 
-                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-3 sm:p-4">
                             <div className="flex items-center justify-between gap-3">
                                 <div className="flex items-center gap-2">
                                     <Sparkles className="h-4 w-4 text-violet-300" />
-                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Semantic Layer</h2>
+                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Semantic Layer</h2>
                                 </div>
                                 <span className={cn(
-                                    'rounded border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                    'rounded-md border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
                                     llmStatus?.configured ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300'
                                 )}>
                                     {llmStatus?.configured ? 'Ready' : 'No key'}
                                 </span>
                             </div>
-                            <p className="mt-3 text-xs leading-5 text-gray-500">
-                                Attach embeddings after new files or notes are indexed.
+                            <p className="mt-2 text-xs leading-5 text-slate-500">
+                                {formatEmbeddingCoverage(embeddingStats)}
                             </p>
                             <button
                                 type="button"
                                 onClick={backfillEmbeddings}
-                                disabled={isEmbedding || !backendReady}
+                                disabled={isEmbedding || !backendReady || missingChunks <= 0}
                                 className={cn(
-                                    'mt-4 inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
-                                    backendReady
+                                    'mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                    backendReady && missingChunks > 0
                                         ? 'border-violet-500/30 bg-violet-500/15 text-violet-100 hover:bg-violet-500/20'
-                                        : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                        : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
                                 )}
                             >
                                 <Sparkles className="h-3.5 w-3.5" />
-                                {isEmbedding ? 'Embedding' : 'Embed Missing'}
+                                {isEmbedding ? 'Embedding' : missingChunks > 0 ? 'Embed Missing' : 'Fully Embedded'}
                             </button>
                             {embeddingMessage && <p className="mt-3 text-xs font-semibold text-violet-100/80">{embeddingMessage}</p>}
                         </section>
 
-                        <section className="rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-3 sm:p-4">
                             <div className="flex items-center gap-2">
                                 <FileText className="h-4 w-4 text-cyan-300" />
-                                <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Paste Source</h2>
+                                <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Paste Source</h2>
                             </div>
-                            <div className="mt-4 space-y-3">
+                            <div className="mt-3 space-y-2">
                                 <input
                                     value={sourceTitle}
                                     onChange={event => setSourceTitle(event.target.value)}
-                                    className="h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
+                                    className="h-9 w-full rounded-md border border-white/10 bg-white/[0.035] px-3 text-sm text-white outline-none transition-colors placeholder:text-slate-700 focus:border-cyan-500/40"
                                     placeholder="Source title"
                                 />
                                 <input
                                     value={sourceTags}
                                     onChange={event => setSourceTags(event.target.value)}
-                                    className="h-10 w-full rounded-lg border border-white/10 bg-white/[0.04] px-3 text-sm text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
+                                    className="h-9 w-full rounded-md border border-white/10 bg-white/[0.035] px-3 text-sm text-white outline-none transition-colors placeholder:text-slate-700 focus:border-cyan-500/40"
                                     placeholder="tags"
                                 />
                                 <textarea
                                     value={sourceBody}
                                     onChange={event => setSourceBody(event.target.value)}
-                                    className="min-h-[118px] w-full resize-y rounded-lg border border-white/10 bg-white/[0.04] px-3 py-3 text-sm leading-6 text-white outline-none transition-colors placeholder:text-gray-700 focus:border-cyan-500/40"
-                                    placeholder="Paste note, filing excerpt, or framework..."
+                                    className="min-h-[108px] w-full resize-y rounded-md border border-white/10 bg-white/[0.035] px-3 py-2 text-sm leading-6 text-white outline-none transition-colors placeholder:text-slate-700 focus:border-cyan-500/40"
+                                    placeholder="Paste excerpt or note..."
                                 />
                             </div>
                             <button
@@ -1522,10 +1550,10 @@ export const InvestmentBrain: React.FC = () => {
                                 onClick={ingestSourceText}
                                 disabled={isIngesting || !backendReady}
                                 className={cn(
-                                    'mt-3 inline-flex min-h-[40px] w-full items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                    'mt-3 inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
                                     backendReady
                                         ? 'border-cyan-500/30 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/20'
-                                        : 'cursor-not-allowed border-white/10 bg-white/[0.03] text-gray-600'
+                                        : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
                                 )}
                             >
                                 <Plus className="h-3.5 w-3.5" />
@@ -1538,19 +1566,19 @@ export const InvestmentBrain: React.FC = () => {
                 </section>
 
                 {latestIndexResults.length > 0 && (
-                    <section className="mt-5 rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                    <section className="mt-4 rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-3 sm:p-4">
                         <div className="flex items-center gap-2">
                             <Archive className="h-4 w-4 text-emerald-300" />
-                            <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Latest Index Run</h2>
+                            <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Latest Index Run</h2>
                         </div>
-                        <div className="mt-4 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                        <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
                             {latestIndexResults.slice(0, 10).map(result => (
-                                <div key={`${result.relativePath}-${result.status}-${result.sourceId ?? ''}`} className="flex items-start justify-between gap-3 rounded-lg border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+                                <div key={`${result.relativePath}-${result.status}-${result.sourceId ?? ''}`} className="flex items-start justify-between gap-3 rounded-md border border-white/[0.06] bg-white/[0.025] px-3 py-2">
                                     <div className="min-w-0">
                                         <p className="truncate text-xs font-bold text-white">{result.relativePath}</p>
-                                        <p className="mt-1 truncate text-[10px] text-gray-500">{result.reason ?? `${result.chunks ?? 0} chunk(s)`}</p>
+                                        <p className="mt-1 truncate text-[10px] text-slate-500">{result.reason ?? `${result.chunks ?? 0} chunk(s)`}</p>
                                     </div>
-                                    <span className={cn('shrink-0 rounded border px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.08em]', resultTone(result.status))}>
+                                    <span className={cn('shrink-0 rounded-md border px-2 py-0.5 text-[8px] font-black uppercase tracking-[0.08em]', resultTone(result.status))}>
                                         {result.status}
                                     </span>
                                 </div>
@@ -1559,17 +1587,17 @@ export const InvestmentBrain: React.FC = () => {
                     </section>
                 )}
 
-                <section className="mt-5 rounded-xl border border-white/[0.08] bg-slate-950/75 p-4 sm:p-5">
+                <section className="mt-4 rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-3 sm:p-4">
                     <div className="flex items-center gap-2">
                         <ServerCog className="h-4 w-4 text-gray-300" />
-                        <h2 className="text-[11px] font-bold uppercase tracking-[0.14em] text-gray-400">Guardrails</h2>
+                        <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Guardrails</h2>
                     </div>
-                    <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2">
-                        <p className="flex gap-2 rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 text-xs leading-5 text-gray-500">
+                    <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-2">
+                        <p className="flex gap-2 rounded-md border border-white/[0.06] bg-white/[0.025] p-3 text-xs leading-5 text-slate-500">
                             <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-400" />
                             Sources stay in Drive; the brain stores metadata, extracted text, chunks, and embeddings in Supabase.
                         </p>
-                        <p className="flex gap-2 rounded-lg border border-white/[0.06] bg-white/[0.025] p-3 text-xs leading-5 text-gray-500">
+                        <p className="flex gap-2 rounded-md border border-white/[0.06] bg-white/[0.025] p-3 text-xs leading-5 text-slate-500">
                             <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
                             Fund-grade use still needs access controls, logs, backups, data licenses, and compliance review.
                         </p>
