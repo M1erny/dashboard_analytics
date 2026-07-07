@@ -120,11 +120,16 @@ def run_embedding_backfill(args: argparse.Namespace, store) -> dict[str, Any]:
     sleep_seconds = max(0.0, float(args.embed_sleep))
     embedded = 0
     errors: list[dict[str, Any]] = []
+    skipped_chunk_ids: set[int] = set()
     started = time.perf_counter()
 
     while embedded < max_chunks:
         limit = min(batch_size, max_chunks - embedded)
-        chunks = store.list_chunks_for_embedding(limit=limit, force=args.embed_force)
+        fetch_limit = limit + len(skipped_chunk_ids)
+        chunks = [
+            chunk for chunk in store.list_chunks_for_embedding(limit=fetch_limit, force=args.embed_force)
+            if int(chunk["id"]) not in skipped_chunk_ids
+        ][:limit]
         if not chunks:
             break
 
@@ -149,6 +154,7 @@ def run_embedding_backfill(args: argparse.Namespace, store) -> dict[str, Any]:
                 if sleep_seconds:
                     time.sleep(sleep_seconds)
             except Exception as exc:
+                skipped_chunk_ids.add(chunk_id)
                 errors.append({
                     "id": chunk_id,
                     "title": title[:160],

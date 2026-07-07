@@ -382,16 +382,22 @@ async def _run_embedding_backfill_job(*, batch_size: int, max_chunks: int, force
     })
 
     processed = 0
+    skipped_chunk_ids: set[int] = set()
     try:
         while processed < max_chunks:
             limit = min(batch_size, max_chunks - processed)
+            fetch_limit = limit + len(skipped_chunk_ids)
             chunks = await _run_brain_step(
                 "Embedding chunk list",
                 store.list_chunks_for_embedding,
-                limit=limit,
+                limit=fetch_limit,
                 force=force,
                 timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
             )
+            chunks = [
+                chunk for chunk in chunks
+                if int(chunk.get("id")) not in skipped_chunk_ids
+            ][:limit]
             embedding_backfill_job["requested"] += len(chunks)
             if not chunks:
                 embedding_backfill_job["message"] = "No missing chunks left."
@@ -418,6 +424,10 @@ async def _run_embedding_backfill_job(*, batch_size: int, max_chunks: int, force
                     )
                     embedding_backfill_job["embedded"] += 1
                 except Exception as exc:
+                    try:
+                        skipped_chunk_ids.add(int(chunk.get("id")))
+                    except (TypeError, ValueError):
+                        pass
                     embedding_backfill_job["errors"].append({
                         "id": chunk.get("id"),
                         "title": title,
