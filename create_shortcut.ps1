@@ -4,7 +4,9 @@ $ShortcutPath = Join-Path $DesktopPath "Portfolio Dashboard.lnk"
 $Shortcut = $WshShell.CreateShortcut($ShortcutPath)
 # Targeting cmd.exe allows pinning to Taskbar
 $Shortcut.TargetPath = "C:\Windows\System32\cmd.exe"
-$Shortcut.Arguments = "/c ""C:\Users\Tomek\Projects\portfolio-dashboard-2026\start_dashboard.bat"""
+$LauncherPath = Join-Path $PSScriptRoot "start_dashboard.bat"
+$Shortcut.Arguments = "/c ""$LauncherPath"""
+$Shortcut.WorkingDirectory = $PSScriptRoot
 $Shortcut.WindowStyle = 7
 # Try to find Chrome icon, fallback to cmd if not found
 if (Test-Path "C:\Program Files\Google\Chrome\Application\chrome.exe") {

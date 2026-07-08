@@ -1,8 +1,13 @@
 $WshShell = New-Object -comObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut("c:\Users\Tomek\Projects\portfolio-dashboard-2026\Mobile Access.lnk")
+$ProjectRoot = $PSScriptRoot
+$ShortcutPath = Join-Path $ProjectRoot "Mobile Access.lnk"
+$LauncherPath = Join-Path $ProjectRoot "start_mobile_access.bat"
+$IconPath = Join-Path $ProjectRoot "donkey.ico"
+
+$Shortcut = $WshShell.CreateShortcut($ShortcutPath)
 $Shortcut.TargetPath = "cmd.exe"
-$Shortcut.Arguments = "/c ""c:\Users\Tomek\Projects\portfolio-dashboard-2026\start_mobile_access.bat"""
-$Shortcut.WorkingDirectory = "c:\Users\Tomek\Projects\portfolio-dashboard-2026"
-$Shortcut.IconLocation = "c:\Users\Tomek\Projects\portfolio-dashboard-2026\donkey.ico"
+$Shortcut.Arguments = "/c ""$LauncherPath"""
+$Shortcut.WorkingDirectory = $ProjectRoot
+$Shortcut.IconLocation = $IconPath
 $Shortcut.Save()
 Write-Host "Shortcut updated with new icon at $($Shortcut.FullName)"

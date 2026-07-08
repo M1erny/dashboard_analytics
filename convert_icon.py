@@ -1,8 +1,12 @@
 from PIL import Image
-import os
+from pathlib import Path
+import sys
 
-png_path = r"C:/Users/Tomek/.gemini/antigravity/brain/03922524-2a4e-4cbf-8847-51908dd855a7/donkey_icon_1769971143172.png"
-ico_path = r"c:/Users/Tomek/Projects/portfolio-dashboard-2026/donkey.ico"
+if len(sys.argv) < 2:
+    raise SystemExit("Usage: python convert_icon.py path-to-source-png [path-to-output-ico]")
+
+png_path = Path(sys.argv[1]).expanduser()
+ico_path = Path(sys.argv[2]).expanduser() if len(sys.argv) > 2 else Path(__file__).with_name("donkey.ico")
 
 try:
     img = Image.open(png_path)

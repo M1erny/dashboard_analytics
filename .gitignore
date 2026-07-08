@@ -16,6 +16,27 @@ dist-ssr
 .env
 backend/.env
 
+# Local/private generated artifacts
+cloudflared.exe
+*.lnk
+dexter-agent/
+exports/
+response.json
+test_output.json
+vitals_dump.json
+backend/alpha_results.txt
+backend/audit_output.txt
+backend/beta_results.txt
+backend/debug.json
+backend/debug_output_full.txt
+backend/debug_results.txt
+backend/debug_risk.txt
+backend/extremes.txt
+backend/metric_debug.json
+backend/portfolio_db.json
+backend/verification_results.txt
+backend/ytd_analysis.txt
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
