@@ -220,6 +220,13 @@ type AnswerSourceCard = {
 type BackendState = 'checking' | 'ready' | 'offline';
 type ApiErrorDetail = string | { message?: string; reason?: string; action?: string };
 type ApiErrorPayload = { detail?: ApiErrorDetail };
+type MarkdownBlock =
+    | { type: 'heading'; level: number; content: string }
+    | { type: 'paragraph'; content: string }
+    | { type: 'list'; ordered: boolean; items: string[] }
+    | { type: 'quote'; content: string }
+    | { type: 'code'; language?: string; content: string }
+    | { type: 'rule' };
 
 const DEFAULT_BRAIN_API_URL = 'https://dashboard-eo6k.onrender.com';
 const API_BASE = (
@@ -362,6 +369,229 @@ const buildAnswerSources = (context?: BrainAnalysisContext | null): AnswerSource
 const sourceToneClass: Record<AnswerSourceCard['tone'], string> = {
     retrieved: 'border-sky-500/20 bg-sky-500/10 text-sky-200',
     expanded: 'border-violet-500/20 bg-violet-500/10 text-violet-200',
+};
+
+const inlineMarkdownPattern = /(\[[^\]]+\]\((https?:\/\/[^)\s]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*)/g;
+
+const renderInlineMarkdown = (text: string, keyPrefix: string): React.ReactNode[] => {
+    const nodes: React.ReactNode[] = [];
+    let lastIndex = 0;
+
+    for (const match of text.matchAll(inlineMarkdownPattern)) {
+        const index = match.index ?? 0;
+        if (index > lastIndex) {
+            nodes.push(text.slice(lastIndex, index));
+        }
+
+        const [raw, linkRaw, linkUrl, codeRaw, boldRaw, italicRaw] = match;
+        const key = `${keyPrefix}-${index}`;
+
+        if (linkRaw && linkUrl) {
+            const label = linkRaw.slice(1, linkRaw.indexOf(']('));
+            nodes.push(
+                <a
+                    key={key}
+                    href={linkUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="font-semibold text-sky-300 underline decoration-sky-400/35 underline-offset-4 transition-colors hover:text-sky-200"
+                >
+                    {label}
+                </a>
+            );
+        } else if (codeRaw) {
+            nodes.push(
+                <code key={key} className="rounded border border-white/10 bg-white/[0.06] px-1.5 py-0.5 font-mono text-[0.92em] text-emerald-200">
+                    {codeRaw}
+                </code>
+            );
+        } else if (boldRaw) {
+            nodes.push(
+                <strong key={key} className="font-black text-white">
+                    {boldRaw}
+                </strong>
+            );
+        } else if (italicRaw) {
+            nodes.push(
+                <em key={key} className="text-slate-200">
+                    {italicRaw}
+                </em>
+            );
+        } else {
+            nodes.push(raw);
+        }
+
+        lastIndex = index + raw.length;
+    }
+
+    if (lastIndex < text.length) {
+        nodes.push(text.slice(lastIndex));
+    }
+
+    return nodes.length ? nodes : [text];
+};
+
+const parseMarkdownBlocks = (content: string): MarkdownBlock[] => {
+    const lines = content.replace(/\r\n/g, '\n').split('\n');
+    const blocks: MarkdownBlock[] = [];
+    let index = 0;
+
+    while (index < lines.length) {
+        const line = lines[index];
+        const trimmed = line.trim();
+
+        if (!trimmed) {
+            index += 1;
+            continue;
+        }
+
+        const fence = trimmed.match(/^```([\w-]*)\s*$/);
+        if (fence) {
+            const language = fence[1] || undefined;
+            const codeLines: string[] = [];
+            index += 1;
+            while (index < lines.length && !lines[index].trim().startsWith('```')) {
+                codeLines.push(lines[index]);
+                index += 1;
+            }
+            if (index < lines.length) index += 1;
+            blocks.push({ type: 'code', language, content: codeLines.join('\n') });
+            continue;
+        }
+
+        const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+        if (heading) {
+            blocks.push({ type: 'heading', level: heading[1].length, content: heading[2].trim() });
+            index += 1;
+            continue;
+        }
+
+        if (/^[-*_]{3,}$/.test(trimmed)) {
+            blocks.push({ type: 'rule' });
+            index += 1;
+            continue;
+        }
+
+        if (trimmed.startsWith('>')) {
+            const quoteLines: string[] = [];
+            while (index < lines.length && lines[index].trim().startsWith('>')) {
+                quoteLines.push(lines[index].trim().replace(/^>\s?/, ''));
+                index += 1;
+            }
+            blocks.push({ type: 'quote', content: quoteLines.join(' ') });
+            continue;
+        }
+
+        const bulletMatch = trimmed.match(/^([-*])\s+(.+)$/);
+        const orderedMatch = trimmed.match(/^\d+[.)]\s+(.+)$/);
+        if (bulletMatch || orderedMatch) {
+            const ordered = Boolean(orderedMatch);
+            const items: string[] = [];
+            while (index < lines.length) {
+                const itemLine = lines[index].trim();
+                const nextBullet = itemLine.match(/^[-*]\s+(.+)$/);
+                const nextOrdered = itemLine.match(/^\d+[.)]\s+(.+)$/);
+                if (ordered ? !nextOrdered : !nextBullet) break;
+                items.push((ordered ? nextOrdered?.[1] : nextBullet?.[1])?.trim() ?? '');
+                index += 1;
+            }
+            blocks.push({ type: 'list', ordered, items });
+            continue;
+        }
+
+        const paragraphLines = [trimmed];
+        index += 1;
+        while (index < lines.length) {
+            const next = lines[index].trim();
+            if (
+                !next
+                || /^```/.test(next)
+                || /^(#{1,4})\s+/.test(next)
+                || /^[-*_]{3,}$/.test(next)
+                || /^>/.test(next)
+                || /^[-*]\s+/.test(next)
+                || /^\d+[.)]\s+/.test(next)
+            ) {
+                break;
+            }
+            paragraphLines.push(next);
+            index += 1;
+        }
+        blocks.push({ type: 'paragraph', content: paragraphLines.join(' ') });
+    }
+
+    return blocks;
+};
+
+const MarkdownAnswer: React.FC<{ content: string }> = ({ content }) => {
+    const blocks = useMemo(() => parseMarkdownBlocks(content), [content]);
+
+    if (!blocks.length) {
+        return <p className="text-sm leading-6 text-slate-500">No answer text returned.</p>;
+    }
+
+    return (
+        <div className="space-y-3 break-words text-sm leading-6 text-slate-100">
+            {blocks.map((block, index) => {
+                const key = `md-${index}`;
+                if (block.type === 'heading') {
+                    const headingClass = block.level <= 2
+                        ? 'mt-1 text-base font-black leading-6 text-white'
+                        : 'mt-1 text-sm font-black uppercase tracking-[0.08em] text-slate-200';
+                    return (
+                        <h4 key={key} className={headingClass}>
+                            {renderInlineMarkdown(block.content, key)}
+                        </h4>
+                    );
+                }
+                if (block.type === 'paragraph') {
+                    return (
+                        <p key={key} className="text-sm leading-6 text-slate-200">
+                            {renderInlineMarkdown(block.content, key)}
+                        </p>
+                    );
+                }
+                if (block.type === 'list') {
+                    const ListTag = block.ordered ? 'ol' : 'ul';
+                    return (
+                        <ListTag
+                            key={key}
+                            className={cn(
+                                'space-y-2 pl-5 text-sm leading-6 text-slate-200',
+                                block.ordered ? 'list-decimal' : 'list-disc'
+                            )}
+                        >
+                            {block.items.map((item, itemIndex) => (
+                                <li key={`${key}-${itemIndex}`} className="pl-1 marker:text-sky-300/80">
+                                    {renderInlineMarkdown(item, `${key}-${itemIndex}`)}
+                                </li>
+                            ))}
+                        </ListTag>
+                    );
+                }
+                if (block.type === 'quote') {
+                    return (
+                        <blockquote key={key} className="rounded-md border-l-2 border-sky-400/50 bg-sky-500/10 px-3 py-2 text-sm leading-6 text-sky-100">
+                            {renderInlineMarkdown(block.content, key)}
+                        </blockquote>
+                    );
+                }
+                if (block.type === 'code') {
+                    return (
+                        <pre key={key} className="overflow-auto rounded-md border border-white/10 bg-black/35 p-3 text-xs leading-5 text-emerald-100">
+                            {block.language && (
+                                <span className="mb-2 block text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-400/70">
+                                    {block.language}
+                                </span>
+                            )}
+                            <code>{block.content}</code>
+                        </pre>
+                    );
+                }
+                return <hr key={key} className="border-white/[0.08]" />;
+            })}
+        </div>
+    );
 };
 
 const createThreadMessage = (role: BrainConversationRole, content: string): BrainThreadMessage => ({
@@ -1180,9 +1410,13 @@ export const InvestmentBrain: React.FC = () => {
                                                             {message.role === 'user' ? 'Query' : 'Answer'}
                                                         </span>
                                                     </div>
-                                                    <div className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-100">
-                                                        {message.content}
-                                                    </div>
+                                                    {message.role === 'assistant' ? (
+                                                        <MarkdownAnswer content={message.content} />
+                                                    ) : (
+                                                        <div className="whitespace-pre-wrap break-words text-sm leading-6 text-slate-100">
+                                                            {message.content}
+                                                        </div>
+                                                    )}
                                                 </article>
                                             ))}
                                             {isAnalyzing && (
