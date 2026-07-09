@@ -26,6 +26,11 @@ except ImportError as e:
     risk = None
 
 try:
+    from brain_agent import (
+        DEFAULT_AGENT_MAX_BYTES,
+        find_official_source_candidates,
+        import_url_into_brain,
+    )
     from brain_store import create_brain_store
     from brain_ingestion import chunk_text, normalize_text, stable_hash
     from brain_indexer import index_local_library, indexer_status
@@ -40,6 +45,9 @@ try:
     from gemini_client import GeminiClient, load_backend_env
 except ImportError as e:
     print(f"Error importing Investment Brain modules: {e}")
+    DEFAULT_AGENT_MAX_BYTES = 15 * 1024 * 1024
+    find_official_source_candidates = None
+    import_url_into_brain = None
     create_brain_store = None
     index_local_library = None
     indexer_status = None
@@ -473,6 +481,19 @@ def _local_indexing_enabled() -> bool:
     return os.environ.get("BRAIN_ENABLE_LOCAL_INDEXING", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _queue_embedding_after_import(max_chunks: int) -> bool:
+    if not gemini_client or not gemini_client.configured:
+        return False
+    if embedding_backfill_job.get("running"):
+        return False
+    asyncio.create_task(_run_embedding_backfill_job(
+        batch_size=5,
+        max_chunks=max(1, min(int(max_chunks), 500)),
+        force=False,
+    ))
+    return True
+
+
 class BrainMemoryRequest(BaseModel):
     type: str = Field(..., min_length=1)
     title: str = Field(..., min_length=1, max_length=240)
@@ -544,6 +565,42 @@ class BrainEmbeddingBackfillStartRequest(BaseModel):
     batchSize: int = Field(default=5, ge=1, le=10)
     maxChunks: int = Field(default=500, ge=1, le=5000)
     force: bool = False
+
+
+class BrainAgentUrlImportRequest(BaseModel):
+    url: str = Field(..., min_length=8, max_length=2000)
+    title: str | None = Field(default=None, max_length=300)
+    tags: list[str] = Field(default_factory=list)
+    uploadToDrive: bool = True
+    driveFolderId: str | None = None
+    driveSubfolder: str = Field(default="Agent Downloads", min_length=1, max_length=120)
+    force: bool = False
+    trustedOnly: bool = False
+    maxBytes: int = Field(default=DEFAULT_AGENT_MAX_BYTES, ge=1024, le=75 * 1024 * 1024)
+    embedAfterImport: bool = True
+    embedMaxChunks: int = Field(default=60, ge=1, le=500)
+    agentTask: str | None = Field(default=None, max_length=500)
+
+
+class BrainAgentOfficialSearchRequest(BaseModel):
+    task: str = Field(..., min_length=3, max_length=500)
+    company: str | None = Field(default=None, max_length=120)
+    ticker: str | None = Field(default=None, max_length=20)
+    limit: int = Field(default=8, ge=1, le=20)
+
+
+class BrainAgentRunRequest(BaseModel):
+    task: str = Field(..., min_length=3, max_length=500)
+    company: str | None = Field(default=None, max_length=120)
+    ticker: str | None = Field(default=None, max_length=20)
+    importBest: bool = False
+    uploadToDrive: bool = True
+    driveFolderId: str | None = None
+    driveSubfolder: str = Field(default="Agent Downloads", min_length=1, max_length=120)
+    force: bool = False
+    maxBytes: int = Field(default=DEFAULT_AGENT_MAX_BYTES, ge=1024, le=75 * 1024 * 1024)
+    embedAfterImport: bool = True
+    embedMaxChunks: int = Field(default=60, ge=1, le=500)
 
 
 class BrainConversationTurn(BaseModel):
@@ -777,6 +834,10 @@ async def get_brain_status():
         "gemini_company_analysis",
         "embedding_ready_schema",
     ]
+    if import_url_into_brain:
+        capabilities.append("agentic_url_import")
+    if find_official_source_candidates:
+        capabilities.append("official_source_finder")
     if _local_indexing_enabled():
         capabilities.append("local_file_indexing")
 
@@ -1025,6 +1086,152 @@ async def start_google_drive_brain_index(payload: BrainDriveIndexRequest):
     return {
         **_public_drive_job(),
         "message": "Drive sync queued.",
+    }
+
+
+@app.post("/api/brain/agent/import-url")
+async def import_brain_agent_url(payload: BrainAgentUrlImportRequest):
+    store = _brain_or_503()
+    if not import_url_into_brain:
+        raise HTTPException(status_code=503, detail="Brain research agent is not available")
+
+    try:
+        result = await _run_brain_step(
+            "Brain agent URL import",
+            import_url_into_brain,
+            store,
+            url=payload.url,
+            title=payload.title,
+            tags=payload.tags,
+            upload_to_drive=payload.uploadToDrive,
+            drive_folder_id=payload.driveFolderId,
+            drive_subfolder=payload.driveSubfolder,
+            force=payload.force,
+            max_bytes=payload.maxBytes,
+            trusted_only=payload.trustedOnly,
+            agent_task=payload.agentTask,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_clean_public_error(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=_clean_public_error(e))
+
+    embedding_queued = bool(
+        payload.embedAfterImport
+        and result.get("status") == "indexed"
+        and _queue_embedding_after_import(payload.embedMaxChunks)
+    )
+    return {
+        **result,
+        "embeddingQueued": embedding_queued,
+    }
+
+
+@app.post("/api/brain/agent/find-official-sources")
+async def find_brain_agent_official_sources(payload: BrainAgentOfficialSearchRequest):
+    if not find_official_source_candidates:
+        raise HTTPException(status_code=503, detail="Official source finder is not available")
+
+    try:
+        return await _run_brain_step(
+            "Official source finder",
+            find_official_source_candidates,
+            task=payload.task,
+            company=payload.company,
+            ticker=payload.ticker,
+            limit=payload.limit,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_clean_public_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+
+
+@app.post("/api/brain/agent/run")
+async def run_brain_research_agent(payload: BrainAgentRunRequest):
+    store = _brain_or_503()
+    if not find_official_source_candidates or not import_url_into_brain:
+        raise HTTPException(status_code=503, detail="Brain research agent is not available")
+
+    try:
+        plan = await _run_brain_step(
+            "Official source finder",
+            find_official_source_candidates,
+            task=payload.task,
+            company=payload.company,
+            ticker=payload.ticker,
+            limit=8,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_clean_public_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+
+    candidates = plan.get("candidates", []) if isinstance(plan, dict) else []
+    if not payload.importBest:
+        return {
+            "action": "planned",
+            "plan": plan,
+            "message": "Reviewed official candidates. Import was not requested.",
+        }
+    if not candidates:
+        return {
+            "action": "no_candidate",
+            "plan": plan,
+            "message": "No trusted official source candidate was found.",
+        }
+
+    best = candidates[0]
+    best_url = best.get("url")
+    if not best_url:
+        raise HTTPException(status_code=502, detail="Top official source candidate is missing a URL")
+    resolved = plan.get("resolvedCompany") or {}
+    ticker = str(resolved.get("ticker") or payload.ticker or "").upper()
+    tags = ["official-source", "sec"]
+    if ticker:
+        tags.append(ticker.lower())
+
+    try:
+        imported = await _run_brain_step(
+            "Brain agent official import",
+            import_url_into_brain,
+            store,
+            url=best_url,
+            title=best.get("title"),
+            tags=tags,
+            upload_to_drive=payload.uploadToDrive,
+            drive_folder_id=payload.driveFolderId,
+            drive_subfolder=payload.driveSubfolder,
+            force=payload.force,
+            max_bytes=payload.maxBytes,
+            trusted_only=True,
+            agent_task=payload.task,
+            source_label=best.get("source"),
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_clean_public_error(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=_clean_public_error(e))
+
+    embedding_queued = bool(
+        payload.embedAfterImport
+        and imported.get("status") == "indexed"
+        and _queue_embedding_after_import(payload.embedMaxChunks)
+    )
+    return {
+        "action": "imported_best_candidate",
+        "plan": plan,
+        "import": imported,
+        "embeddingQueued": embedding_queued,
+        "message": "Imported the top trusted official source.",
     }
 
 

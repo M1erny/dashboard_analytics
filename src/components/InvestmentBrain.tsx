@@ -204,6 +204,57 @@ type BrainAnalysisContext = {
     deepSources?: BrainDeepSource[];
 };
 
+type BrainAgentCandidate = {
+    title: string;
+    url: string;
+    source?: string;
+    domain?: string;
+    form?: string;
+    filingDate?: string;
+    reportDate?: string;
+    confidence?: number;
+    reason?: string;
+    trusted?: boolean;
+};
+
+type BrainAgentPlanResponse = {
+    query?: string;
+    resolvedCompany?: {
+        ticker?: string;
+        title?: string;
+        cik?: string;
+    } | null;
+    candidates?: BrainAgentCandidate[];
+    message?: string;
+};
+
+type BrainAgentImportResponse = {
+    status?: 'indexed' | 'skipped' | 'error';
+    reason?: string;
+    source?: BrainSourceReference;
+    chunks?: unknown[];
+    counts?: BrainCounts;
+    embeddingQueued?: boolean;
+    driveFile?: {
+        id?: string;
+        name?: string;
+        webViewLink?: string;
+    } | null;
+    document?: {
+        filename?: string;
+        finalUrl?: string;
+        bytes?: number;
+    };
+};
+
+type BrainAgentRunResponse = {
+    action?: string;
+    plan?: BrainAgentPlanResponse;
+    import?: BrainAgentImportResponse;
+    embeddingQueued?: boolean;
+    message?: string;
+};
+
 type AnswerSourceCard = {
     key: string;
     marker: string;
@@ -690,6 +741,14 @@ export const InvestmentBrain: React.FC = () => {
     const [analysisContext, setAnalysisContext] = useState<BrainAnalysisContext | null>(null);
     const [analysisThread, setAnalysisThread] = useState<BrainThreadMessage[]>([]);
     const [followUpQuestion, setFollowUpQuestion] = useState('');
+    const [agentUrl, setAgentUrl] = useState('');
+    const [agentTask, setAgentTask] = useState('Download Netflix Q4 2025 results');
+    const [agentCompany, setAgentCompany] = useState('Netflix');
+    const [agentTicker, setAgentTicker] = useState('NFLX');
+    const [agentCandidates, setAgentCandidates] = useState<BrainAgentCandidate[]>([]);
+    const [agentImport, setAgentImport] = useState<BrainAgentImportResponse | null>(null);
+    const [agentMessage, setAgentMessage] = useState('');
+    const [isAgentWorking, setIsAgentWorking] = useState(false);
     const analysisOutputRef = useRef<HTMLDivElement | null>(null);
 
     useEffect(() => {
@@ -742,6 +801,20 @@ export const InvestmentBrain: React.FC = () => {
     }, []);
 
     const answerSources = useMemo(() => buildAnswerSources(analysisContext), [analysisContext]);
+
+    const refreshBrainSnapshot = async () => {
+        try {
+            const response = await fetchWithTimeout(brainApiUrl('/api/brain/status'), {}, 12000);
+            if (!response.ok) return;
+            const status = await response.json() as BrainStatus;
+            setBrainStatus(status);
+            setBackendCounts(status.counts ?? null);
+            setEmbeddingStats(status.embeddings ?? null);
+            setLlmStatus(status.llm ?? null);
+        } catch {
+            // Background refresh only; the foreground action already reports its own status.
+        }
+    };
 
     const runBackendSearch = async () => {
         const cleanedQuery = searchQuery.trim();
@@ -1007,6 +1080,146 @@ export const InvestmentBrain: React.FC = () => {
         }
     };
 
+    const importAgentUrl = async (urlOverride?: string, titleOverride?: string, trustedOnly = false) => {
+        const url = (urlOverride ?? agentUrl).trim();
+        if (!url || backendState !== 'ready') return;
+
+        setIsAgentWorking(true);
+        setAgentMessage('Importing source...');
+        setAgentImport(null);
+        try {
+            const response = await fetchWithTimeout(
+                brainApiUrl('/api/brain/agent/import-url'),
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url,
+                        title: titleOverride,
+                        tags: ['research-agent'],
+                        uploadToDrive: true,
+                        trustedOnly,
+                        agentTask,
+                        embedAfterImport: true,
+                        embedMaxChunks: 80,
+                    }),
+                },
+                70000
+            );
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null) as ApiErrorPayload | null;
+                throw new Error(apiErrorMessage(payload, 'Source import failed'));
+            }
+
+            const payload = await response.json() as BrainAgentImportResponse;
+            setAgentImport(payload);
+            if (payload.counts) setBackendCounts(payload.counts);
+            if (!urlOverride) setAgentUrl('');
+            const chunks = Array.isArray(payload.chunks) ? payload.chunks.length : 0;
+            const driveText = payload.driveFile?.webViewLink ? ' Saved to Drive.' : '';
+            const embedText = payload.embeddingQueued ? ' Embedding queued.' : '';
+            setAgentMessage(payload.status === 'skipped'
+                ? 'Already indexed; source is unchanged.'
+                : `Indexed ${chunks} chunk${chunks === 1 ? '' : 's'}.${driveText}${embedText}`);
+            await refreshBrainSnapshot();
+        } catch (error) {
+            setAgentMessage(error instanceof Error ? compactProviderError(error.message) : 'Source import failed');
+        } finally {
+            setIsAgentWorking(false);
+        }
+    };
+
+    const findOfficialSources = async () => {
+        const task = agentTask.trim();
+        if (!task || backendState !== 'ready') return;
+
+        setIsAgentWorking(true);
+        setAgentMessage('Finding official sources...');
+        setAgentImport(null);
+        try {
+            const response = await fetchWithTimeout(
+                brainApiUrl('/api/brain/agent/find-official-sources'),
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        task,
+                        company: agentCompany.trim() || undefined,
+                        ticker: agentTicker.trim() || undefined,
+                        limit: 8,
+                    }),
+                },
+                45000
+            );
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null) as ApiErrorPayload | null;
+                throw new Error(apiErrorMessage(payload, 'Official source search failed'));
+            }
+
+            const payload = await response.json() as BrainAgentPlanResponse;
+            const candidates = Array.isArray(payload.candidates) ? payload.candidates : [];
+            setAgentCandidates(candidates);
+            const resolved = payload.resolvedCompany?.ticker ? ` ${payload.resolvedCompany.ticker}.` : '';
+            setAgentMessage(candidates.length
+                ? `Found ${candidates.length} official candidate${candidates.length === 1 ? '' : 's'}.${resolved}`
+                : payload.message ?? 'No official candidates found.');
+        } catch (error) {
+            setAgentCandidates([]);
+            setAgentMessage(error instanceof Error ? compactProviderError(error.message) : 'Official source search failed');
+        } finally {
+            setIsAgentWorking(false);
+        }
+    };
+
+    const runResearchAgent = async (importBest: boolean) => {
+        const task = agentTask.trim();
+        if (!task || backendState !== 'ready') return;
+
+        setIsAgentWorking(true);
+        setAgentMessage(importBest ? 'Finding and importing top official source...' : 'Building source plan...');
+        setAgentImport(null);
+        try {
+            const response = await fetchWithTimeout(
+                brainApiUrl('/api/brain/agent/run'),
+                {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        task,
+                        company: agentCompany.trim() || undefined,
+                        ticker: agentTicker.trim() || undefined,
+                        importBest,
+                        uploadToDrive: true,
+                        embedAfterImport: true,
+                        embedMaxChunks: 120,
+                    }),
+                },
+                90000
+            );
+            if (!response.ok) {
+                const payload = await response.json().catch(() => null) as ApiErrorPayload | null;
+                throw new Error(apiErrorMessage(payload, importBest ? 'Research import failed' : 'Research plan failed'));
+            }
+
+            const payload = await response.json() as BrainAgentRunResponse;
+            const planCandidates = Array.isArray(payload.plan?.candidates) ? payload.plan.candidates : [];
+            setAgentCandidates(planCandidates);
+            if (payload.import) {
+                setAgentImport(payload.import);
+                if (payload.import.counts) setBackendCounts(payload.import.counts);
+            }
+            const imported = payload.action === 'imported_best_candidate';
+            setAgentMessage(imported
+                ? `${payload.message ?? 'Imported top official source.'}${payload.embeddingQueued ? ' Embedding queued.' : ''}`
+                : payload.message ?? `Prepared ${planCandidates.length} candidate${planCandidates.length === 1 ? '' : 's'}.`);
+            await refreshBrainSnapshot();
+        } catch (error) {
+            setAgentMessage(error instanceof Error ? compactProviderError(error.message) : 'Research agent failed');
+        } finally {
+            setIsAgentWorking(false);
+        }
+    };
+
     const runCompanyAnalysis = async (mode: 'new' | 'follow-up' = 'new') => {
         const ticker = analysisTicker.trim();
         if (!ticker || backendState !== 'ready') return;
@@ -1084,6 +1297,7 @@ export const InvestmentBrain: React.FC = () => {
     const driveConnected = Boolean(driveStatus?.connected);
     const driveConfigured = Boolean(driveStatus?.configured);
     const driveAuthReady = Boolean(driveStatus?.authConfigured);
+    const agentImportReady = backendReady && driveConnected;
     const totalChunks = embeddingStats?.total ?? counts.chunks ?? 0;
     const embeddedChunks = embeddingStats?.embedded ?? 0;
     const missingChunks = embeddingStats?.missing ?? Math.max(0, totalChunks - embeddedChunks);
@@ -1549,6 +1763,236 @@ export const InvestmentBrain: React.FC = () => {
                                             </div>
                                         </div>
                                     )}
+                                </div>
+                            )}
+                        </section>
+
+                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-3 sm:p-4">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                                <div className="flex items-center gap-2">
+                                    <Sparkles className="h-4 w-4 text-emerald-300" />
+                                    <h2 className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Research Agent</h2>
+                                </div>
+                                <div className="flex flex-wrap gap-2">
+                                    <span className="inline-flex w-fit rounded-md border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em] text-emerald-300">
+                                        SEC official
+                                    </span>
+                                    <span className={cn(
+                                        'inline-flex w-fit rounded-md border px-2 py-1 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                        agentImportReady ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/20 bg-amber-500/10 text-amber-300'
+                                    )}>
+                                        {agentImportReady ? 'Drive write' : 'Drive auth needed'}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="mt-3 grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,0.92fr)_minmax(0,1.08fr)]">
+                                <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                        <FileText className="h-3.5 w-3.5 text-cyan-300" />
+                                        <h3 className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Import URL</h3>
+                                    </div>
+                                    <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_112px]">
+                                        <input
+                                            value={agentUrl}
+                                            onChange={event => setAgentUrl(event.target.value)}
+                                            onKeyDown={event => {
+                                                if (event.key === 'Enter') void importAgentUrl();
+                                            }}
+                                            className="h-10 min-w-0 rounded-md border border-white/10 bg-white/[0.035] px-3 text-sm text-white outline-none transition-colors placeholder:text-slate-700 focus:border-cyan-500/40"
+                                            placeholder="https://..."
+                                            aria-label="Source URL"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => void importAgentUrl()}
+                                            disabled={isAgentWorking || !agentImportReady || !agentUrl.trim()}
+                                            className={cn(
+                                                'inline-flex min-h-10 items-center justify-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                                agentImportReady && agentUrl.trim()
+                                                    ? 'border-cyan-500/30 bg-cyan-500/15 text-cyan-100 hover:bg-cyan-500/20'
+                                                    : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
+                                            )}
+                                        >
+                                            <Plus className="h-3.5 w-3.5" />
+                                            Import
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <div className="min-w-0 border-t border-white/[0.07] pt-4 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
+                                    <div className="flex items-center gap-2">
+                                        <Search className="h-3.5 w-3.5 text-emerald-300" />
+                                        <h3 className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500">Official Source Finder</h3>
+                                    </div>
+                                    <div className="mt-2 grid grid-cols-1 gap-2 md:grid-cols-[minmax(0,1fr)_112px_92px]">
+                                        <input
+                                            value={agentTask}
+                                            onChange={event => setAgentTask(event.target.value)}
+                                            className="h-10 min-w-0 rounded-md border border-white/10 bg-white/[0.035] px-3 text-sm text-white outline-none transition-colors placeholder:text-slate-700 focus:border-emerald-500/40"
+                                            placeholder="Download Netflix Q4 2025 results"
+                                            aria-label="Research task"
+                                        />
+                                        <input
+                                            value={agentCompany}
+                                            onChange={event => setAgentCompany(event.target.value)}
+                                            className="h-10 min-w-0 rounded-md border border-white/10 bg-white/[0.035] px-3 text-sm text-white outline-none transition-colors placeholder:text-slate-700 focus:border-emerald-500/40"
+                                            placeholder="Company"
+                                            aria-label="Company"
+                                        />
+                                        <input
+                                            value={agentTicker}
+                                            onChange={event => setAgentTicker(event.target.value.toUpperCase())}
+                                            className="h-10 min-w-0 rounded-md border border-white/10 bg-white/[0.035] px-3 font-mono text-sm font-bold text-white outline-none transition-colors placeholder:text-slate-700 focus:border-emerald-500/40"
+                                            placeholder="Ticker"
+                                            aria-label="Ticker"
+                                        />
+                                    </div>
+                                    <div className="mt-2 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                        <button
+                                            type="button"
+                                            onClick={findOfficialSources}
+                                            disabled={isAgentWorking || !backendReady || !agentTask.trim()}
+                                            className={cn(
+                                                'inline-flex min-h-10 items-center justify-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                                backendReady && agentTask.trim()
+                                                    ? 'border-emerald-500/30 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/20'
+                                                    : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
+                                            )}
+                                        >
+                                            <Search className="h-3.5 w-3.5" />
+                                            Find
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => void runResearchAgent(true)}
+                                            disabled={isAgentWorking || !agentImportReady || !agentTask.trim()}
+                                            className={cn(
+                                                'inline-flex min-h-10 items-center justify-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors',
+                                                agentImportReady && agentTask.trim()
+                                                    ? 'border-rose-500/30 bg-rose-500/15 text-rose-100 hover:bg-rose-500/20'
+                                                    : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
+                                            )}
+                                        >
+                                            <Sparkles className="h-3.5 w-3.5" />
+                                            Run + Import
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {agentMessage && (
+                                <p className="mt-3 rounded-md border border-white/[0.07] bg-white/[0.025] px-3 py-2 text-xs font-semibold leading-5 text-slate-300">
+                                    {isAgentWorking ? 'Working: ' : ''}{agentMessage}
+                                </p>
+                            )}
+
+                            {agentImport && (
+                                <div className="mt-3 border-t border-white/[0.07] pt-3">
+                                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                        <div className="min-w-0">
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <span className={cn(
+                                                    'rounded-md border px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em]',
+                                                    resultTone(agentImport.status ?? 'indexed')
+                                                )}>
+                                                    {agentImport.status ?? 'indexed'}
+                                                </span>
+                                                {agentImport.reason && (
+                                                    <span className="text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-600">
+                                                        {agentImport.reason}
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <p className="mt-2 truncate text-sm font-black text-white">
+                                                {agentImport.document?.filename ?? agentImport.source?.title ?? 'Imported source'}
+                                            </p>
+                                            <p className="mt-1 text-[11px] text-slate-500">
+                                                {typeof agentImport.document?.bytes === 'number'
+                                                    ? `${(agentImport.document.bytes / 1024 / 1024).toFixed(2)} MB`
+                                                    : 'Source saved'}
+                                            </p>
+                                        </div>
+                                        <div className="flex shrink-0 flex-wrap gap-2">
+                                            {agentImport.driveFile?.webViewLink && (
+                                                <a
+                                                    href={agentImport.driveFile.webViewLink}
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    className="inline-flex min-h-[30px] items-center justify-center gap-1.5 rounded-md border border-emerald-500/25 bg-emerald-500/10 px-2.5 text-[9px] font-bold uppercase tracking-[0.08em] text-emerald-200 transition-colors hover:bg-emerald-500/20"
+                                                >
+                                                    <ExternalLink className="h-3 w-3" />
+                                                    Drive
+                                                </a>
+                                            )}
+                                            {agentImport.document?.finalUrl && (
+                                                <a
+                                                    href={agentImport.document.finalUrl}
+                                                    target="_blank"
+                                                    rel="noreferrer"
+                                                    className="inline-flex min-h-[30px] items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/[0.035] px-2.5 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-300 transition-colors hover:bg-white/[0.08]"
+                                                >
+                                                    <ExternalLink className="h-3 w-3" />
+                                                    Source
+                                                </a>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
+
+                            {agentCandidates.length > 0 && (
+                                <div className="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                                    {agentCandidates.map((candidate, index) => (
+                                        <article key={`${candidate.url}-${index}`} className="min-w-0 rounded-md border border-white/[0.08] bg-white/[0.025] p-3">
+                                            <div className="flex items-start justify-between gap-3">
+                                                <div className="min-w-0">
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <span className="rounded-md border border-emerald-500/20 bg-emerald-500/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-emerald-300">
+                                                            {candidate.source ?? 'Official'}
+                                                        </span>
+                                                        {candidate.form && (
+                                                            <span className="rounded-md border border-white/[0.07] bg-white/[0.025] px-2 py-0.5 text-[9px] font-bold uppercase tracking-[0.1em] text-slate-500">
+                                                                {candidate.form}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <h3 className="mt-2 line-clamp-2 text-sm font-black leading-5 text-white">{candidate.title}</h3>
+                                                    <p className="mt-1 text-[11px] text-slate-500">
+                                                        {[candidate.filingDate, candidate.reportDate ? `period ${candidate.reportDate}` : '', typeof candidate.confidence === 'number' ? `${Math.round(candidate.confidence * 100)}% confidence` : ''].filter(Boolean).join(' · ')}
+                                                    </p>
+                                                </div>
+                                                <div className="flex shrink-0 flex-col gap-1.5">
+                                                    <a
+                                                        href={candidate.url}
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        className="inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded-md border border-white/10 bg-white/[0.035] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-300 transition-colors hover:bg-white/[0.08]"
+                                                    >
+                                                        <ExternalLink className="h-3 w-3" />
+                                                        Open
+                                                    </a>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => void importAgentUrl(candidate.url, candidate.title, true)}
+                                                        disabled={isAgentWorking || !agentImportReady}
+                                                        className={cn(
+                                                            'inline-flex min-h-[28px] items-center justify-center gap-1.5 rounded-md border px-2 text-[9px] font-bold uppercase tracking-[0.08em] transition-colors',
+                                                            agentImportReady
+                                                                ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200 hover:bg-emerald-500/20'
+                                                                : 'cursor-not-allowed border-white/10 bg-white/[0.025] text-slate-600'
+                                                        )}
+                                                    >
+                                                        <Plus className="h-3 w-3" />
+                                                        Import
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            {candidate.reason && (
+                                                <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-500">{candidate.reason}</p>
+                                            )}
+                                        </article>
+                                    ))}
                                 </div>
                             )}
                         </section>

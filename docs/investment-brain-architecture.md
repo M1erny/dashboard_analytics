@@ -224,6 +224,49 @@ The final output should include:
 - what would change the mind
 - why the company was liked, passed, or monitored
 
+## Research Agent Layer
+
+The Brain now has the first source-acquisition agent. This is separate from Ask Brain:
+
+```text
+Acquire source -> save source -> index chunks -> embed -> retrieve -> analyze
+```
+
+Current agent abilities:
+
+- paste a public URL and import it into the Brain
+- upload the imported document into Google Drive under `Agent Downloads`
+- extract text, chunk it, and upsert it into Supabase/Postgres
+- queue embedding backfill after import
+- find official SEC candidates for public-company result/filing tasks
+- run a first guarded loop that imports the top trusted official source
+
+Guardrails:
+
+- only public `http` and `https` URLs are downloadable
+- private, loopback, local, multicast, and reserved network addresses are rejected
+- the official-source path is allowlisted to SEC domains
+- repeated imports use stable URL/file hashes so unchanged sources are skipped
+- changed sources replace prior chunks for the same file identity rather than double-counting
+
+Near-term v2 architecture should split the Brain into four lanes:
+
+```text
+1. Source acquisition
+   URL import, official filing finder, Drive upload, provenance log
+
+2. Indexing and embedding
+   extraction, chunking, summaries, pgvector embeddings, source hashes
+
+3. Retrieval planner
+   semantic search, keyword fallback, source expansion, full-file deep dives
+
+4. Decision memory
+   why liked / passed / sold, what changed, assumptions, links to evidence
+```
+
+The agent should remain auditable: every downloaded source needs an original URL, Drive link when available, timestamp, file hash, chunks, and source cards in the UI.
+
 ## Current App State
 
 The current dashboard has the first version of the Investment Brain page with local SQLite fallback and production Postgres/pgvector storage.
@@ -235,8 +278,12 @@ Current capability:
 - source ingestion through `POST /api/brain/ingest/text`
 - Google Drive API folder indexing through `POST /api/brain/index/drive`
 - Google Drive OAuth connection through `GET /api/brain/drive/auth-url`
+- Research Agent URL import through `POST /api/brain/agent/import-url`
+- Official SEC source discovery through `POST /api/brain/agent/find-official-sources`
+- guarded source import loop through `POST /api/brain/agent/run`
 - deterministic chunking with stable content hashes
 - idempotent Drive indexing using stable Drive file IDs and revision hashes
+- idempotent agent imports using stable source URL and file hashes
 - Drive/API extraction for txt, md, csv, json, html, docx, Google Docs/Sheets/Slides exports, and pdf when `pypdf` is installed
 - searchable `chunks` table with embedding backfill
 - Gemini API client through `GOOGLE_AI_API_KEY` or `GEMINI_API_KEY`
@@ -253,6 +300,7 @@ Current limitations:
 
 - no browser-side PDF upload yet
 - Drive scanning is manual from the dashboard unless a scheduled Render job is added later
+- the Research Agent currently starts with SEC official sources; broader web search should be added behind trusted-domain guardrails
 - embeddings require a Google AI Studio API key and an explicit backfill run
 - Supabase/Postgres requires a private database connection string, not only the public Supabase project URL
 - local folder indexing is disabled by default; the cloud backend should read Google Drive through the Drive API, not files from your personal computer
@@ -282,6 +330,8 @@ GOOGLE_DRIVE_REFRESH_TOKEN=...
 ```
 
 If `GOOGLE_DRIVE_REFRESH_TOKEN` is omitted, the dashboard can open the OAuth consent URL and save the refresh token into the brain database after approval.
+
+Agent source import requires the Drive OAuth token to include read access and `https://www.googleapis.com/auth/drive.file`. Reconnect Drive once after this feature is deployed if the previous token was read-only.
 
 Drive sync stores:
 
@@ -335,6 +385,9 @@ GET    /api/brain/llm/status
 POST   /api/brain/embeddings/backfill
 GET    /api/brain/search/semantic
 POST   /api/brain/analyze-company
+POST   /api/brain/agent/import-url
+POST   /api/brain/agent/find-official-sources
+POST   /api/brain/agent/run
 POST   /api/brain/memories
 GET    /api/brain/memories
 DELETE /api/brain/memories/:id

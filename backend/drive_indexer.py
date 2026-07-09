@@ -1,6 +1,7 @@
 import hashlib
 import html
 import io
+import json
 import os
 import re
 import zipfile
@@ -24,6 +25,8 @@ DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 GOOGLE_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+DRIVE_SCOPES = f"{DRIVE_READONLY_SCOPE} {DRIVE_FILE_SCOPE}"
 REFRESH_TOKEN_SETTING = "google_drive_refresh_token"
 
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
@@ -101,7 +104,7 @@ def google_drive_auth_url(redirect_uri: str) -> str:
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": DRIVE_READONLY_SCOPE,
+        "scope": DRIVE_SCOPES,
         "access_type": "offline",
         "prompt": "consent",
         "include_granted_scopes": "true",
@@ -281,7 +284,8 @@ class GoogleDriveClient:
             "authConfigured": self.auth_configured,
             "connected": bool(self.refresh_token_source()),
             "tokenSource": self.refresh_token_source(),
-            "scope": DRIVE_READONLY_SCOPE,
+            "scope": DRIVE_SCOPES,
+            "writeScope": DRIVE_FILE_SCOPE,
             "supportedExtensions": sorted(SUPPORTED_EXTENSIONS),
             "pdfAvailable": PdfReader is not None,
             "storageMode": "drive_metadata_extracted_text_chunks_embeddings_ready",
@@ -344,6 +348,10 @@ class GoogleDriveClient:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.get_access_token()}"}
 
+    @staticmethod
+    def _escape_drive_query(value: str) -> str:
+        return value.replace("\\", "\\\\").replace("'", "\\'")
+
     def list_children(self, folder_id: str, *, page_token: str | None = None) -> dict[str, Any]:
         query = f"'{folder_id}' in parents and trashed = false"
         params = {
@@ -358,6 +366,86 @@ class GoogleDriveClient:
 
         with httpx.Client(timeout=60) as client:
             response = client.get(f"{DRIVE_API_BASE}/files", headers=self._headers(), params=params)
+            response.raise_for_status()
+            return response.json()
+
+    def find_child_folder(self, parent_id: str, name: str) -> dict[str, Any] | None:
+        safe_name = self._escape_drive_query(name)
+        safe_parent = self._escape_drive_query(parent_id)
+        query = (
+            f"'{safe_parent}' in parents and trashed = false "
+            f"and mimeType = '{FOLDER_MIME_TYPE}' and name = '{safe_name}'"
+        )
+        params = {
+            "q": query,
+            "pageSize": "10",
+            "fields": "files(id,name,mimeType,webViewLink)",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        }
+        with httpx.Client(timeout=60) as client:
+            response = client.get(f"{DRIVE_API_BASE}/files", headers=self._headers(), params=params)
+            response.raise_for_status()
+            files = response.json().get("files", [])
+        return files[0] if files else None
+
+    def create_folder(self, parent_id: str, name: str) -> dict[str, Any]:
+        payload = {
+            "name": name,
+            "mimeType": FOLDER_MIME_TYPE,
+            "parents": [parent_id],
+        }
+        params = {
+            "fields": "id,name,mimeType,webViewLink",
+            "supportsAllDrives": "true",
+        }
+        with httpx.Client(timeout=60) as client:
+            response = client.post(
+                f"{DRIVE_API_BASE}/files",
+                headers={**self._headers(), "Content-Type": "application/json"},
+                params=params,
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def ensure_folder(self, parent_id: str, name: str) -> dict[str, Any]:
+        existing = self.find_child_folder(parent_id, name)
+        if existing:
+            return existing
+        return self.create_folder(parent_id, name)
+
+    def upload_file(
+        self,
+        *,
+        name: str,
+        data: bytes,
+        mime_type: str,
+        folder_id: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {"name": name}
+        if folder_id:
+            metadata["parents"] = [folder_id]
+        if description:
+            metadata["description"] = description[:4000]
+
+        files = {
+            "metadata": (None, json.dumps(metadata), "application/json; charset=UTF-8"),
+            "file": (name, data, mime_type),
+        }
+        params = {
+            "uploadType": "multipart",
+            "supportsAllDrives": "true",
+            "fields": "id,name,mimeType,size,webViewLink,webContentLink,createdTime,modifiedTime",
+        }
+        with httpx.Client(timeout=120) as client:
+            response = client.post(
+                "https://www.googleapis.com/upload/drive/v3/files",
+                headers=self._headers(),
+                params=params,
+                files=files,
+            )
             response.raise_for_status()
             return response.json()
 

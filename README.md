@@ -28,6 +28,7 @@ FastAPI backend on Render
                  +--> Google Drive API for source files
                  +--> Supabase Postgres + pgvector for text chunks and embeddings
                  +--> Gemini for embeddings and analysis
+                 +--> Research Agent for trusted source acquisition
 ```
 
 The browser does not read arbitrary files from your computer. Production Brain data comes from Google Drive through the Drive API, then lands in Supabase as metadata, extracted text chunks, and embeddings.
@@ -113,6 +114,7 @@ GOOGLE_DRIVE_REFRESH_TOKEN=...
 BRAIN_SEARCH_TIMEOUT_SECONDS=18
 BRAIN_ANALYSIS_TIMEOUT_SECONDS=8
 BRAIN_INDEX_TIMEOUT_SECONDS=240
+BRAIN_AGENT_USER_AGENT=InvestmentBrainResearchAgent/1.0; your-email@example.com
 ```
 
 Frontend override for development:
@@ -140,10 +142,23 @@ Google Drive file
 -> Gemini company analysis
 ```
 
+Agent acquisition flow:
+
+```text
+URL or official-source task
+-> guarded public download
+-> optional Google Drive upload into Agent Downloads
+-> text extraction and chunking
+-> Supabase source/chunk upsert
+-> embedding backfill queue
+```
+
 Main Brain capabilities:
 
 - Google Drive OAuth connection.
 - Drive folder sync.
+- Research Agent URL import into Drive + Supabase.
+- Official SEC source finder for public-company filings and earnings exhibits.
 - PDF, DOCX, Google Docs/Sheets/Slides exports, TXT, Markdown, CSV, JSON, and HTML extraction.
 - Chunk storage with stable file and chunk hashes.
 - Full-text keyword search.
@@ -165,7 +180,12 @@ POST /api/brain/embeddings/backfill/start
 GET  /api/brain/search
 GET  /api/brain/search/semantic
 POST /api/brain/analyze-company
+POST /api/brain/agent/import-url
+POST /api/brain/agent/find-official-sources
+POST /api/brain/agent/run
 ```
+
+The Research Agent needs Google Drive OAuth with both read and `drive.file` write permission. If Drive was connected before agent import existed, reconnect Drive once from the Brain page so Google grants the new write scope.
 
 Detailed architecture notes are in:
 
@@ -192,6 +212,7 @@ Current security posture:
 - Public `anon` and `authenticated` table grants are revoked.
 - The dashboard uses the Render backend, which connects through the private Postgres connection string.
 - Do not expose `DATABASE_URL` or service credentials in the frontend.
+- The Research Agent downloads only public HTTP(S) URLs and rejects private/local network addresses.
 
 Brain tables:
 
@@ -259,7 +280,7 @@ This separation is important: changing the book should not erase what happened e
 Backend syntax check:
 
 ```powershell
-python -m py_compile backend\server.py backend\brain_store_postgres.py backend\gemini_client.py
+$env:PYTHONDONTWRITEBYTECODE='1'; python -m py_compile backend\server.py backend\drive_indexer.py backend\brain_agent.py backend\brain_store.py backend\brain_store_postgres.py backend\gemini_client.py
 ```
 
 Frontend build:
