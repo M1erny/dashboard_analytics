@@ -135,6 +135,15 @@ type SystemPromptResponse = {
     maxChars?: number;
 };
 
+type BrainBootstrapSnapshot = {
+    savedAt: number;
+    status?: BrainStatus | null;
+    drive?: DriveStatus | null;
+    references?: ReferenceSetResponse;
+    fullContext?: FullContextSetResponse;
+    systemPrompt?: SystemPromptResponse;
+};
+
 type AnalysisResponse = {
     answer: string;
     model: string;
@@ -177,6 +186,29 @@ const API_BASE = (
 ).replace(/\/$/, '');
 
 const api = (path: string) => `${API_BASE}${path}`;
+const BRAIN_BOOTSTRAP_CACHE_KEY = `investment-brain-bootstrap:${API_BASE}`;
+const BRAIN_BOOTSTRAP_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
+
+const readBrainBootstrapSnapshot = (): BrainBootstrapSnapshot | null => {
+    if (typeof window === 'undefined') return null;
+    try {
+        const value = window.sessionStorage.getItem(BRAIN_BOOTSTRAP_CACHE_KEY);
+        if (!value) return null;
+        const snapshot = JSON.parse(value) as BrainBootstrapSnapshot;
+        return Date.now() - snapshot.savedAt <= BRAIN_BOOTSTRAP_CACHE_MAX_AGE_MS ? snapshot : null;
+    } catch {
+        return null;
+    }
+};
+
+const writeBrainBootstrapSnapshot = (snapshot: BrainBootstrapSnapshot) => {
+    if (typeof window === 'undefined') return;
+    try {
+        window.sessionStorage.setItem(BRAIN_BOOTSTRAP_CACHE_KEY, JSON.stringify(snapshot));
+    } catch {
+        // A full browser storage quota should not block the research workflow.
+    }
+};
 
 const request = async (url: string, options: RequestInit = {}, timeoutMs = 65000) => {
     const controller = new AbortController();
@@ -406,31 +438,32 @@ const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: 
 );
 
 export const InvestmentBrainChat: React.FC = () => {
+    const bootstrapSnapshot = useRef<BrainBootstrapSnapshot | null>(readBrainBootstrapSnapshot());
     const [backendState, setBackendState] = useState<'checking' | 'ready' | 'offline'>('checking');
-    const [status, setStatus] = useState<BrainStatus | null>(null);
-    const [drive, setDrive] = useState<DriveStatus | null>(null);
-    const [referenceSources, setReferenceSources] = useState<SourceReference[]>([]);
-    const [referenceSelection, setReferenceSelection] = useState<number[]>([]);
-    const [referenceLimit, setReferenceLimit] = useState(6);
+    const [status, setStatus] = useState<BrainStatus | null>(() => bootstrapSnapshot.current?.status ?? null);
+    const [drive, setDrive] = useState<DriveStatus | null>(() => bootstrapSnapshot.current?.drive ?? null);
+    const [referenceSources, setReferenceSources] = useState<SourceReference[]>(() => bootstrapSnapshot.current?.references?.sources ?? []);
+    const [referenceSelection, setReferenceSelection] = useState<number[]>(() => bootstrapSnapshot.current?.references?.sourceIds ?? []);
+    const [referenceLimit, setReferenceLimit] = useState(() => bootstrapSnapshot.current?.references?.maxSources ?? 6);
     const [availableReferenceSources, setAvailableReferenceSources] = useState<SourceReference[]>([]);
     const [referenceFilter, setReferenceFilter] = useState('');
     const [isReferencePickerOpen, setIsReferencePickerOpen] = useState(false);
     const [isReferenceLoading, setIsReferenceLoading] = useState(false);
     const [isReferenceSaving, setIsReferenceSaving] = useState(false);
-    const [fullContextSources, setFullContextSources] = useState<SourceReference[]>([]);
-    const [fullContextSelection, setFullContextSelection] = useState<number[]>([]);
-    const [fullContextLimit, setFullContextLimit] = useState(4);
-    const [fullContextMaxChars, setFullContextMaxChars] = useState(250000);
-    const [fullContextTotalMaxChars, setFullContextTotalMaxChars] = useState(800000);
+    const [fullContextSources, setFullContextSources] = useState<SourceReference[]>(() => bootstrapSnapshot.current?.fullContext?.sources ?? []);
+    const [fullContextSelection, setFullContextSelection] = useState<number[]>(() => bootstrapSnapshot.current?.fullContext?.sourceIds ?? []);
+    const [fullContextLimit, setFullContextLimit] = useState(() => bootstrapSnapshot.current?.fullContext?.maxSources ?? 4);
+    const [fullContextMaxChars, setFullContextMaxChars] = useState(() => bootstrapSnapshot.current?.fullContext?.maxCharsPerSource ?? 250000);
+    const [fullContextTotalMaxChars, setFullContextTotalMaxChars] = useState(() => bootstrapSnapshot.current?.fullContext?.totalMaxChars ?? 800000);
     const [availableFullContextSources, setAvailableFullContextSources] = useState<SourceReference[]>([]);
     const [fullContextFilter, setFullContextFilter] = useState('');
     const [isFullContextPickerOpen, setIsFullContextPickerOpen] = useState(false);
     const [isFullContextLoading, setIsFullContextLoading] = useState(false);
     const [isFullContextSaving, setIsFullContextSaving] = useState(false);
-    const [systemPrompt, setSystemPrompt] = useState('');
-    const [savedSystemPrompt, setSavedSystemPrompt] = useState('');
-    const [defaultSystemPrompt, setDefaultSystemPrompt] = useState('');
-    const [systemPromptLimit, setSystemPromptLimit] = useState(6000);
+    const [systemPrompt, setSystemPrompt] = useState(() => bootstrapSnapshot.current?.systemPrompt?.systemPrompt ?? '');
+    const [savedSystemPrompt, setSavedSystemPrompt] = useState(() => bootstrapSnapshot.current?.systemPrompt?.systemPrompt ?? '');
+    const [defaultSystemPrompt, setDefaultSystemPrompt] = useState(() => bootstrapSnapshot.current?.systemPrompt?.defaultSystemPrompt ?? '');
+    const [systemPromptLimit, setSystemPromptLimit] = useState(() => bootstrapSnapshot.current?.systemPrompt?.maxChars ?? 6000);
     const [isSystemPromptOpen, setIsSystemPromptOpen] = useState(false);
     const [isSystemPromptLoading, setIsSystemPromptLoading] = useState(false);
     const [isSystemPromptSaving, setIsSystemPromptSaving] = useState(false);
@@ -462,18 +495,25 @@ export const InvestmentBrainChat: React.FC = () => {
             if (statusResult.status !== 'fulfilled') throw new Error('Brain backend is unavailable');
             const statusResponse = statusResult.value;
             if (!statusResponse.ok) throw new Error('Brain backend is unavailable');
-            setStatus(await statusResponse.json() as BrainStatus);
-            setDrive(driveResult.status === 'fulfilled' && driveResult.value.ok
+            const nextStatus = await statusResponse.json() as BrainStatus;
+            const nextDrive = driveResult.status === 'fulfilled' && driveResult.value.ok
                 ? await driveResult.value.json() as DriveStatus
-                : null);
+                : null;
+            let nextReferences = bootstrapSnapshot.current?.references;
+            let nextFullContext = bootstrapSnapshot.current?.fullContext;
+            let nextSystemPrompt = bootstrapSnapshot.current?.systemPrompt;
+            setStatus(nextStatus);
+            setDrive(nextDrive);
             if (referenceResult.status === 'fulfilled' && referenceResult.value.ok) {
                 const references = await referenceResult.value.json() as ReferenceSetResponse;
+                nextReferences = references;
                 setReferenceSources(references.sources ?? []);
                 setReferenceSelection(references.sourceIds ?? []);
                 setReferenceLimit(references.maxSources ?? 6);
             }
             if (fullContextResult.status === 'fulfilled' && fullContextResult.value.ok) {
                 const fullContext = await fullContextResult.value.json() as FullContextSetResponse;
+                nextFullContext = fullContext;
                 setFullContextSources(fullContext.sources ?? []);
                 setFullContextSelection(fullContext.sourceIds ?? []);
                 setFullContextLimit(fullContext.maxSources ?? 4);
@@ -482,11 +522,22 @@ export const InvestmentBrainChat: React.FC = () => {
             }
             if (systemPromptResult.status === 'fulfilled' && systemPromptResult.value.ok) {
                 const prompt = await systemPromptResult.value.json() as SystemPromptResponse;
+                nextSystemPrompt = prompt;
                 setSystemPrompt(prompt.systemPrompt ?? '');
                 setSavedSystemPrompt(prompt.systemPrompt ?? '');
                 setDefaultSystemPrompt(prompt.defaultSystemPrompt ?? '');
                 setSystemPromptLimit(prompt.maxChars ?? 6000);
             }
+            const snapshot = {
+                savedAt: Date.now(),
+                status: nextStatus,
+                drive: nextDrive,
+                references: nextReferences,
+                fullContext: nextFullContext,
+                systemPrompt: nextSystemPrompt,
+            } satisfies BrainBootstrapSnapshot;
+            bootstrapSnapshot.current = snapshot;
+            writeBrainBootstrapSnapshot(snapshot);
             setBackendState('ready');
         } catch {
             setBackendState('offline');

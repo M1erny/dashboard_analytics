@@ -4,6 +4,7 @@ import html
 import re
 import asyncio
 import json
+from collections import OrderedDict
 
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
@@ -116,6 +117,8 @@ MAX_FULL_CONTEXT_SOURCES = 4
 FULL_CONTEXT_MAX_CHARS_PER_SOURCE = max(20_000, min(_env_int("BRAIN_FULL_CONTEXT_MAX_CHARS_PER_SOURCE", 250_000), 1_000_000))
 FULL_CONTEXT_TOTAL_MAX_CHARS = max(100_000, min(_env_int("BRAIN_FULL_CONTEXT_TOTAL_MAX_CHARS", 800_000), 1_500_000))
 FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS = max(15.0, min(_env_float("BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS", 45.0), 120.0))
+FULL_DOCUMENT_CACHE_MAX_ENTRIES = max(2, min(_env_int("BRAIN_FULL_DOCUMENT_CACHE_MAX_ENTRIES", 12), 32))
+BRAIN_STATUS_CACHE_SECONDS = max(2.0, min(_env_float("BRAIN_STATUS_CACHE_SECONDS", 15.0), 60.0))
 SYSTEM_PROMPT_SETTING = "brain.system_prompt.v1"
 MAX_SYSTEM_PROMPT_CHARS = 6000
 DEFAULT_BRAIN_SYSTEM_PROMPT = """You are Investment Brain, a rigorous private investing research assistant.
@@ -148,6 +151,11 @@ drive_index_job: dict[str, Any] = {
     "results": [],
     "message": "Idle",
 }
+
+# These caches are deliberately short-lived/versioned: they reduce repeated Supabase
+# work during a research thread without hiding newly indexed files for long.
+brain_status_cache: dict[str, Any] = {"payload": None, "expiresAt": 0.0}
+full_document_text_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
 
 async def _run_brain_step(label: str, func, *args, timeout: float | None = None, **kwargs):
@@ -453,6 +461,36 @@ def _stitch_source_chunks(chunks: list[dict[str, Any]]) -> str:
     return " ".join(stitched_words).strip()
 
 
+def _full_document_cache_key(source: dict[str, Any]) -> str:
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    version = (
+        source.get("updatedAt")
+        or source.get("updated_at")
+        or metadata.get("indexedAt")
+        or metadata.get("fileHash")
+        or "unknown"
+    )
+    return f"{int(source['id'])}:{version}"
+
+
+def _get_cached_full_document(source: dict[str, Any]) -> dict[str, Any] | None:
+    cache_key = _full_document_cache_key(source)
+    cached = full_document_text_cache.get(cache_key)
+    if cached is not None:
+        full_document_text_cache.move_to_end(cache_key)
+    return cached
+
+
+def _cache_full_document(source: dict[str, Any], *, full_text: str, chunk_count: int) -> dict[str, Any]:
+    cache_key = _full_document_cache_key(source)
+    cached = {"fullText": full_text, "chunkCount": chunk_count}
+    full_document_text_cache[cache_key] = cached
+    full_document_text_cache.move_to_end(cache_key)
+    while len(full_document_text_cache) > FULL_DOCUMENT_CACHE_MAX_ENTRIES:
+        full_document_text_cache.popitem(last=False)
+    return cached
+
+
 async def _build_full_document_context(
     store: Any,
     sources: list[dict[str, Any]],
@@ -460,6 +498,15 @@ async def _build_full_document_context(
     """Load the full indexed text of selected documents with visible budgets."""
     if not sources or not hasattr(store, "list_chunks"):
         return []
+
+    cached_documents: dict[int, dict[str, Any]] = {}
+    uncached_sources: list[dict[str, Any]] = []
+    for source in sources:
+        cached = _get_cached_full_document(source)
+        if cached is None:
+            uncached_sources.append(source)
+        else:
+            cached_documents[int(source["id"])] = cached
 
     chunk_requests = [
         _run_brain_step(
@@ -469,18 +516,28 @@ async def _build_full_document_context(
             limit=500,
             timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
         )
-        for source in sources
+        for source in uncached_sources
     ]
     chunk_results = await asyncio.gather(*chunk_requests, return_exceptions=True)
-    remaining_chars = FULL_CONTEXT_TOTAL_MAX_CHARS
-    documents: list[dict[str, Any]] = []
-
-    for source, chunks in zip(sources, chunk_results):
+    for source, chunks in zip(uncached_sources, chunk_results):
         if isinstance(chunks, Exception):
             continue
         full_text = _stitch_source_chunks(chunks or [])
-        if not full_text:
+        if full_text:
+            cached_documents[int(source["id"])] = _cache_full_document(
+                source,
+                full_text=full_text,
+                chunk_count=len(chunks or []),
+            )
+
+    remaining_chars = FULL_CONTEXT_TOTAL_MAX_CHARS
+    documents: list[dict[str, Any]] = []
+
+    for source in sources:
+        cached = cached_documents.get(int(source["id"]))
+        if not cached:
             continue
+        full_text = str(cached["fullText"])
         available_chars = len(full_text)
         chars_allowed = min(available_chars, FULL_CONTEXT_MAX_CHARS_PER_SOURCE, remaining_chars)
         if chars_allowed <= 0:
@@ -492,7 +549,7 @@ async def _build_full_document_context(
             "sourceId": int(source["id"]),
             "source": _public_source_reference(source),
             "body": context_text,
-            "chunkCount": len(chunks or []),
+            "chunkCount": int(cached["chunkCount"]),
             "charsIncluded": len(context_text),
             "availableChars": available_chars,
             "contextTruncated": len(context_text) < available_chars,
@@ -1169,6 +1226,11 @@ async def get_status():
 
 @app.get("/api/brain/status")
 async def get_brain_status():
+    now = time.monotonic()
+    cached_payload = brain_status_cache.get("payload")
+    if cached_payload is not None and now < float(brain_status_cache.get("expiresAt") or 0):
+        return cached_payload
+
     store = _brain_or_503()
     counts = await _run_brain_step("Brain counts", store.counts)
     embeddings = await _run_brain_step(
@@ -1197,7 +1259,7 @@ async def get_brain_status():
     if _local_indexing_enabled():
         capabilities.append("local_file_indexing")
 
-    return {
+    payload = {
         "state": "ready",
         "database": getattr(store, "database_label", str(getattr(store, "db_path", "unknown"))),
         "storage": getattr(store, "storage_label", "unknown"),
@@ -1209,6 +1271,9 @@ async def get_brain_status():
         "counts": counts,
         "embeddings": embeddings,
     }
+    brain_status_cache["payload"] = payload
+    brain_status_cache["expiresAt"] = now + BRAIN_STATUS_CACHE_SECONDS
+    return payload
 
 
 @app.get("/api/brain/llm/status")
