@@ -975,6 +975,46 @@ class PostgresBrainStore:
             results.append(item)
         return results
 
+    def semantic_search_chunks_in_sources(
+        self,
+        query_embedding: list[float],
+        source_ids: list[int],
+        *,
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        """Return semantic hits only from a bounded, user-selected reference set."""
+        clean_source_ids = list(dict.fromkeys(
+            int(source_id)
+            for source_id in source_ids
+            if isinstance(source_id, int) or str(source_id).strip().isdigit()
+        ))
+        if not clean_source_ids or math.sqrt(sum(value * value for value in query_embedding)) == 0:
+            return []
+
+        limit = max(1, min(int(limit), 100))
+        embedding_literal = self._embedding_literal(query_embedding)
+        source_placeholders = ", ".join("%s" for _ in clean_source_ids)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT {CHUNK_COLUMNS},
+                       1 - (c.embedding <=> %s::vector) AS score
+                  FROM chunks c
+                 WHERE c.embedding IS NOT NULL
+                   AND c.source_id IN ({source_placeholders})
+                 ORDER BY c.embedding <=> %s::vector
+                 LIMIT %s
+                """,
+                (embedding_literal, *clean_source_ids, embedding_literal, limit),
+            ).fetchall()
+
+        results = []
+        for row in rows:
+            item = self._chunk_from_row(row)
+            item["score"] = float(row["score"])
+            results.append(item)
+        return results
+
     def get_setting(self, key: str) -> str | None:
         clean_key = str(key or "").strip()
         if not clean_key:

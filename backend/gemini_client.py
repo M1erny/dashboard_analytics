@@ -142,6 +142,7 @@ class GeminiClient:
         self,
         prompt: str,
         *,
+        system_instruction: str | None = None,
         temperature: float = 0.25,
         max_output_tokens: int = 900,
         timeout_seconds: float | None = None,
@@ -168,6 +169,11 @@ class GeminiClient:
             ],
             "generationConfig": generation_config,
         }
+        clean_system_instruction = (system_instruction or "").strip()
+        if clean_system_instruction:
+            payload["systemInstruction"] = {
+                "parts": [{"text": clean_system_instruction[:12000]}],
+            }
 
         request_timeout = timeout_seconds or self.request_timeout
         with httpx.Client(timeout=request_timeout) as client:

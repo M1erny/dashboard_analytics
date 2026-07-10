@@ -14,6 +14,205 @@ Build a durable memory layer for investing that understands:
 
 The system should become a retrievable context engine for company analysis.
 
+## Product Shape: A Research Conversation, Not a Control Panel
+
+The primary interface should be one persistent research thread. The analyst asks a question, sees the conclusion, opens the exact evidence used, and follows up without having to rebuild the context each time.
+
+```text
+Question
+-> retrieve evidence by meaning and exact terms
+-> expand the strongest relevant files around the matches
+-> produce an attributable answer
+-> show sources directly beneath that answer
+-> continue the same line of work
+```
+
+The dashboard should keep Drive connection, sync, embedding coverage, source search, and source acquisition in a compact library rail. Those are important operations, but they should not compete with the research conversation.
+
+The chat-first interface now follows this shape:
+
+- one composer with a ticker and a question
+- threaded follow-ups that receive fresh retrieval, not only chat history
+- source cards beneath each answer, with direct Drive/source links where available
+- a compact library rail for status, search, Drive sync, embedding backfill, and official-source acquisition
+- source acquisition stays separate from analysis: acquire -> index -> embed -> ask
+
+### Persistent Reference Layer
+
+The analyst can select up to six indexed Drive sources as a standing reference layer. This is for durable frameworks, books, long-running theses, and mental models that should shape the reasoning across every company question.
+
+```text
+Selected Drive files
+        |
+        v
+Stored once in Brain settings
+        |
+        v
+For every question, retrieve one relevant passage per selected file
+        |
+        v
+Add a bounded framework layer to the model context
+```
+
+The Brain does not paste entire books into every prompt. Each selected source contributes one semantically relevant passage; if its embedding is unavailable, it falls back to an anchor passage. This keeps the reference layer useful, attributable, and fast.
+
+Reference sources are lenses, not automatic evidence about a company. The model is instructed to label them as `[R1]`, `[R2]`, and so on when they materially influence the reasoning, and to surface tension between the framework and current company-specific evidence.
+
+### Editable System Prompt
+
+The Brain also has one persistent, editable system prompt. It is stored in the Brain settings database and sent to Gemini through its native `systemInstruction` field for every answer. This is where the investor defines the analytical posture, writing style, skepticism, preferred decision framework, and how strongly the model should challenge a thesis.
+
+```text
+System prompt                 -> how the Brain reasons and communicates
+Persistent reference sources  -> the frameworks available in its context
+Retrieved company evidence    -> the facts relevant to the current question
+Conversation thread           -> what has already been discussed
+```
+
+The system prompt should define behavior, not duplicate large source material. Put books, frameworks, and durable research in the reference layer so they remain attributable and can supply query-relevant passages.
+
+### What Retrieval Does Today
+
+The answer endpoint uses hybrid retrieval instead of treating vector and keyword search as mutually exclusive:
+
+```text
+query embedding -> pgvector semantic candidates
+query terms     -> Postgres full-text candidates
+                         \ /
+              reciprocal-rank fusion
+                         |
+             top evidence passages
+                         |
+        expand the two strongest source files
+                         |
+                 Gemini answer + citations
+```
+
+Reciprocal-rank fusion matters because it does not compare incompatible vector and full-text scores. A passage ranked highly by both methods gets a meaningful boost; an exact filing reference is not discarded merely because vector search returned broader thematic material.
+
+The source expansion step now reads nearby chunks from the two strongest files rather than answering from one isolated snippet. It is deliberately bounded so a normal question remains fast and the answer stays auditable.
+
+## Better Brain Roadmap
+
+The next architecture should be built as five explicit layers. The goal is to make the system increasingly useful without turning it into an opaque autonomous trader.
+
+### 1. Research Coordinator
+
+This is the chat-facing layer. It decides which read-only tools to use for a question and reports what it did.
+
+```text
+Classify question
+-> resolve company / issuer / ticker
+-> retrieve documents, frameworks, and prior decisions
+-> decide whether a deep-file read is warranted
+-> answer with confidence, evidence, and open questions
+```
+
+It should expose a small, human-readable activity line in the thread, such as:
+
+```text
+Semantic search: 8 passages
+Exact search: 4 passages
+Read deeply: 2 files
+Answer based on: 5 cited sources
+```
+
+Do not make the model silently choose a financial conclusion. Its job is to assemble evidence, explain the inference, identify contradiction, and say what is missing.
+
+### 2. Research Index
+
+The index should become source-aware rather than only chunk-aware.
+
+```text
+Source record
+  -> document summary
+  -> section/chapter summaries
+  -> passages/chunks
+  -> embeddings
+  -> entities, dates, tickers, filing period, author, source quality
+```
+
+Next data additions:
+
+- source-level summaries to improve ranking and browsing
+- page and section anchors for PDFs, not just chunk ordinals
+- OCR status and extraction quality for scanned files
+- normalized company/ticker/entity tables so `META`, Meta Platforms, and historical names resolve together
+- document version and file hash history, so an updated filing or note is traceable
+- embedding model/version stored per passage, allowing re-indexing without ambiguity
+
+For large libraries, continue doing extraction and embedding on the local worker, with Supabase as the shared retrieval index. Render should answer questions and run small agent jobs, not parse a large book library in memory.
+
+### 3. Retrieval Planner
+
+Hybrid retrieval is the first step. The next planner should use several cheap passes before a deep read:
+
+```text
+company/entity match
+-> recency and source-quality filters
+-> semantic + keyword ranking
+-> rerank top 20 passages
+-> select 2-4 source files for deeper reading
+-> assemble a bounded evidence pack
+```
+
+Useful ranking signals:
+
+- direct ticker/company match
+- official filing or primary source over commentary
+- document date and reporting period
+- semantic relevance
+- exact term relevance
+- whether the passage supports or contradicts the current thesis
+- your own source-quality rating
+
+Add a reranker only after source coverage is strong. It is a quality improvement, not a substitute for complete and well-provenanced data.
+
+### 4. Investment Log
+
+The old free-form “memory” screen should not return. Replace it with a deliberate, auditable investment log that the chat can create from a conversation when you approve it.
+
+Each record should answer one specific question:
+
+```text
+Company / theme
+Decision: liked, passed, bought, reduced, sold, monitoring
+Why now
+Key assumptions
+Disconfirming evidence
+What changes my mind
+Evidence links
+Decision date and effective portfolio date
+```
+
+This makes the second brain personal without creating a vague bucket of notes. Later, the chat can answer: “Why did I pass on this in 2025?” or “Which assumptions have changed since I added the position?” and cite both the old decision and the new evidence.
+
+### 5. Acquisition Agent
+
+The current agent can find official SEC material and import a public URL. Build outward from a strict plan-and-confirm model:
+
+```text
+task -> proposed sources -> user approves import -> Drive -> index -> embeddings -> available in chat
+```
+
+Priority connectors, in order:
+
+1. SEC/EDGAR filings and earnings exhibits
+2. company investor-relations pages, allowlisted per company/domain
+3. earnings-call transcripts only where the license permits storage
+4. trusted web research with provenance and a visible source-quality label
+
+Every acquired item needs the original URL, retrieval date, hash, Drive link, source type, and import status. The agent should not overwrite your Drive organisation or store a copyrighted third-party source unless its terms allow it.
+
+## What Not To Add Yet
+
+- autonomous trading or portfolio changes
+- automatic “memories” inferred from every chat answer
+- broad web crawling without domain, licensing, and provenance controls
+- a large multi-agent framework before retrieval quality and the investment log are reliable
+
+Those features create a lot of motion but little trustworthy investing edge. The order should be: high-quality sources -> retrieval -> transparent reasoning -> decision history -> carefully scoped acquisition agents.
+
 ## Preferred Hybrid Architecture
 
 Use a hybrid setup rather than trying to store everything inside Vercel, Render, or the browser.
@@ -385,6 +584,10 @@ GET    /api/brain/llm/status
 POST   /api/brain/embeddings/backfill
 GET    /api/brain/search/semantic
 POST   /api/brain/analyze-company
+GET    /api/brain/references
+PUT    /api/brain/references
+GET    /api/brain/system-prompt
+PUT    /api/brain/system-prompt
 POST   /api/brain/agent/import-url
 POST   /api/brain/agent/find-official-sources
 POST   /api/brain/agent/run

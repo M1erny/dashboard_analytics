@@ -3,6 +3,7 @@ import os
 import html
 import re
 import asyncio
+import json
 
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
@@ -98,6 +99,15 @@ def _env_float(name: str, default: float) -> float:
 BRAIN_SEARCH_TIMEOUT_SECONDS = _env_float("BRAIN_SEARCH_TIMEOUT_SECONDS", 18.0)
 BRAIN_ANALYSIS_TIMEOUT_SECONDS = _env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 8.0)
 BRAIN_INDEX_TIMEOUT_SECONDS = _env_float("BRAIN_INDEX_TIMEOUT_SECONDS", 240.0)
+REFERENCE_SOURCE_IDS_SETTING = "brain.reference_source_ids.v1"
+MAX_REFERENCE_SOURCES = 6
+SYSTEM_PROMPT_SETTING = "brain.system_prompt.v1"
+MAX_SYSTEM_PROMPT_CHARS = 6000
+DEFAULT_BRAIN_SYSTEM_PROMPT = """You are Investment Brain, a rigorous private investing research assistant.
+
+Think like a patient, independent equity analyst. Separate evidence from inference, make assumptions explicit, identify contradictions, and avoid false precision. Treat primary sources and dated company evidence as stronger than commentary. Do not invent facts, citations, or certainty. When information is missing, say what would be needed to decide.
+
+Use the investor's standing reference sources as durable frameworks and lenses, not as proof of company-specific claims. Be concise, clear, and willing to challenge the investor's thesis."""
 
 embedding_backfill_job: dict[str, Any] = {
     "running": False,
@@ -289,6 +299,181 @@ async def _attach_source_references(store: Any, results: list[dict[str, Any]]) -
                 next_item["source"] = reference
         enriched.append(next_item)
     return enriched
+
+
+def _parse_reference_source_ids(value: str | None) -> list[int]:
+    if not value:
+        return []
+    try:
+        raw_ids = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw_ids, list):
+        return []
+
+    source_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in raw_ids:
+        try:
+            source_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if source_id <= 0 or source_id in seen:
+            continue
+        seen.add(source_id)
+        source_ids.append(source_id)
+        if len(source_ids) >= MAX_REFERENCE_SOURCES:
+            break
+    return source_ids
+
+
+async def _load_reference_sources(store: Any, source_ids: list[int]) -> list[dict[str, Any]]:
+    if not source_ids or not hasattr(store, "get_source"):
+        return []
+
+    requests = [
+        _run_brain_step(
+            "Reference source lookup",
+            store.get_source,
+            source_id,
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+        for source_id in source_ids
+    ]
+    results = await asyncio.gather(*requests, return_exceptions=True)
+    sources: list[dict[str, Any]] = []
+    for source_id, result in zip(source_ids, results):
+        if isinstance(result, Exception) or not result:
+            continue
+        source = dict(result)
+        source["id"] = int(source.get("id") or source_id)
+        sources.append(source)
+    return sources
+
+
+async def _reference_sources_from_store(store: Any) -> tuple[list[int], list[dict[str, Any]]]:
+    if not hasattr(store, "get_setting"):
+        return [], []
+    raw_ids = await _run_brain_step(
+        "Reference set lookup",
+        store.get_setting,
+        REFERENCE_SOURCE_IDS_SETTING,
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
+    source_ids = _parse_reference_source_ids(raw_ids)
+    sources = await _load_reference_sources(store, source_ids)
+    available_ids = [int(source["id"]) for source in sources]
+    return available_ids, sources
+
+
+async def _system_prompt_from_store(store: Any) -> str:
+    if not hasattr(store, "get_setting"):
+        return DEFAULT_BRAIN_SYSTEM_PROMPT
+    saved_prompt = await _run_brain_step(
+        "System prompt lookup",
+        store.get_setting,
+        SYSTEM_PROMPT_SETTING,
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
+    clean_prompt = str(saved_prompt or "").strip()
+    return clean_prompt[:MAX_SYSTEM_PROMPT_CHARS] or DEFAULT_BRAIN_SYSTEM_PROMPT
+
+
+async def _build_reference_context(
+    store: Any,
+    sources: list[dict[str, Any]],
+    *,
+    query_embedding: list[float] | None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Build a bounded framework layer from every selected reference source.
+
+    Each selected source contributes one query-relevant passage when embeddings
+    are available, otherwise the first indexed passage acts as an anchor. This
+    gives the model a stable investing lens without injecting whole books.
+    """
+    if not sources:
+        return [], 0
+
+    source_ids = [int(source["id"]) for source in sources]
+    semantic_hits: list[dict[str, Any]] = []
+    if query_embedding and hasattr(store, "semantic_search_chunks_in_sources"):
+        try:
+            semantic_hits = await _run_brain_step(
+                "Reference semantic search",
+                store.semantic_search_chunks_in_sources,
+                query_embedding,
+                source_ids,
+                limit=len(source_ids) * 3,
+                timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+            ) or []
+        except Exception:
+            semantic_hits = []
+
+    best_hit_by_source: dict[int, dict[str, Any]] = {}
+    for hit in semantic_hits:
+        try:
+            source_id = int(hit.get("sourceId") or hit.get("source_id"))
+        except (TypeError, ValueError):
+            continue
+        if source_id in source_ids and source_id not in best_hit_by_source:
+            best_hit_by_source[source_id] = hit
+
+    missing_source_ids = [source_id for source_id in source_ids if source_id not in best_hit_by_source]
+    fallback_chunks: dict[int, dict[str, Any]] = {}
+    if missing_source_ids and hasattr(store, "list_chunks"):
+        fallback_requests = [
+            _run_brain_step(
+                "Reference anchor lookup",
+                store.list_chunks,
+                source_id=source_id,
+                limit=1,
+                timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+            )
+            for source_id in missing_source_ids
+        ]
+        fallback_results = await asyncio.gather(*fallback_requests, return_exceptions=True)
+        for source_id, chunks in zip(missing_source_ids, fallback_results):
+            if isinstance(chunks, Exception) or not chunks:
+                continue
+            fallback_chunks[source_id] = chunks[0]
+
+    references: list[dict[str, Any]] = []
+    for source in sources:
+        source_id = int(source["id"])
+        chunk = best_hit_by_source.get(source_id) or fallback_chunks.get(source_id)
+        mode = "semantic" if source_id in best_hit_by_source else "anchor"
+        if not chunk and source.get("body"):
+            chunk = {
+                "sourceId": source_id,
+                "ordinal": 0,
+                "title": source.get("title") or "Reference source",
+                "body": str(source.get("body") or ""),
+            }
+        if not chunk:
+            continue
+        references.append({
+            "sourceId": source_id,
+            "source": _public_source_reference(source),
+            "referenceMode": mode,
+            "chunks": [chunk],
+            "maxCharsPerChunk": 750,
+        })
+
+    return references, len(best_hit_by_source)
+
+
+def _format_reference_context(items: list[dict[str, Any]]) -> str:
+    blocks: list[str] = []
+    for index, item in enumerate(items, start=1):
+        source = item.get("source") or {}
+        source_title = source.get("title") or f"Source {item.get('sourceId')}"
+        mode = item.get("referenceMode") or "anchor"
+        chunk = next((chunk for chunk in item.get("chunks", []) if chunk.get("body")), {})
+        body = str(chunk.get("body") or "").strip()[: int(item.get("maxCharsPerChunk") or 750)]
+        ordinal = chunk.get("ordinal")
+        location = f" | passage {ordinal}" if isinstance(ordinal, int) and ordinal > 0 else ""
+        blocks.append(f"[R{index}] {source_title} | persistent {mode} reference{location}\n{body}")
+    return "\n\n".join(blocks)
 
 
 async def _run_drive_index_job(
@@ -603,6 +788,14 @@ class BrainAgentRunRequest(BaseModel):
     embedMaxChunks: int = Field(default=60, ge=1, le=500)
 
 
+class BrainReferenceSetRequest(BaseModel):
+    sourceIds: list[int] = Field(default_factory=list, max_length=MAX_REFERENCE_SOURCES)
+
+
+class BrainSystemPromptRequest(BaseModel):
+    systemPrompt: str = Field(default="", max_length=MAX_SYSTEM_PROMPT_CHARS)
+
+
 class BrainConversationTurn(BaseModel):
     role: str = Field(..., min_length=1, max_length=20)
     content: str = Field(..., min_length=1, max_length=5000)
@@ -833,6 +1026,8 @@ async def get_brain_status():
         "gemini_embeddings",
         "gemini_company_analysis",
         "embedding_ready_schema",
+        "persistent_reference_layer",
+        "editable_system_prompt",
     ]
     if import_url_into_brain:
         capabilities.append("agentic_url_import")
@@ -1316,6 +1511,76 @@ async def list_brain_sources(
     return {"sources": sources}
 
 
+@app.get("/api/brain/references")
+async def get_brain_reference_set():
+    store = _brain_or_503()
+    source_ids, sources = await _reference_sources_from_store(store)
+    return {
+        "maxSources": MAX_REFERENCE_SOURCES,
+        "sourceIds": source_ids,
+        "sources": [_public_source_reference(source) for source in sources],
+    }
+
+
+@app.put("/api/brain/references")
+async def update_brain_reference_set(payload: BrainReferenceSetRequest):
+    store = _brain_or_503()
+    requested_ids = _parse_reference_source_ids(json.dumps(payload.sourceIds))
+    if len(requested_ids) != len(payload.sourceIds) or len(set(payload.sourceIds)) != len(payload.sourceIds):
+        raise HTTPException(status_code=400, detail="Reference source IDs must be unique positive integers.")
+
+    sources = await _load_reference_sources(store, requested_ids)
+    found_ids = {int(source["id"]) for source in sources}
+    missing_ids = [source_id for source_id in requested_ids if source_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Reference source not found: {missing_ids[0]}")
+    if not hasattr(store, "set_setting"):
+        raise HTTPException(status_code=503, detail="Brain settings are not available")
+
+    await _run_brain_step(
+        "Reference set save",
+        store.set_setting,
+        REFERENCE_SOURCE_IDS_SETTING,
+        json.dumps(requested_ids),
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
+    return {
+        "maxSources": MAX_REFERENCE_SOURCES,
+        "sourceIds": requested_ids,
+        "sources": [_public_source_reference(source) for source in sources],
+    }
+
+
+@app.get("/api/brain/system-prompt")
+async def get_brain_system_prompt():
+    store = _brain_or_503()
+    return {
+        "systemPrompt": await _system_prompt_from_store(store),
+        "defaultSystemPrompt": DEFAULT_BRAIN_SYSTEM_PROMPT,
+        "maxChars": MAX_SYSTEM_PROMPT_CHARS,
+    }
+
+
+@app.put("/api/brain/system-prompt")
+async def update_brain_system_prompt(payload: BrainSystemPromptRequest):
+    store = _brain_or_503()
+    if not hasattr(store, "set_setting"):
+        raise HTTPException(status_code=503, detail="Brain settings are not available")
+    system_prompt = payload.systemPrompt.strip() or DEFAULT_BRAIN_SYSTEM_PROMPT
+    await _run_brain_step(
+        "System prompt save",
+        store.set_setting,
+        SYSTEM_PROMPT_SETTING,
+        system_prompt,
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
+    return {
+        "systemPrompt": system_prompt,
+        "defaultSystemPrompt": DEFAULT_BRAIN_SYSTEM_PROMPT,
+        "maxChars": MAX_SYSTEM_PROMPT_CHARS,
+    }
+
+
 @app.delete("/api/brain/sources/{source_id}")
 async def delete_brain_source(source_id: int):
     store = _brain_or_503()
@@ -1593,6 +1858,61 @@ def _format_context_block(items: list[dict], *, max_chars: int = 1000) -> str:
     return "\n\n".join(blocks)
 
 
+def _merge_retrieval_results(
+    semantic_results: list[dict[str, Any]],
+    keyword_results: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Fuse semantic and lexical rankings without comparing incompatible scores.
+
+    pgvector cosine scores and full-text ranks have different scales. Reciprocal
+    rank fusion only relies on position, preserves strong exact matches, and
+    gives a useful boost to evidence surfaced by both retrieval methods.
+    """
+    fused: dict[tuple[str, int], dict[str, Any]] = {}
+    rank_constant = 60.0
+
+    for channel, results in (("semantic", semantic_results), ("keyword", keyword_results)):
+        for rank, item in enumerate(results, start=1):
+            entity_type = str(item.get("entityType") or "chunk")
+            entity_id = item.get("id") or item.get("entityId")
+            if entity_id is None:
+                continue
+            try:
+                key = (entity_type, int(entity_id))
+            except (TypeError, ValueError):
+                continue
+
+            existing = fused.get(key)
+            if existing is None:
+                existing = dict(item)
+                existing["entityType"] = entity_type
+                existing["entityId"] = key[1]
+                existing["retrievalSignals"] = {}
+                existing["hybridScore"] = 0.0
+                fused[key] = existing
+
+            signals = existing["retrievalSignals"]
+            signals[f"{channel}Rank"] = rank
+            existing["hybridScore"] += 1.0 / (rank_constant + rank)
+
+            # Keep the semantic score visible for diagnostics when available.
+            if channel == "semantic" and item.get("score") is not None:
+                existing["score"] = item.get("score")
+
+    ordered = sorted(
+        fused.values(),
+        key=lambda item: (
+            float(item.get("hybridScore") or 0),
+            int("semanticRank" in item.get("retrievalSignals", {}))
+            + int("keywordRank" in item.get("retrievalSignals", {})),
+        ),
+        reverse=True,
+    )
+    return ordered[: max(1, min(int(limit), 20))]
+
+
 def _context_excerpt(item: dict[str, Any], *, max_chars: int = 360) -> str:
     body = re.sub(r"\s+", " ", str(item.get("body") or "")).strip()
     if len(body) <= max_chars:
@@ -1665,11 +1985,11 @@ def _expand_semantic_hits_into_sources(
     store: Any,
     hits: list[dict[str, Any]],
     *,
-    max_sources: int = 1,
-    window: int = 1,
-    max_source_chunks: int = 16,
-    max_chunks_per_source: int = 3,
-    max_chars_per_chunk: int = 500,
+    max_sources: int = 2,
+    window: int = 2,
+    max_source_chunks: int = 24,
+    max_chunks_per_source: int = 4,
+    max_chars_per_chunk: int = 650,
 ) -> list[dict[str, Any]]:
     expanded: list[dict[str, Any]] = []
     source_ids: list[int] = []
@@ -1793,9 +2113,36 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         if turn.role.lower() == "user"
     )
     retrieval_query = f"{ticker} {prior_user_questions} {question}".strip()[:4000]
+    reference_sources_task = asyncio.create_task(_reference_sources_from_store(store))
+    system_prompt_task = asyncio.create_task(_system_prompt_from_store(store))
+    _, selected_reference_sources = await reference_sources_task
+    system_prompt = await system_prompt_task
 
-    keyword_results = []
-    semantic_results = []
+    candidate_limit = min(payload.limit * 2, 20)
+    retrieval_started = time.perf_counter()
+    keyword_task = asyncio.create_task(
+        _run_brain_step(
+            "Keyword brain search",
+            store.search,
+            retrieval_query,
+            limit=candidate_limit,
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+    )
+    memory_task = asyncio.create_task(
+        _run_brain_step(
+            "Memory search",
+            store.list_memories,
+            query=f"{ticker} {question}",
+            limit=min(payload.limit, 4),
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+    )
+
+    keyword_results: list[dict[str, Any]] = []
+    semantic_results: list[dict[str, Any]] = []
+    query_embedding: list[float] | None = None
+    semantic_available = False
     if payload.useSemantic:
         step_started = time.perf_counter()
         try:
@@ -1810,62 +2157,57 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
                 "Supabase vector search",
                 store.semantic_search_chunks,
                 query_embedding,
-                limit=payload.limit,
+                limit=candidate_limit,
                 timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
             ) or []
+            semantic_available = True
         except Exception as e:
             timings["semanticError"] = _clean_public_error(e)[:240]
             semantic_results = []
         timings["semanticSearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
-
-    if not semantic_results:
-        step_started = time.perf_counter()
-        keyword_results = await _run_brain_step(
-            "Keyword brain search",
-            store.search,
-            retrieval_query,
-            limit=payload.limit,
-            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
-        )
-        timings["keywordSearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
     else:
-        timings["keywordSearchMs"] = 0.0
+        timings["semanticSearchMs"] = 0.0
 
-    step_started = time.perf_counter()
-    memory_results = await _run_brain_step(
-        "Memory search",
-        store.list_memories,
-        query=ticker,
-        limit=min(payload.limit, 3),
-        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    try:
+        keyword_results = await keyword_task
+    except Exception as e:
+        timings["keywordError"] = _clean_public_error(e)[:240]
+        keyword_results = []
+    timings["keywordSearchMs"] = round((time.perf_counter() - retrieval_started) * 1000, 1)
+
+    try:
+        memory_results = await memory_task
+    except Exception as e:
+        timings["memoryError"] = _clean_public_error(e)[:240]
+        memory_results = []
+    timings["memorySearchMs"] = round((time.perf_counter() - retrieval_started) * 1000, 1)
+
+    context_items = _merge_retrieval_results(
+        semantic_results,
+        keyword_results,
+        limit=payload.limit,
     )
-    timings["memorySearchMs"] = round((time.perf_counter() - step_started) * 1000, 1)
-
-    context_items = []
-    seen = set()
-    for item in semantic_results + keyword_results:
-        key = (item.get("entityType", "chunk"), item.get("id") or item.get("entityId"))
-        if key in seen:
-            continue
-        seen.add(key)
-        context_items.append(item)
-        if len(context_items) >= payload.limit:
-            break
     context_items = await _attach_source_references(store, context_items)
 
     step_started = time.perf_counter()
-    deep_sources = await _run_brain_step(
+    deep_sources_task = asyncio.create_task(_run_brain_step(
         "Deep source expansion",
         _expand_semantic_hits_into_sources,
         store,
-        semantic_results or context_items,
+        context_items,
         timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
-    )
+    ))
+    reference_context_task = asyncio.create_task(_build_reference_context(
+        store,
+        selected_reference_sources,
+        query_embedding=query_embedding,
+    ))
+    deep_sources = await deep_sources_task
+    reference_context, reference_semantic_hits = await reference_context_task
     timings["deepSourceExpansionMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
     prompt = f"""
-You are an investment research assistant for one investor's private dashboard.
-Use the provided brain context, but separate evidence from inference.
+Use the provided research context to answer the investment question. Separate evidence from inference.
 Do not pretend missing information is present.
 When deep source context is available, treat it as the main evidence base: semantic search found a relevant chunk, then the backend expanded into the surrounding file chunks.
 Prefer specific source titles and chunk numbers when explaining evidence.
@@ -1879,6 +2221,9 @@ Previous conversation in this same brain thread:
 Personal memories:
 {_format_context_block(memory_results, max_chars=900) or "No matching memories."}
 
+Persistent reference layer injected into this model context:
+{_format_reference_context(reference_context) or "No persistent reference sources are selected."}
+
 Retrieved source context:
 {_format_context_block(context_items, max_chars=1200) or "No retrieved source context."}
 
@@ -1890,10 +2235,12 @@ Write the answer in this structure:
 2. Interpretation
 3. Contradictions / risks
 4. What would change my mind
-5. Memory worth saving
+5. Decision note worth retaining
 
 If there is previous conversation, answer as a continuation: avoid repeating earlier framing unless it is needed, say what changed or what the new evidence adds, and preserve the thread's context.
 Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per section. If there is no retrieved or expanded source context, say that clearly.
+When relying on a numbered item from Retrieved source context, cite it compactly as [1], [2], and so on. Never invent citations or claim a source says more than the supplied excerpt.
+Persistent reference sources are investor-selected frameworks. Use them as an always-on lens, but do not mistake a framework for company-specific evidence. Cite them as [R1], [R2], and so on when they materially shape the reasoning, and surface any tension with current company evidence.
 """.strip()
 
     step_started = time.perf_counter()
@@ -1903,6 +2250,7 @@ Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per sect
             "Gemini analysis",
             client.generate_text,
             prompt,
+            system_instruction=system_prompt,
             temperature=0.2,
             max_output_tokens=700,
             timeout_seconds=generation_timeout,
@@ -1924,10 +2272,20 @@ Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per sect
                 deep_sources=deep_sources,
             ),
             "timings": timings,
+            "retrieval": {
+                "semanticHits": len(semantic_results),
+                "keywordHits": len(keyword_results),
+                "mergedHits": len(context_items),
+                "expandedFiles": len(deep_sources),
+                "semanticAvailable": semantic_available,
+                "referenceSources": len(reference_context),
+                "referenceSemanticHits": reference_semantic_hits,
+            },
             "context": {
                 "memories": memory_results,
                 "retrieved": context_items,
                 "deepSources": deep_sources,
+                "references": reference_context,
             },
         }
 
@@ -1941,10 +2299,20 @@ Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per sect
         "embeddingModel": client.embedding_model,
         "answer": answer,
         "timings": timings,
+        "retrieval": {
+            "semanticHits": len(semantic_results),
+            "keywordHits": len(keyword_results),
+            "mergedHits": len(context_items),
+            "expandedFiles": len(deep_sources),
+            "semanticAvailable": semantic_available,
+            "referenceSources": len(reference_context),
+            "referenceSemanticHits": reference_semantic_hits,
+        },
         "context": {
             "memories": memory_results,
             "retrieved": context_items,
             "deepSources": deep_sources,
+            "references": reference_context,
         },
     }
 

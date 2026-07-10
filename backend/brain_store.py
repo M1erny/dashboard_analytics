@@ -752,6 +752,53 @@ class BrainStore:
 
         return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
 
+    def semantic_search_chunks_in_sources(
+        self,
+        query_embedding: list[float],
+        source_ids: list[int],
+        *,
+        limit: int = 12,
+    ) -> list[dict[str, Any]]:
+        """SQLite equivalent of the scoped pgvector search used by reference sources."""
+        clean_source_ids = list(dict.fromkeys(
+            int(source_id)
+            for source_id in source_ids
+            if isinstance(source_id, int) or str(source_id).strip().isdigit()
+        ))
+        limit = max(1, min(int(limit), 100))
+        query_norm = math.sqrt(sum(value * value for value in query_embedding))
+        if not clean_source_ids or query_norm == 0:
+            return []
+
+        placeholders = ", ".join("?" for _ in clean_source_ids)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM chunks WHERE source_id IN ({placeholders}) AND embedding IS NOT NULL AND embedding != ''",
+                clean_source_ids,
+            ).fetchall()
+
+        scored: list[dict[str, Any]] = []
+        for row in rows:
+            embedding = self._json_loads(row["embedding"], None)
+            if not isinstance(embedding, list) or len(embedding) != len(query_embedding):
+                continue
+
+            dot = 0.0
+            chunk_norm_sq = 0.0
+            for left, right in zip(query_embedding, embedding):
+                right_value = float(right)
+                dot += left * right_value
+                chunk_norm_sq += right_value * right_value
+            chunk_norm = math.sqrt(chunk_norm_sq)
+            if chunk_norm == 0:
+                continue
+
+            result = self._chunk_from_row(row)
+            result["score"] = dot / (query_norm * chunk_norm)
+            scored.append(result)
+
+        return sorted(scored, key=lambda item: item["score"], reverse=True)[:limit]
+
     def get_setting(self, key: str) -> str | None:
         clean_key = str(key or "").strip()
         if not clean_key:

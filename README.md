@@ -155,6 +155,11 @@ URL or official-source task
 
 Main Brain capabilities:
 
+- Chat-first research threads with follow-up context and attached source evidence.
+- Hybrid company retrieval: pgvector semantic search plus full-text exact search, fused before analysis.
+- Deep source expansion around the strongest matched passages before Gemini answers.
+- Persistent reference layer: select up to six indexed Drive sources that supply a relevant framework passage to every answer.
+- Editable system prompt stored with the Brain and sent to Gemini as a native system instruction.
 - Google Drive OAuth connection.
 - Drive folder sync.
 - Research Agent URL import into Drive + Supabase.
@@ -180,6 +185,10 @@ POST /api/brain/embeddings/backfill/start
 GET  /api/brain/search
 GET  /api/brain/search/semantic
 POST /api/brain/analyze-company
+GET  /api/brain/references
+PUT  /api/brain/references
+GET  /api/brain/system-prompt
+PUT  /api/brain/system-prompt
 POST /api/brain/agent/import-url
 POST /api/brain/agent/find-official-sources
 POST /api/brain/agent/run
