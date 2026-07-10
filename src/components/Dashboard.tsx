@@ -538,7 +538,7 @@ export const Dashboard: React.FC = () => {
                             </div>
                             <div
                                 className="flex min-h-[68px] min-w-[132px] bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-3 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-emerald-500/5 transition-all hover:scale-[1.02] hover:border-emerald-500/40"
-                                title="Current drifted long book weight vs January starting long exposure"
+                                title="Cost-aware current long exposure as a share of estimated net NAV, versus January starting exposure"
                             >
                                 <p className="text-[9px] uppercase tracking-wider text-emerald-500/70 font-bold mb-0.5">Long Book</p>
                                 <p className="font-mono text-emerald-400 font-black text-base leading-none">{formatPercent(currentLongExposure)}</p>
@@ -551,7 +551,7 @@ export const Dashboard: React.FC = () => {
                             </div>
                             <div
                                 className="flex min-h-[68px] min-w-[132px] bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-3 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-rose-500/5 transition-all hover:scale-[1.02] hover:border-rose-500/40"
-                                title="Current drifted short book weight vs January starting short exposure"
+                                title="Cost-aware current short exposure as a share of estimated net NAV, versus January starting exposure"
                             >
                                 <p className="text-[9px] uppercase tracking-wider text-rose-500/70 font-bold mb-0.5">Short Book</p>
                                 <p className="font-mono text-rose-400 font-black text-base leading-none">{formatPercent(currentShortExposure)}</p>
@@ -670,7 +670,7 @@ export const Dashboard: React.FC = () => {
                 <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} momentum={data.momentum} convexity={convexity} />
 
                 {/* ROW 1.5: Returns Heatmap & Portfolio Contribution (Full Width) */}
-                <ReturnsHeatmap periodicReturns={periodicReturns} activeRisks={activeRisks} periodLabel={vitals?.periodLabel ?? "YTD"} />
+                <ReturnsHeatmap periodicReturns={periodicReturns} activeRisks={activeRisks} periodLabel={vitals?.periodLabel ?? "YTD"} vitals={vitals} />
 
                 <HistoricalDiagnostics data={analyticsHistory} periodLabel={vitals?.periodLabel ?? "YTD"} />
 

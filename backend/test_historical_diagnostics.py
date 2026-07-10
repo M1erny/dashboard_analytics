@@ -41,6 +41,31 @@ class HistoricalDiagnosticsTests(unittest.TestCase):
 
         self.assertAlmostEqual(beta, ols_beta, places=10)
 
+    def test_sortino_uses_all_days_and_cash_target(self):
+        returns = pd.Series([0.01, -0.02, 0.005, -0.01])
+
+        result = risk.calculate_sortino_ratio(returns, 0.0)
+        downside = np.minimum(returns.to_numpy(), 0.0)
+        expected = (returns.mean() * risk.ANNUAL_FACTOR) / (
+            np.sqrt(np.mean(np.square(downside))) * np.sqrt(risk.ANNUAL_FACTOR)
+        )
+
+        self.assertAlmostEqual(result, expected, places=10)
+
+    def test_compounded_capm_alpha_uses_daily_expected_returns(self):
+        portfolio = pd.Series([0.02, -0.01])
+        benchmark = pd.Series([0.01, -0.02])
+
+        alpha, expected_return = risk.calculate_compounded_capm_alpha(
+            portfolio,
+            benchmark,
+            beta=1.0,
+            annual_risk_free_rate=0.0,
+        )
+
+        self.assertAlmostEqual(expected_return, (1.01 * 0.98) - 1.0, places=10)
+        self.assertAlmostEqual(alpha, 0.02, places=10)
+
     def test_batting_average_tracks_cumulative_contribution_flip(self):
         dates = pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-05", "2026-01-06"])
         values = pd.Series([1.0, 1.02, 1.01, 0.99], index=dates)

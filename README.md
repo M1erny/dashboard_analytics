@@ -6,10 +6,10 @@ The dashboard is built for one main job: show portfolio performance, risk, expos
 
 ## What It Does
 
-- Tracks long/short portfolio performance in USD.
+- Tracks realised long/short portfolio performance in USD.
 - Calculates YTD return, alpha, beta, volatility, drawdown, Sharpe, correlations, VaR/CVaR, and stress results.
 - Preserves portfolio continuity across rebalances, so old and new position periods remain part of YTD history.
-- Shows position-level contribution, including YTD total contribution and since-last-rebalance contribution.
+- Reconciles gross security contribution, estimated financing impact, and net realised return.
 - Provides portfolio exports and investor-facing PNG/report views.
 - Includes an Investment Brain for semantic search and company analysis over your own files.
 
@@ -288,6 +288,14 @@ More detail:
 ```text
 docs/local-brain-worker.md
 ```
+
+## Performance Methodology
+
+- Primary return, drawdown, beta, volatility, and alpha cards use the dated, rebalance-aware YTD net NAV path.
+- Position attribution is deliberately gross security contribution; it reconciles to gross return, then estimated carry reconciles gross return to net return.
+- Current weights and long/short exposure are drifted against estimated net NAV, so financing drag is reflected in the displayed leverage.
+- The five-year current-book replay remains available as a labelled scenario. It is not represented as realised portfolio history.
+- Financing is an estimate using segment-opening margin debt and mark-to-market short borrow. Broker cash, fees, and borrow ledgers are required for broker-exact NAV.
 
 ## Portfolio Data And Rebalancing
 

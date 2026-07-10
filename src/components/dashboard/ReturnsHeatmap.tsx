@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useCallback, useRef } from 'react';
 import { cn } from '../../lib/utils';
-import type { PeriodicReturn, RiskAttribution } from '../../utils/finance';
+import type { PeriodicReturn, RiskAttribution, Vitals } from '../../utils/finance';
 import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap, Target, Trophy, TrendingDown, Activity, GripVertical, RotateCcw } from 'lucide-react';
 
 type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'sinceRebalanceContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry' | 'volatilityContribution';
@@ -236,8 +236,8 @@ interface ColumnDef {
 const columns: ColumnDef[] = [
     { key: 'ticker',           label: 'Ticker',     group: 'position' },
     { key: 'lastPrice',        label: 'Price',      group: 'position', tooltip: 'Last fetched price' },
-    { key: 'currentWeight',    label: 'Weight',     group: 'position', tooltip: 'Current drifted weight' },
-    { key: 'ytdContribution',  label: 'YTD Total',  group: 'contribution', tooltip: 'Full YTD contribution, including prior books and exited/rebalanced exposure' },
+    { key: 'currentWeight',    label: 'Weight',     group: 'position', tooltip: 'Cost-aware drifted weight as a share of estimated net NAV' },
+    { key: 'ytdContribution',  label: 'YTD Gross',  group: 'contribution', tooltip: 'Gross security contribution before financing, including prior books and exited/rebalanced exposure' },
     { key: 'sinceRebalanceContribution', label: 'Since Reb.', group: 'contribution', tooltip: 'Latest-rebalance contribution on the same YTD basis as YTD Total' },
     { key: 'r7dContribution',  label: '7D',         group: 'contribution', tooltip: '7-day portfolio contribution' },
     { key: 'r1dContribution',  label: '1D',         group: 'contribution', tooltip: '1-day portfolio contribution' },
@@ -280,7 +280,12 @@ const groupMeta: Record<ColumnGroup, { label: string; icon: React.ReactNode; col
 };
 
 // ─── Main Component ──────────────────────────────────────────
-export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], periodLabel = "YTD" }: { periodicReturns: PeriodicReturn[], activeRisks?: RiskAttribution[], periodLabel?: string }) => {
+export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], periodLabel = "YTD", vitals }: {
+    periodicReturns: PeriodicReturn[];
+    activeRisks?: RiskAttribution[];
+    periodLabel?: string;
+    vitals?: Pick<Vitals, 'ytdReturn' | 'ytdReturnGross' | 'ytdSecurityGrossContribution' | 'ytdFinancingCost' | 'financingScope'>;
+}) => {
     const [sortKey, setSortKey] = useState<SortKey>('ytdContribution');
     const [sortDir, setSortDir] = useState<SortDir>('desc');
     const [hoveredRow, setHoveredRow] = useState<string | null>(null);
@@ -461,6 +466,19 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
         }
         return { ytdC, sinceRebalanceC, r7dC, r1dC, longCount, shortCount, total: longCount + shortCount };
     }, [periodicReturns]);
+
+    const reconciliation = useMemo(() => {
+        if (!vitals) return null;
+        const grossSecurity = vitals.ytdSecurityGrossContribution ?? vitals.ytdReturnGross ?? summary.ytdC;
+        const financingImpact = vitals.ytdFinancingCost ?? 0;
+        const netReturn = vitals.ytdReturn;
+        return {
+            grossSecurity,
+            financingImpact,
+            netReturn,
+            residual: grossSecurity - financingImpact - netReturn,
+        };
+    }, [summary.ytdC, vitals]);
 
     // Book Analytics — hedge fund standard metrics
     const bookAnalytics = useMemo(() => {
@@ -662,7 +680,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                     </div>
                     <div>
                         <h3 className="text-[16px] font-bold text-white tracking-tight">Returns Heatmap</h3>
-                        <p className="text-[11px] text-gray-500 mt-0.5">Portfolio contribution & performance matrix</p>
+                        <p className="text-[11px] text-gray-500 mt-0.5">Gross security attribution with net-return reconciliation</p>
                     </div>
                 </div>
                 <div className="flex items-center gap-3">
@@ -693,7 +711,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             {/* ── Summary Strip ─────────────────────────────── */}
             <div className="grid grid-cols-2 lg:grid-cols-4 border-b border-white/[0.06]">
                 {[
-                    { label: `${periodLabel} Total`, value: summary.ytdC, icon: <TrendingUp className="h-4 w-4" />, gradient: 'from-blue-500/10 to-transparent' },
+                    { label: `${periodLabel} Security Gross`, value: summary.ytdC, icon: <TrendingUp className="h-4 w-4" />, gradient: 'from-blue-500/10 to-transparent' },
                     { label: 'Since Rebal.', value: summary.sinceRebalanceC, icon: <Target className="h-4 w-4" />, gradient: 'from-sky-500/10 to-transparent' },
                     { label: '7D Impact', value: summary.r7dC, icon: <Zap className="h-4 w-4" />, gradient: 'from-violet-500/10 to-transparent' },
                     { label: '1D Impact', value: summary.r1dC, icon: <Flame className="h-4 w-4" />, gradient: 'from-orange-500/10 to-transparent' },
@@ -729,6 +747,49 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             </div>
 
             {/* ── Book Analytics Strip ──────────────────────── */}
+            {reconciliation && (
+                <div className="border-b border-white/[0.06] bg-slate-950/35 px-4 py-3 sm:px-6">
+                    <div className="grid grid-cols-1 divide-y divide-white/[0.06] rounded-lg border border-white/[0.06] bg-white/[0.02] sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+                        <div className="flex items-center justify-between gap-3 px-3.5 py-3 sm:px-4">
+                            <div className="flex min-w-0 items-center gap-2">
+                                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-sky-500/10 text-sky-300">
+                                    <TrendingUp className="h-3.5 w-3.5" />
+                                </span>
+                                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">Security gross</span>
+                            </div>
+                            <span className={cn("font-mono text-sm font-black tabular-nums", reconciliation.grossSecurity >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                                {formatContribution(reconciliation.grossSecurity)}
+                            </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 px-3.5 py-3 sm:px-4" title={vitals?.financingScope}>
+                            <div className="flex min-w-0 items-center gap-2">
+                                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-rose-500/10 text-rose-300">
+                                    <TrendingDown className="h-3.5 w-3.5" />
+                                </span>
+                                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">Estimated carry</span>
+                            </div>
+                            <span className="font-mono text-sm font-black tabular-nums text-rose-400">
+                                {formatContribution(-reconciliation.financingImpact)}
+                            </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 px-3.5 py-3 sm:px-4">
+                            <div className="flex min-w-0 items-center gap-2">
+                                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-emerald-500/10 text-emerald-300">
+                                    <Target className="h-3.5 w-3.5" />
+                                </span>
+                                <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-400">Net realised</span>
+                            </div>
+                            <span className={cn("font-mono text-sm font-black tabular-nums", reconciliation.netReturn >= 0 ? "text-emerald-400" : "text-rose-400")}>
+                                {formatContribution(reconciliation.netReturn)}
+                            </span>
+                        </div>
+                    </div>
+                    {Math.abs(reconciliation.residual) > 0.0001 && (
+                        <p className="mt-2 text-[10px] text-amber-400">Reconciliation variance {formatContribution(reconciliation.residual)}</p>
+                    )}
+                </div>
+            )}
+
             {bookAnalytics && (
                 <div className="border-b border-white/[0.06] bg-gradient-to-r from-white/[0.01] via-white/[0.03] to-white/[0.01] px-6 py-4">
                     <div className="flex items-center gap-2 mb-3">

@@ -2697,19 +2697,19 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
         # 3. Format Response
         response = {
             "vitals": {
-                "beta": to_float(metrics['Beta']),
+                "beta": to_float(metrics.get('YTD_Beta')),
                 "longOnlyBeta": to_float(metrics.get('YTD_Long_Only_Beta')),
                 "shortOnlyBeta": to_float(metrics.get('YTD_Short_Only_Beta')),
-                "annualReturn": to_float(metrics['Annual_Return']),
-                "annualVol": to_float(metrics['Annual_Vol']),
-                "sharpe": to_float(metrics['Sharpe']),
-                "sortino": to_float(metrics['Sortino']),
-                "maxDrawdown": to_float(metrics['Max_Drawdown']),
-                "rolling1mVol": to_float(metrics.get('Rolling_1M_Vol')),
-                "rolling1mVolBenchmark": to_float(metrics.get('Benchmark_Rolling_1M_Vol')),
-                "cvar95": to_float(metrics['CVaR_95']),
-                "jensensAlpha": to_float(metrics.get('Jensens_Alpha')),
-                "periodInfo": metrics.get('Period_Info'),
+                "annualReturn": to_float(metrics.get('YTD_Annual_Return')),
+                "annualVol": to_float(metrics.get('YTD_Vol')),
+                "sharpe": to_float(metrics.get('YTD_Sharpe')),
+                "sortino": to_float(metrics.get('YTD_Sortino')),
+                "maxDrawdown": to_float(metrics.get('YTD_Max_Drawdown')),
+                "rolling1mVol": to_float(metrics.get('YTD_Rolling_1M_Vol')),
+                "rolling1mVolBenchmark": to_float(metrics.get('Benchmark_YTD_Rolling_1M_Vol')),
+                "cvar95": to_float(metrics.get('YTD_CVaR_95')),
+                "jensensAlpha": to_float(metrics.get('YTD_Alpha')),
+                "periodInfo": metrics.get('YTD_Period_Info'),
                 
                 # New YTD Fields
                 "ytdReturn": to_float(metrics.get('YTD_Return')),
@@ -2721,8 +2721,14 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "ytdMaxDrawdown": to_float(metrics.get('YTD_Max_Drawdown')),
                 "benchmarkYtdMaxDrawdown": to_float(metrics.get('Benchmark_YTD_Max_Drawdown')),
                 "ytdReturnGross": to_float(metrics.get('YTD_Return_Gross')),
+                "ytdSecurityGrossContribution": to_float(metrics.get('YTD_Security_Gross_Contribution')),
                 "ytdFinancingCost": to_float(metrics.get('YTD_Financing_Cost')),
+                "ytdDirectFinancingCost": to_float(metrics.get('YTD_Direct_Financing_Cost')),
                 "annualFinancingCost": to_float(metrics.get('Annual_Financing_Cost')),
+                "ytdCapmExpectedReturn": to_float(metrics.get('YTD_CAPM_Expected_Return')),
+                "performanceScope": metrics.get('Performance_Methodology', {}).get('realisedScope'),
+                "contributionScope": metrics.get('Performance_Methodology', {}).get('contributionScope'),
+                "financingScope": metrics.get('Performance_Methodology', {}).get('financingScope'),
                 
                 # Standardized Sharpe Metrics
                 "ytdSharpe": to_float(metrics.get('YTD_Sharpe')),           # Previously riskEfficiencyVol
@@ -2745,8 +2751,25 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             "stressTests": [],
             "periodicReturns": [],
             "history": [],
-            "analyticsHistory": []
+            "historyScope": "Static current-target-weight replay; not realised portfolio history",
+            "analyticsHistory": [],
+            "currentBookScenario": None,
         }
+
+        current_book_scenario = metrics.get('Current_Book_Scenario')
+        if current_book_scenario:
+            response["currentBookScenario"] = {
+                "scope": current_book_scenario.get("scope"),
+                "period": current_book_scenario.get("period", {}),
+                "beta": to_float(current_book_scenario.get("beta")),
+                "annualReturn": to_float(current_book_scenario.get("annualReturn")),
+                "annualVolatility": to_float(current_book_scenario.get("annualVolatility")),
+                "sharpe": to_float(current_book_scenario.get("sharpe")),
+                "sortino": to_float(current_book_scenario.get("sortino")),
+                "maxDrawdown": to_float(current_book_scenario.get("maxDrawdown")),
+                "var95Daily": to_float(current_book_scenario.get("var95Daily")),
+                "cvar95Daily": to_float(current_book_scenario.get("cvar95Daily")),
+            }
 
         # Format Convexity Metrics
         convexity = metrics.get('Convexity_Metrics')

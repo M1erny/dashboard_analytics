@@ -85,7 +85,13 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             )}>
                                 {ytdPositive ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
                             </div>
-                            <span className="text-[11px] text-gray-400 uppercase tracking-[0.15em] font-semibold">{periodLabel} Return</span>
+                            <span className="text-[11px] text-gray-400 uppercase tracking-[0.15em] font-semibold">{periodLabel} Net Return</span>
+                            <span
+                                className="ml-auto rounded border border-emerald-500/20 bg-emerald-500/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.11em] text-emerald-300"
+                                title={vitals.performanceScope}
+                            >
+                                Realised NAV
+                            </span>
                         </div>
 
                         <div className="flex flex-wrap items-end gap-2.5">
@@ -105,8 +111,8 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             </span>
                             {vitals.ytdReturnGross !== undefined && (
                                 <span className="text-[10px] text-gray-500 font-mono whitespace-nowrap bg-white/5 px-2 py-0.5 rounded border border-white/5"
-                                    title="Gross Return (Before financing drag)">
-                                    gross {fmtSigned(vitals.ytdReturnGross)}
+                                    title={vitals.contributionScope || "Gross security return before financing drag"}>
+                                    security gross {fmtSigned(vitals.ytdReturnGross)}
                                 </span>
                             )}
                         </div>
@@ -147,7 +153,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     <div className="rounded-xl border border-amber-500/20 bg-gradient-to-br from-amber-950/30 to-slate-950/90 p-3.5 sm:p-4 flex min-w-0 flex-col overflow-hidden min-h-[158px]">
                         <div className="flex items-start gap-1.5 mb-2 min-h-[30px]">
                             <Zap className="h-3.5 w-3.5 shrink-0 text-amber-400" />
-                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold leading-tight">Alpha</span>
+                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold leading-tight">CAPM Alpha</span>
                         </div>
                         <div className="flex-1 flex min-w-0 items-center">
                             <span className={cn(
@@ -158,7 +164,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                             </span>
                         </div>
                         <div className="mt-auto pt-3 border-t border-white/[0.06] h-[62px] flex min-w-0 flex-col justify-center">
-                            <StatRow label="Ann." value={fmtSigned(vitals.ytdAlpha)}
+                            <StatRow label="Ann. arith." value={fmtSigned(vitals.ytdAlpha)}
                                 valueClassName={(vitals.ytdAlpha ?? 0) >= 0 ? "text-amber-400/70" : "text-rose-400/70"} />
                         </div>
                     </div>
@@ -273,7 +279,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     )}>
                         <div className="flex items-start gap-1.5 mb-2 min-h-[30px]">
                             <TrendingDown className="h-3.5 w-3.5 shrink-0 text-rose-400" />
-                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold leading-tight">Max Drawdown</span>
+                            <span className="text-[10px] text-gray-400 uppercase tracking-[0.12em] font-semibold leading-tight">{periodLabel} Drawdown</span>
                         </div>
                         <div className="flex-1 flex min-w-0 items-center">
                             <span className={cn(
@@ -391,13 +397,13 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     </div>
 
                     <div className="flex justify-between items-center">
-                        <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">{periodLabel} Financing</span>
+                        <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider" title={vitals.financingScope}>Estimated Carry Impact</span>
                         <span className="font-mono text-sm font-black tracking-tight text-rose-400">
                             {vitals.ytdFinancingCost !== undefined ? fmt(-vitals.ytdFinancingCost) : 'N/A'}
                         </span>
                     </div>
                     <div className="flex justify-between items-center -mt-1">
-                        <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">Annual Estimate</span>
+                        <span className="text-[10px] text-gray-500 font-semibold uppercase tracking-wider">Target Annual Carry</span>
                         <span className="font-mono text-sm font-black tracking-tight text-amber-400">
                             {vitals.annualFinancingCost !== undefined ? fmt(-vitals.annualFinancingCost) : 'N/A'}
                         </span>

@@ -45,8 +45,14 @@ export interface Vitals {
     ytdMaxDrawdown: number;
     benchmarkYtdMaxDrawdown: number;
     ytdReturnGross: number;
+    ytdSecurityGrossContribution?: number;
     ytdFinancingCost: number;
+    ytdDirectFinancingCost?: number;
     annualFinancingCost: number;
+    ytdCapmExpectedReturn?: number;
+    performanceScope?: string;
+    contributionScope?: string;
+    financingScope?: string;
     currencyExposure: Record<string, number>;
     currencyExposureNet?: Record<string, number>;
     currencyExposureGross?: Record<string, number>;
@@ -150,7 +156,9 @@ export interface RebalanceEvent {
     dailyFinancingDrag?: number;
     annualFinancingCost?: number;
     segmentFinancingCost?: number;
+    segmentFinancingImpact?: number;
     cumulativeFinancingCost?: number;
+    cumulativeFinancingImpact?: number;
     grossStartValue?: number;
     grossEndValue?: number;
     netStartValue?: number;
@@ -199,6 +207,23 @@ export interface RebalanceState {
     events: RebalanceEvent[];
     eventCount: number;
     history?: RebalanceChangeEvent[];
+}
+
+export interface CurrentBookScenario {
+    scope?: string;
+    period?: {
+        startDate?: string;
+        endDate?: string;
+        years?: number;
+    };
+    beta?: number;
+    annualReturn?: number;
+    annualVolatility?: number;
+    sharpe?: number;
+    sortino?: number;
+    maxDrawdown?: number;
+    var95Daily?: number;
+    cvar95Daily?: number;
 }
 
 export interface HistoryPoint {
@@ -264,6 +289,7 @@ export interface FullRiskReport {
     activeRisks: RiskAttribution[];
     stressTests: StressTest[];
     history: HistoryPoint[];
+    historyScope?: string;
     ytdHistory: HistoryPoint[];
     analyticsHistory: AnalyticsHistoryPoint[];
     periodicReturns: PeriodicReturn[];
@@ -273,6 +299,7 @@ export interface FullRiskReport {
     momentum: MomentumMetrics | null;
     fxExposures: Record<string, FxExposure>;
     rebalance?: RebalanceState;
+    currentBookScenario?: CurrentBookScenario | null;
     error?: string;
 }
 
@@ -323,6 +350,7 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     },
                     leverage: data.leverage || { Long_Exp: 0, Short_Exp: 0, Gross_Exp: 0, Net_Exp: 0, Daily_Drag: 0 },
                     history: data.history || [],
+                    historyScope: data.historyScope,
                     analyticsHistory: data.analyticsHistory || [],
                     periodicReturns: data.periodicReturns || [],
                     activeRisks: data.riskAttribution || [], // Rename data.riskAttribution -> activeRisks
@@ -334,6 +362,7 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     momentum: data.momentum || null,
                     fxExposures: data.fxExposures || {},
                     rebalance: data.rebalance,
+                    currentBookScenario: data.currentBookScenario || null,
                     error: data.error
                 };
             }

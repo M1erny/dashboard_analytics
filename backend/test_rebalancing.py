@@ -68,7 +68,9 @@ class RebalanceAccountingTests(unittest.TestCase):
         margin_rate = 0.10
         borrow_fee = 0.02
         daily_drag = ((1.5 - 1.0) * margin_rate + 1.0 * borrow_fee) / 360
-        expected_net = (1 - daily_drag * 3) * (1 - daily_drag)
+        # The dated book is live for the three-day weekend interval and the
+        # following session. Margin debt is fixed at the opening notional.
+        expected_net = 1 - daily_drag * 4
         expected_financing_cost = 1 - expected_net
 
         old_get_snapshots = risk.get_rebalance_snapshots
@@ -119,6 +121,40 @@ class RebalanceAccountingTests(unittest.TestCase):
         self.assertAlmostEqual(rebalance_event["annualFinancingCost"], daily_drag * 360, places=8)
         self.assertAlmostEqual(rebalance_event["segmentFinancingCost"], expected_financing_cost, places=8)
         self.assertAlmostEqual(rebalance_event["cumulativeFinancingCost"], expected_financing_cost, places=8)
+
+    def test_current_weight_is_measured_against_net_nav_after_financing(self):
+        dates = pd.to_datetime(["2025-12-31", "2026-01-02"])
+        prices = pd.DataFrame({"LONG": [100.0, 100.0]}, index=dates)
+        margin_rate = 0.18
+
+        old_get_snapshots = risk.get_rebalance_snapshots
+        try:
+            risk.get_rebalance_snapshots = lambda _name, _active: [
+                {
+                    "date": "2026-01-01",
+                    "label": "Levered opening book",
+                    "source": "test",
+                    "positions": {
+                        "LONG": {"weight": 1.5, "type": "Long", "currency": "USD"},
+                    },
+                },
+            ]
+            result = risk.calculate_segmented_ytd(
+                prices,
+                "main",
+                {"LONG": {"weight": 1.5, "type": "Long", "currency": "USD"}},
+                "2026-01-01",
+                margin_rate,
+                0.0,
+            )
+        finally:
+            risk.get_rebalance_snapshots = old_get_snapshots
+
+        expected_cost = (1.5 - 1.0) * margin_rate * 2 / 360
+        expected_net_nav = 1.0 - expected_cost
+        self.assertAlmostEqual(result["portfolio_val_series"].iloc[-1], expected_net_nav, places=10)
+        self.assertAlmostEqual(result["current_weights"]["LONG"], 1.5 / expected_net_nav, places=10)
+        self.assertGreater(result["current_weights"]["LONG"], 1.5)
 
     def test_post_session_rebalance_starts_after_close(self):
         dates = pd.to_datetime(["2025-12-31", "2026-01-02", "2026-01-05", "2026-01-06"])

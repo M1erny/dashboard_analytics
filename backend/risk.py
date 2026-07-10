@@ -513,6 +513,53 @@ def calculate_daily_financing_drag(portfolio_config, margin_rate, borrow_fee):
     return daily_margin_cost + daily_borrow_cost
 
 
+def calculate_segment_financing_values(
+    segment_index,
+    segment_gross_curve,
+    long_market_value_factors,
+    short_market_value_factors,
+    net_start_value,
+    margin_rate,
+    borrow_fee,
+):
+    """Build a net segment NAV using fixed opening margin debt and live short notional.
+
+    Position returns are already a buy-and-hold curve for the dated book. Margin
+    debt is therefore held in dollars from the segment opening, while stock borrow
+    is charged on the average mark-to-market short notional over each calendar
+    interval. This remains an estimate until broker cash and borrow ledgers are
+    connected, but it avoids treating financing as a constant percentage of a
+    changing NAV.
+    """
+    net_values = pd.Series(np.nan, index=segment_index, dtype=float)
+    direct_costs = pd.Series(0.0, index=segment_index, dtype=float)
+    if len(segment_index) == 0:
+        return net_values, direct_costs
+
+    net_values.iloc[0] = float(net_start_value)
+    opening_long_notional = float(net_start_value) * max(0.0, float(long_market_value_factors.iloc[0]))
+    opening_margin_principal = max(0.0, opening_long_notional - float(net_start_value))
+    calendar_days = segment_index.to_series().diff().dt.days.fillna(0).clip(lower=0)
+
+    for idx in range(1, len(segment_index)):
+        days = float(calendar_days.iloc[idx])
+        previous_short = max(0.0, float(short_market_value_factors.iloc[idx - 1]))
+        current_short = max(0.0, float(short_market_value_factors.iloc[idx]))
+        average_short_notional = float(net_start_value) * (previous_short + current_short) / 2.0
+
+        margin_cost = opening_margin_principal * float(margin_rate) * days / 360.0
+        borrow_cost = average_short_notional * float(borrow_fee) * days / 360.0
+        direct_cost = margin_cost + borrow_cost
+        direct_costs.iloc[idx] = direct_cost
+
+        gross_pnl = float(net_start_value) * (
+            float(segment_gross_curve.iloc[idx]) - float(segment_gross_curve.iloc[idx - 1])
+        )
+        net_values.iloc[idx] = net_values.iloc[idx - 1] + gross_pnl - direct_cost
+
+    return net_values, direct_costs
+
+
 def get_rebalance_start_index(price_index, snap_ts, execution_timing="effective_open"):
     """Return the price row used as the base for a dated rebalance."""
     timing = str(execution_timing or "effective_open").lower()
@@ -563,6 +610,38 @@ def calculate_beta(portfolio_returns, benchmark_returns):
         return np.nan
 
     return float(np.cov(port, bench)[0][1] / benchmark_variance)
+
+
+def calculate_sortino_ratio(daily_returns, annual_risk_free_rate):
+    """Annualised Sortino using all observations and downside deviation vs cash."""
+    returns = pd.Series(daily_returns, dtype=float).replace([np.inf, -np.inf], np.nan).dropna()
+    if returns.empty:
+        return 0.0
+
+    safe_rate = max(float(annual_risk_free_rate or 0.0), -0.999999)
+    daily_cash_rate = np.expm1(np.log1p(safe_rate) / ANNUAL_FACTOR)
+    excess_returns = returns - daily_cash_rate
+    downside = np.minimum(excess_returns, 0.0)
+    downside_deviation = float(np.sqrt(np.mean(np.square(downside))) * np.sqrt(ANNUAL_FACTOR))
+    annualised_excess_return = float(np.mean(excess_returns) * ANNUAL_FACTOR)
+    return annualised_excess_return / downside_deviation if downside_deviation > 0 else 0.0
+
+
+def calculate_compounded_capm_alpha(portfolio_returns, benchmark_returns, beta, annual_risk_free_rate):
+    """Return period CAPM alpha by compounding daily expected and realised returns."""
+    aligned = pd.concat([portfolio_returns, benchmark_returns], axis=1).replace([np.inf, -np.inf], np.nan).dropna()
+    if aligned.empty or pd.isna(beta):
+        return 0.0, 0.0
+
+    safe_rate = max(float(annual_risk_free_rate or 0.0), -0.999999)
+    daily_cash_rate = np.expm1(np.log1p(safe_rate) / ANNUAL_FACTOR)
+    portfolio_daily = aligned.iloc[:, 0]
+    benchmark_daily = aligned.iloc[:, 1]
+    expected_daily = daily_cash_rate + float(beta) * (benchmark_daily - daily_cash_rate)
+
+    realised_period_return = float((1.0 + portfolio_daily).prod() - 1.0)
+    expected_period_return = float((1.0 + expected_daily).prod() - 1.0)
+    return realised_period_return - expected_period_return, expected_period_return
 
 
 def calculate_batting_stats(contribution_row):
@@ -706,6 +785,7 @@ def calculate_segmented_ytd(
     position_contributions = {}
     ytd_longs_contrib = 0.0
     ytd_shorts_contrib = 0.0
+    ytd_direct_financing_cost = 0.0
     current_weights = {}
     rebalance_events = []
     all_segment_tickers = sorted({ticker for snap in active_snapshots for ticker in snap.get("positions", {}).keys()})
@@ -734,6 +814,8 @@ def calculate_segmented_ytd(
         segment_contrib_curve = pd.Series(0.0, index=segment_index)
         segment_long_curve = pd.Series(0.0, index=segment_index)
         segment_short_curve = pd.Series(0.0, index=segment_index)
+        segment_long_market_value_factors = pd.Series(0.0, index=segment_index)
+        segment_short_market_value_factors = pd.Series(0.0, index=segment_index)
         segment_position_curves = {}
 
         for ticker, info in positions.items():
@@ -745,15 +827,18 @@ def calculate_segmented_ytd(
                 continue
 
             direction = 1 if info.get('type', 'Long') == 'Long' else -1
-            asset_cum_ret = (rel_prices[ticker] - 1.0).fillna(0.0)
+            relative_price = rel_prices[ticker].fillna(1.0)
+            asset_cum_ret = relative_price - 1.0
             position_curve = weight * direction * asset_cum_ret
             segment_contrib_curve += position_curve
             segment_position_curves[ticker] = position_curve
 
             if direction == 1:
                 segment_long_curve += position_curve
+                segment_long_market_value_factors += weight * relative_price
             else:
                 segment_short_curve += position_curve
+                segment_short_market_value_factors += weight * relative_price
 
             final_contrib = float(gross_start_value * position_curve.iloc[-1])
             position_contributions[ticker] = position_contributions.get(ticker, 0.0) + final_contrib
@@ -764,17 +849,24 @@ def calculate_segmented_ytd(
 
         segment_gross_curve = (1.0 + segment_contrib_curve).clip(lower=0.000001)
         segment_gross_values = gross_start_value * segment_gross_curve
-        segment_gross_daily_ret = segment_gross_values.pct_change().fillna(0.0)
 
-        segment_days_elapsed = segment_gross_values.index.to_series().diff().dt.days.fillna(1).clip(lower=1)
         segment_drag = calculate_daily_financing_drag(positions, margin_rate, borrow_fee)
-        segment_drag_series = segment_drag * segment_days_elapsed
-        segment_drag_series.iloc[0] = 0.0
-        segment_net_daily_ret = segment_gross_daily_ret - segment_drag_series
-        segment_net_daily_ret.iloc[0] = 0.0
-        segment_net_values = net_start_value * (1.0 + segment_net_daily_ret).cumprod()
-        segment_net_without_drag = net_start_value * (1.0 + segment_gross_daily_ret).cumprod()
-        segment_financing_cost = float(segment_net_without_drag.iloc[-1] - segment_net_values.iloc[-1])
+        opening_exposure = calculate_exposure_stats(positions)
+        segment_net_values, segment_direct_financing_costs = calculate_segment_financing_values(
+            segment_index,
+            segment_gross_curve,
+            segment_long_market_value_factors,
+            segment_short_market_value_factors,
+            net_start_value,
+            margin_rate,
+            borrow_fee,
+        )
+        segment_net_daily_ret = segment_net_values.pct_change().fillna(0.0)
+        segment_financing_cost = float(segment_direct_financing_costs.sum())
+        segment_financing_impact = float(
+            net_start_value * segment_gross_curve.iloc[-1] - segment_net_values.iloc[-1]
+        )
+        ytd_direct_financing_cost += segment_financing_cost
 
         portfolio_val_series_gross.loc[segment_index] = segment_gross_values
         portfolio_val_series_net.loc[segment_index] = segment_net_values
@@ -789,7 +881,7 @@ def calculate_segmented_ytd(
         long_daily_ret.loc[segment_index] = (segment_long_curve.diff() / previous_segment_value).fillna(0.0)
         short_daily_ret.loc[segment_index] = (segment_short_curve.diff() / previous_segment_value).fillna(0.0)
 
-        exposure = calculate_exposure_stats(positions)
+        exposure = opening_exposure
         rebalance_events.append({
             "date": segment_index[0].strftime('%Y-%m-%d'),
             "effectiveDate": snap["date"],
@@ -804,7 +896,9 @@ def calculate_segmented_ytd(
             "dailyFinancingDrag": float(segment_drag),
             "annualFinancingCost": float(segment_drag * 360),
             "segmentFinancingCost": segment_financing_cost,
-            "cumulativeFinancingCost": float(segment_gross_values.iloc[-1] - segment_net_values.iloc[-1]),
+            "segmentFinancingImpact": segment_financing_impact,
+            "cumulativeFinancingCost": float(ytd_direct_financing_cost),
+            "cumulativeFinancingImpact": float(segment_gross_values.iloc[-1] - segment_net_values.iloc[-1]),
             "grossStartValue": float(gross_start_value),
             "grossEndValue": float(segment_gross_values.iloc[-1]),
             "netStartValue": float(net_start_value),
@@ -813,13 +907,13 @@ def calculate_segmented_ytd(
 
         if idx == len(active_snapshots) - 1:
             current_weights = {}
-            final_curve = float(segment_gross_curve.iloc[-1])
+            final_net_curve = float(segment_net_values.iloc[-1] / net_start_value) if net_start_value else 0.0
             latest_segment_start_date = segment_index[0].strftime('%Y-%m-%d')
             for ticker, info in positions.items():
                 weight = float(info.get('weight', 0) or 0)
-                if ticker in rel_prices.columns and final_curve != 0:
+                if ticker in rel_prices.columns and final_net_curve > 0:
                     rel_final = rel_prices[ticker].iloc[-1]
-                    current_weights[ticker] = float(weight * rel_final / final_curve) if not pd.isna(rel_final) else weight
+                    current_weights[ticker] = float(weight * rel_final / final_net_curve) if not pd.isna(rel_final) else weight
                 else:
                     current_weights[ticker] = weight
             for ticker, position_curve in segment_position_curves.items():
@@ -846,6 +940,7 @@ def calculate_segmented_ytd(
         "ytd_return_gross": float(portfolio_val_series_gross.iloc[-1] - 1.0),
         "ytd_return": float(portfolio_val_series_net.iloc[-1] - 1.0),
         "ytd_financing_cost": float(portfolio_val_series_gross.iloc[-1] - portfolio_val_series_net.iloc[-1]),
+        "ytd_direct_financing_cost": float(ytd_direct_financing_cost),
         "annual_financing_cost": float(calculate_daily_financing_drag(current_config, margin_rate, borrow_fee) * 360),
         "ytd_longs_contrib": ytd_longs_contrib,
         "ytd_shorts_contrib": ytd_shorts_contrib,
@@ -888,32 +983,21 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
 
     benchmark_ret = returns_df[BENCHMARK]
     
-    # --- 0.5. DYNAMIC RISK FREE RATE (^IRX & ^TNX) ---
+    # --- 0.5. CASH RISK-FREE PROXY (^IRX) ---
     try:
-        # Short-term Risk-Free Rate for Sharpe/Sortino (13-week T-Bill)
+        # A cash-like rate is appropriate for Sharpe, Sortino and CAPM excess
+        # return. A 10-year yield is not a realised YTD cash return.
         irx = yf.Ticker("^IRX")
         irx_hist = irx.history(period="5d")
         if not irx_hist.empty:
             rf_rate = irx_hist['Close'].iloc[-1] / 100.0
-            print(f"DEBUG: Using ^IRX (Short Rf): {rf_rate:.4%}")
+            print(f"DEBUG: Using ^IRX cash proxy: {rf_rate:.4%}")
         else:
             rf_rate = 0.04
             print("Warning: ^IRX data unavailable. Defaulting Rf to 4%.")
-            
-        # Long-term Risk-Free Rate for CAPM Expected Return (10-Year T-Note)
-        tnx = yf.Ticker("^TNX")
-        tnx_hist = tnx.history(period="5d")
-        if not tnx_hist.empty:
-            rf_rate_long = tnx_hist['Close'].iloc[-1] / 100.0
-            print(f"DEBUG: Using ^TNX (Long Rf): {rf_rate_long:.4%}")
-        else:
-            rf_rate_long = 0.04
-            print("Warning: ^TNX data unavailable. Defaulting Long Rf to 4%.")
-            
     except Exception as e:
-        print(f"Error fetching ^IRX/^TNX: {e}. Defaulting Rf's to 4%.")
+        print(f"Error fetching ^IRX: {e}. Defaulting Rf to 4%.")
         rf_rate = 0.04
-        rf_rate_long = 0.04
     
     # --- 1. PREPARE PORTFOLIO RETURNS ---
     # Construct a weighted portfolio return series
@@ -1011,10 +1095,9 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     # Sharpe Ratio (Dynamic Rf)
     sharpe_ratio = (annual_ret - rf_rate) / annual_vol if annual_vol > 0 else 0
     
-    # Sortino Ratio (Downside Risk only) — uses gross returns, sample std
-    downside_returns = portfolio_gross_ret[portfolio_gross_ret < 0]
-    downside_std = np.std(downside_returns, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(downside_returns) > 1 else 0
-    sortino_ratio = (annual_ret - rf_rate) / downside_std if downside_std > 0 else 0
+    # Sortino uses target downside deviation across every observation, rather
+    # than the standard deviation of negative days only.
+    sortino_ratio = calculate_sortino_ratio(portfolio_gross_ret, rf_rate)
     
     # --- 3. TAIL RISK ---
     # Rolling 1-Month Standard Deviation (Annualized)
@@ -1092,7 +1175,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     avg_bench_ret = np.mean(benchmark_ret)
     annual_bench_ret = avg_bench_ret * ANNUAL_FACTOR
     
-    expected_return = rf_rate_long + portfolio_beta * (annual_bench_ret - rf_rate_long)
+    expected_return = rf_rate + portfolio_beta * (annual_bench_ret - rf_rate)
     jensens_alpha = annual_ret - expected_return
     
     # Metadata for transparency
@@ -1177,6 +1260,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             ytd_return_gross = segmented_ytd["ytd_return_gross"]
             ytd_return = segmented_ytd["ytd_return"]
             ytd_financing_cost = segmented_ytd["ytd_financing_cost"]
+            ytd_direct_financing_cost = segmented_ytd["ytd_direct_financing_cost"]
             annual_financing_cost = segmented_ytd["annual_financing_cost"]
             ytd_longs_contrib = segmented_ytd["ytd_longs_contrib"]
             ytd_shorts_contrib = segmented_ytd["ytd_shorts_contrib"]
@@ -1243,7 +1327,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
                 else:
                     ytd_calendar_days = ytd_trading_days
 
-                ytd_financing_cost = ytd_calendar_days * total_daily_drag
+                ytd_direct_financing_cost = ytd_calendar_days * total_daily_drag
                 annual_financing_cost = total_daily_drag * 360
 
                 # Derive gross daily returns from the Buy & Hold curve
@@ -1259,15 +1343,17 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
 
                 portfolio_val_series = (1 + ytd_portfolio_daily_ret_net).cumprod()
                 ytd_return = portfolio_val_series.iloc[-1] - 1.0
+                ytd_financing_cost = float(portfolio_val_series_gross.iloc[-1] - portfolio_val_series.iloc[-1])
 
             else:
                 # NO DRAG SCENARIO
                 ytd_financing_cost = 0.0
+                ytd_direct_financing_cost = 0.0
                 annual_financing_cost = 0.0
                 portfolio_val_series = portfolio_val_series_gross
                 ytd_return = ytd_return_gross
 
-            final_gross_value = float(portfolio_val_series_gross.iloc[-1]) if not portfolio_val_series_gross.empty else 1.0
+            final_net_value = float(portfolio_val_series.iloc[-1]) if not portfolio_val_series.empty else 1.0
             ytd_current_weights = {}
             for ticker in active_tickers:
                 if ticker not in ytd_rel_prices.columns:
@@ -1275,8 +1361,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
                 info = PORTFOLIO_CONFIG[ticker]
                 weight = float(info.get('weight', 0) or 0)
                 final_rel = ytd_rel_prices[ticker].iloc[-1]
-                if not pd.isna(final_rel) and final_gross_value != 0:
-                    ytd_current_weights[ticker] = float(weight * final_rel / final_gross_value)
+                if not pd.isna(final_rel) and final_net_value > 0:
+                    ytd_current_weights[ticker] = float(weight * final_rel / final_net_value)
 
         benchmark_ytd = (1 + ytd_benchmark).prod() - 1.0
 
@@ -1327,6 +1413,19 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             
         # Risk Efficiency -> YTD Sharpe (sample std)
         ytd_vol = np.std(ytd_portfolio_daily_ret, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(ytd_portfolio_daily_ret) > 1 else 0
+        ytd_sortino = calculate_sortino_ratio(ytd_portfolio_daily_ret, rf_rate)
+
+        if len(ytd_portfolio_daily_ret) >= 20:
+            ytd_var_95 = float(np.percentile(ytd_portfolio_daily_ret, 5))
+            ytd_cvar_95 = float(ytd_portfolio_daily_ret[ytd_portfolio_daily_ret <= ytd_var_95].mean())
+        else:
+            ytd_var_95 = np.nan
+            ytd_cvar_95 = np.nan
+
+        ytd_rolling_1m_vol = (
+            float(ytd_portfolio_daily_ret.iloc[-21:].std(ddof=1) * np.sqrt(ANNUAL_FACTOR))
+            if len(ytd_portfolio_daily_ret) >= 21 else ytd_vol
+        )
         
         # Determine Annualized Returns
         ytd_ann_ret = np.mean(ytd_portfolio_daily_ret) * ANNUAL_FACTOR
@@ -1337,19 +1436,24 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         # Benchmark YTD Sharpe (sample std)
         bench_ytd_vol = np.std(ytd_benchmark, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(ytd_benchmark) > 1 else 0
         bench_ytd_sharpe = (bench_ytd_ann_ret - rf_rate) / bench_ytd_vol if bench_ytd_vol > 0 else 0
+        bench_ytd_rolling_1m_vol = (
+            float(ytd_benchmark_aligned.iloc[-21:].std(ddof=1) * np.sqrt(ANNUAL_FACTOR))
+            if len(ytd_benchmark_aligned) >= 21 else bench_ytd_vol
+        )
         
-        # Calculate YTD risk-free rate (scaled by actual trading days)
-        ytd_trading_days = len(ytd_portfolio_daily_ret)
-        ytd_rf_rate = rf_rate * (ytd_trading_days / ANNUAL_FACTOR)  # Scale annual RF to YTD period
-        
-        # YTD Jensen's Alpha (Annualized) - uses full annual rf_rate_long since returns are annualized
-        ytd_expected_return = rf_rate_long + ytd_beta * (bench_ytd_ann_ret - rf_rate_long)
+        # Realised observations used for beta and compounded period alpha.
+        # Annualised arithmetic alpha complements the compounded period alpha.
+        ytd_expected_return = rf_rate + ytd_beta * (bench_ytd_ann_ret - rf_rate)
         ytd_alpha = ytd_ann_ret - ytd_expected_return
         
-        # YTD Jensen's Alpha (Raw, non-annualized) - uses scaled YTD rf_rate_long
+        # Compound daily CAPM expectations over the realised return observations.
         # Formula: α = Rp - [Rf_long + β × (Rm - Rf_long)]
-        ytd_rf_rate_long = rf_rate_long * (ytd_trading_days / ANNUAL_FACTOR)
-        ytd_alpha_raw = ytd_return - (ytd_rf_rate_long + ytd_beta * (benchmark_ytd - ytd_rf_rate_long))
+        ytd_alpha_raw, ytd_capm_expected_return = calculate_compounded_capm_alpha(
+            ytd_portfolio_daily_ret,
+            ytd_benchmark_aligned,
+            ytd_beta,
+            rf_rate,
+        )
 
         # Benchmark Historical Sharpe (sample std)
         bench_ann_vol = np.std(benchmark_ret, ddof=1) * np.sqrt(ANNUAL_FACTOR) if len(benchmark_ret) > 1 else 0
@@ -1458,6 +1562,11 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             ytd_benchmark,
             ytd_position_contribution_history,
         )
+        ytd_period_info = {
+            'Start_Date': portfolio_val_series.index[0].strftime('%Y-%m-%d'),
+            'End_Date': portfolio_val_series.index[-1].strftime('%Y-%m-%d'),
+            'Years': round((portfolio_val_series.index[-1] - portfolio_val_series.index[0]).days / 365.25, 2),
+        }
         
     else:
         ytd_return = 0.0
@@ -1466,11 +1575,17 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_beta = 0.0
         ytd_correlation = 0.0
         ytd_financing_cost = 0.0
+        ytd_direct_financing_cost = 0.0
         annual_financing_cost = 0.0
         ytd_sharpe = 0.0
+        ytd_sortino = 0.0
         bench_ytd_sharpe = 0.0
         ytd_vol = 0.0
         bench_ytd_vol = 0.0
+        ytd_rolling_1m_vol = 0.0
+        bench_ytd_rolling_1m_vol = 0.0
+        ytd_var_95 = np.nan
+        ytd_cvar_95 = np.nan
         bench_hist_sharpe = 0.0
         ytd_return_pln = 0.0
         wig_ytd = 0.0
@@ -1481,13 +1596,13 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_bench_max_drawdown = 0.0
         ytd_alpha = 0.0
         ytd_alpha_raw = 0.0
+        ytd_capm_expected_return = 0.0
         ytd_long_only_beta = 0.0
         ytd_short_only_beta = 0.0
         ytd_beta_history = pd.Series()
         portfolio_val_series_gross = pd.Series(dtype=float)
         portfolio_val_series = pd.Series(dtype=float)
         ytd_benchmark_aligned = pd.Series(dtype=float)
-        ytd_trading_days = 0
         ytd_position_contributions = {}
         ytd_position_contribution_history = pd.DataFrame()
         since_rebalance_position_contributions = {}
@@ -1496,6 +1611,11 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_historical_diagnostics = []
         ytd_current_weights = {}
         rebalance_events = []
+        ytd_period_info = {
+            'Start_Date': ytd_calc_start,
+            'End_Date': ytd_calc_start,
+            'Years': 0.0,
+        }
 
     # --- 6. VOLUME WEIGHTED CORRELATION (Past 1 Year) ---
     vol_weighted_corr = pd.DataFrame()
@@ -1701,29 +1821,60 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             'Years': round(period_years, 1)
         },
         'YTD_Return': ytd_return,
+        'YTD_Annual_Return': ytd_ann_ret if 'ytd_ann_ret' in locals() else 0.0,
         'Benchmark_YTD': benchmark_ytd,
         'YTD_Beta': ytd_beta,
         'YTD_Correlation': ytd_correlation,
         'YTD_Long_Only_Beta': ytd_long_only_beta if 'ytd_long_only_beta' in locals() else 0,
         'YTD_Short_Only_Beta': ytd_short_only_beta if 'ytd_short_only_beta' in locals() else 0,
         'YTD_Sharpe': ytd_sharpe,
+        'YTD_Sortino': ytd_sortino,
         'Benchmark_YTD_Sharpe': bench_ytd_sharpe,
         'YTD_Vol': ytd_vol,
         'Benchmark_YTD_Vol': bench_ytd_vol,
+        'YTD_Rolling_1M_Vol': ytd_rolling_1m_vol,
+        'Benchmark_YTD_Rolling_1M_Vol': bench_ytd_rolling_1m_vol,
+        'YTD_VaR_95': ytd_var_95,
+        'YTD_CVaR_95': ytd_cvar_95,
         'Benchmark_Hist_Sharpe': bench_hist_sharpe,
         'YTD_Return_PLN': ytd_return_pln,
         'WIG_YTD': wig_ytd,
         'MSCI_YTD': msci_ytd,
         'Period_Label': period_label,
+        'YTD_Period_Info': ytd_period_info,
         'YTD_Longs_Contrib': ytd_longs_contrib,
         'YTD_Shorts_Contrib': ytd_shorts_contrib,
+        'YTD_Security_Gross_Contribution': ytd_return_gross,
         'YTD_Alpha': ytd_alpha,
         'YTD_Alpha_Raw': ytd_alpha_raw,
+        'YTD_CAPM_Expected_Return': ytd_capm_expected_return,
         'YTD_Max_Drawdown': ytd_max_drawdown,
         'Benchmark_YTD_Max_Drawdown': ytd_bench_max_drawdown,
         'YTD_Financing_Cost': ytd_financing_cost,
+        'YTD_Direct_Financing_Cost': ytd_direct_financing_cost,
         'YTD_Return_Gross': ytd_return_gross,
         'Annual_Financing_Cost': annual_financing_cost,
+        'Current_Book_Scenario': {
+            'scope': 'Static current-target-weight replay; not realised portfolio history',
+            'period': {
+                'startDate': calc_start_date,
+                'endDate': calc_end_date,
+                'years': round(period_years, 1),
+            },
+            'beta': portfolio_beta,
+            'annualReturn': annual_ret,
+            'annualVolatility': annual_vol,
+            'sharpe': sharpe_ratio,
+            'sortino': sortino_ratio,
+            'maxDrawdown': max_drawdown,
+            'var95Daily': var_95,
+            'cvar95Daily': cvar_95,
+        },
+        'Performance_Methodology': {
+            'realisedScope': 'Dated rebalance snapshots chained into USD net NAV',
+            'contributionScope': 'Gross security contribution before financing',
+            'financingScope': 'Estimated margin and borrow carry; broker ledger not connected',
+        },
         'Returns_Stream': portfolio_daily_ret,
         'Net_Stream': portfolio_net_ret, 
         'Benchmark_Stream': benchmark_ret, 
