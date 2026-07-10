@@ -114,6 +114,9 @@ GOOGLE_DRIVE_REFRESH_TOKEN=...
 BRAIN_SEARCH_TIMEOUT_SECONDS=18
 BRAIN_ANALYSIS_TIMEOUT_SECONDS=8
 BRAIN_INDEX_TIMEOUT_SECONDS=240
+BRAIN_FULL_CONTEXT_MAX_CHARS_PER_SOURCE=250000
+BRAIN_FULL_CONTEXT_TOTAL_MAX_CHARS=800000
+BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS=45
 BRAIN_AGENT_USER_AGENT=InvestmentBrainResearchAgent/1.0; your-email@example.com
 ```
 
@@ -159,6 +162,7 @@ Main Brain capabilities:
 - Hybrid company retrieval: pgvector semantic search plus full-text exact search, fused before analysis.
 - Deep source expansion around the strongest matched passages before Gemini answers.
 - Persistent reference layer: select up to six indexed Drive sources that supply a relevant framework passage to every answer.
+- Full-document context: select up to four indexed files whose entire extracted text is included in every answer, with explicit per-file and total context caps.
 - Editable system prompt stored with the Brain and sent to Gemini as a native system instruction.
 - Google Drive OAuth connection.
 - Drive folder sync.
@@ -187,6 +191,8 @@ GET  /api/brain/search/semantic
 POST /api/brain/analyze-company
 GET  /api/brain/references
 PUT  /api/brain/references
+GET  /api/brain/full-context
+PUT  /api/brain/full-context
 GET  /api/brain/system-prompt
 PUT  /api/brain/system-prompt
 POST /api/brain/agent/import-url
@@ -194,7 +200,7 @@ POST /api/brain/agent/find-official-sources
 POST /api/brain/agent/run
 ```
 
-The Research Agent needs Google Drive OAuth with both read and `drive.file` write permission. If Drive was connected before agent import existed, reconnect Drive once from the Brain page so Google grants the new write scope.
+The Research Agent needs Google Drive OAuth with both read and `drive.file` write permission. If Drive was connected before agent import existed, reconnect Drive once from the Brain page so Google grants the new write scope. If uploads fail during token refresh, remove stale `GOOGLE_DRIVE_REFRESH_TOKEN` / `GOOGLE_REFRESH_TOKEN` values from Render (they override the database-managed OAuth token), then reconnect using the same Google OAuth client ID, secret, and redirect URI.
 
 Detailed architecture notes are in:
 

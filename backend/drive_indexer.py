@@ -337,7 +337,21 @@ class GoogleDriveClient:
         }
         with httpx.Client(timeout=30) as client:
             response = client.post(GOOGLE_TOKEN_URL, data=payload)
-            response.raise_for_status()
+            if response.is_error:
+                try:
+                    error_payload = response.json()
+                except ValueError:
+                    error_payload = {}
+                error_code = str(error_payload.get("error") or "").strip()
+                error_description = str(error_payload.get("error_description") or "").strip()
+                if error_code == "invalid_grant":
+                    raise RuntimeError(
+                        "Google rejected the stored Drive refresh token (invalid_grant). "
+                        "Remove GOOGLE_DRIVE_REFRESH_TOKEN / GOOGLE_REFRESH_TOKEN from Render if set, "
+                        "then reconnect Drive using the same Google OAuth client."
+                    )
+                detail = ": ".join(part for part in (error_code, error_description) if part)
+                raise RuntimeError(f"Google could not refresh the Drive access token{f' ({detail})' if detail else ''}.")
             data = response.json()
 
         token = data.get("access_token")

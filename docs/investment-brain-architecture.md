@@ -71,6 +71,21 @@ Conversation thread           -> what has already been discussed
 
 The system prompt should define behavior, not duplicate large source material. Put books, frameworks, and durable research in the reference layer so they remain attributable and can supply query-relevant passages.
 
+### Full-Document Context
+
+For a small number of primary documents, the Brain also supports a separate full-document context layer. The investor can choose up to four indexed files; for every answer, the backend rebuilds the complete extracted text from the ordered chunks, removes the indexer's word overlap, and injects it into the model context as `[F1]`, `[F2]`, and so on.
+
+This is deliberately separate from the reference layer. Use the reference layer for durable lenses where one relevant passage is enough. Use full-document context for an earnings transcript, investor deck, annual report, or a small set of core research PDFs that need to be available in their entirety throughout a thread.
+
+The layer is transparent rather than pretending that every PDF is always complete:
+
+- default cap: 250,000 extracted characters per source
+- default cap: 800,000 extracted characters across the selected files
+- the UI marks an extraction cap (for example, a long PDF) or model-context cap
+- scanned pages without extractable text still need OCR before they can become model context
+
+The limits can be changed with `BRAIN_FULL_CONTEXT_MAX_CHARS_PER_SOURCE`, `BRAIN_FULL_CONTEXT_TOTAL_MAX_CHARS`, and `BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS`. Full-document questions receive a longer generation timeout because they are intentionally more expensive to reason over.
+
 ### What Retrieval Does Today
 
 The answer endpoint uses hybrid retrieval instead of treating vector and keyword search as mutually exclusive:
@@ -530,7 +545,7 @@ GOOGLE_DRIVE_REFRESH_TOKEN=...
 
 If `GOOGLE_DRIVE_REFRESH_TOKEN` is omitted, the dashboard can open the OAuth consent URL and save the refresh token into the brain database after approval.
 
-Agent source import requires the Drive OAuth token to include read access and `https://www.googleapis.com/auth/drive.file`. Reconnect Drive once after this feature is deployed if the previous token was read-only.
+Agent source import requires the Drive OAuth token to include read access and `https://www.googleapis.com/auth/drive.file`. Reconnect Drive once after this feature is deployed if the previous token was read-only. Do not leave an old `GOOGLE_DRIVE_REFRESH_TOKEN` or `GOOGLE_REFRESH_TOKEN` in Render after moving to database-managed OAuth: environment tokens take precedence and can override a newly reconnected token. A Google `invalid_grant` refresh error means remove the stale environment token, redeploy, and reconnect using the same OAuth client ID, secret, and redirect URI.
 
 Drive sync stores:
 
@@ -586,6 +601,8 @@ GET    /api/brain/search/semantic
 POST   /api/brain/analyze-company
 GET    /api/brain/references
 PUT    /api/brain/references
+GET    /api/brain/full-context
+PUT    /api/brain/full-context
 GET    /api/brain/system-prompt
 PUT    /api/brain/system-prompt
 POST   /api/brain/agent/import-url

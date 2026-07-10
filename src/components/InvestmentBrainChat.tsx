@@ -93,6 +93,17 @@ type AnalysisContext = {
     retrieved?: SearchResult[];
     deepSources?: DeepSource[];
     references?: DeepSource[];
+    fullDocuments?: FullDocumentContext[];
+};
+
+type FullDocumentContext = {
+    sourceId?: number;
+    source?: SourceReference | null;
+    chunkCount?: number;
+    charsIncluded?: number;
+    availableChars?: number;
+    contextTruncated?: boolean;
+    indexTruncated?: boolean;
 };
 
 type RetrievalDiagnostics = {
@@ -103,12 +114,19 @@ type RetrievalDiagnostics = {
     semanticAvailable?: boolean;
     referenceSources?: number;
     referenceSemanticHits?: number;
+    fullDocuments?: number;
+    fullContextChars?: number;
 };
 
 type ReferenceSetResponse = {
     maxSources?: number;
     sourceIds?: number[];
     sources?: SourceReference[];
+};
+
+type FullContextSetResponse = ReferenceSetResponse & {
+    maxCharsPerSource?: number;
+    totalMaxChars?: number;
 };
 
 type SystemPromptResponse = {
@@ -197,6 +215,22 @@ const evidenceFor = (context?: AnalysisContext) => {
     const entries: Array<{ key: string; marker?: string; title: string; detail: string; text?: string; link?: string }> = [];
     const used = new Set<string>();
 
+    for (const [documentIndex, document] of (context?.fullDocuments ?? []).entries()) {
+        const source = document.source;
+        const key = `${String(source?.id ?? document.sourceId ?? 'full-document')}-full-${documentIndex}`;
+        const flags = [
+            document.contextTruncated ? 'context cap reached' : '',
+            document.indexTruncated ? 'index cap reached' : '',
+        ].filter(Boolean).join(' · ');
+        entries.push({
+            key,
+            marker: `F${documentIndex + 1}`,
+            title: sourceName(source),
+            detail: `${formatCount(document.charsIncluded)} characters from ${formatCount(document.chunkCount)} indexed passages${flags ? ` · ${flags}` : ' · full indexed text'}`,
+            link: sourceLink(source),
+        });
+    }
+
     for (const result of context?.retrieved ?? []) {
         const source = result.source;
         const key = String(source?.id ?? result.sourceId ?? `${result.entityType}-${result.entityId}`);
@@ -243,7 +277,7 @@ const evidenceFor = (context?: AnalysisContext) => {
         });
     }
 
-    return entries.slice(0, 6);
+    return entries.slice(0, 10);
 };
 
 const renderInline = (text: string, key: string): React.ReactNode[] => {
@@ -383,6 +417,16 @@ export const InvestmentBrainChat: React.FC = () => {
     const [isReferencePickerOpen, setIsReferencePickerOpen] = useState(false);
     const [isReferenceLoading, setIsReferenceLoading] = useState(false);
     const [isReferenceSaving, setIsReferenceSaving] = useState(false);
+    const [fullContextSources, setFullContextSources] = useState<SourceReference[]>([]);
+    const [fullContextSelection, setFullContextSelection] = useState<number[]>([]);
+    const [fullContextLimit, setFullContextLimit] = useState(4);
+    const [fullContextMaxChars, setFullContextMaxChars] = useState(250000);
+    const [fullContextTotalMaxChars, setFullContextTotalMaxChars] = useState(800000);
+    const [availableFullContextSources, setAvailableFullContextSources] = useState<SourceReference[]>([]);
+    const [fullContextFilter, setFullContextFilter] = useState('');
+    const [isFullContextPickerOpen, setIsFullContextPickerOpen] = useState(false);
+    const [isFullContextLoading, setIsFullContextLoading] = useState(false);
+    const [isFullContextSaving, setIsFullContextSaving] = useState(false);
     const [systemPrompt, setSystemPrompt] = useState('');
     const [savedSystemPrompt, setSavedSystemPrompt] = useState('');
     const [defaultSystemPrompt, setDefaultSystemPrompt] = useState('');
@@ -408,10 +452,11 @@ export const InvestmentBrainChat: React.FC = () => {
 
     const refresh = async () => {
         try {
-            const [statusResult, driveResult, referenceResult, systemPromptResult] = await Promise.allSettled([
+            const [statusResult, driveResult, referenceResult, fullContextResult, systemPromptResult] = await Promise.allSettled([
                 request(api('/api/brain/status'), {}, 12000),
                 request(api('/api/brain/index/drive/status'), {}, 12000),
                 request(api('/api/brain/references'), {}, 12000),
+                request(api('/api/brain/full-context'), {}, 12000),
                 request(api('/api/brain/system-prompt'), {}, 12000),
             ]);
             if (statusResult.status !== 'fulfilled') throw new Error('Brain backend is unavailable');
@@ -426,6 +471,14 @@ export const InvestmentBrainChat: React.FC = () => {
                 setReferenceSources(references.sources ?? []);
                 setReferenceSelection(references.sourceIds ?? []);
                 setReferenceLimit(references.maxSources ?? 6);
+            }
+            if (fullContextResult.status === 'fulfilled' && fullContextResult.value.ok) {
+                const fullContext = await fullContextResult.value.json() as FullContextSetResponse;
+                setFullContextSources(fullContext.sources ?? []);
+                setFullContextSelection(fullContext.sourceIds ?? []);
+                setFullContextLimit(fullContext.maxSources ?? 4);
+                setFullContextMaxChars(fullContext.maxCharsPerSource ?? 250000);
+                setFullContextTotalMaxChars(fullContext.totalMaxChars ?? 800000);
             }
             if (systemPromptResult.status === 'fulfilled' && systemPromptResult.value.ok) {
                 const prompt = await systemPromptResult.value.json() as SystemPromptResponse;
@@ -461,6 +514,16 @@ export const InvestmentBrainChat: React.FC = () => {
             source.tags?.join(' '),
         ].filter(Boolean).join(' ').toLowerCase().includes(query));
     }, [availableReferenceSources, referenceFilter]);
+    const filteredFullContextSources = useMemo(() => {
+        const query = fullContextFilter.trim().toLowerCase();
+        if (!query) return availableFullContextSources;
+        return availableFullContextSources.filter(source => [
+            source.title,
+            source.fileName,
+            source.relativePath,
+            source.tags?.join(' '),
+        ].filter(Boolean).join(' ').toLowerCase().includes(query));
+    }, [availableFullContextSources, fullContextFilter]);
 
     const sendQuestion = async () => {
         const cleanedTicker = ticker.trim().toUpperCase();
@@ -472,7 +535,9 @@ export const InvestmentBrainChat: React.FC = () => {
         setThread(current => [...current, userMessage]);
         setDraft('');
         setIsAsking(true);
-        setNotice('Searching evidence, then reading the strongest source files...');
+        setNotice(fullContextSources.length
+            ? `Reading ${fullContextSources.length} full document${fullContextSources.length === 1 ? '' : 's'}, then retrieving supporting evidence...`
+            : 'Searching evidence, then reading the strongest source files...');
 
         try {
             const response = await request(api('/api/brain/analyze-company'), {
@@ -485,7 +550,7 @@ export const InvestmentBrainChat: React.FC = () => {
                     useSemantic: true,
                     conversation: priorConversation.slice(-10),
                 }),
-            });
+            }, fullContextSources.length ? 120000 : 65000);
             if (!response.ok) throw new Error(await errorText(response, 'The Brain could not complete this question.'));
             const payload = await response.json() as AnalysisResponse;
             setThread(current => [...current, {
@@ -498,7 +563,8 @@ export const InvestmentBrainChat: React.FC = () => {
                 status: payload.timings?.semanticError ? 'Vector retrieval was unavailable; exact search still contributed.' : undefined,
             }]);
             const readCount = payload.retrieval?.expandedFiles ?? 0;
-            setNotice(`${payload.model} answered in ${formatSeconds(payload.timings?.totalMs)}${readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.`);
+            const fullDocumentCount = payload.retrieval?.fullDocuments ?? 0;
+            setNotice(`${payload.model} answered in ${formatSeconds(payload.timings?.totalMs)}${fullDocumentCount ? ` with ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context` : readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.`);
         } catch (error) {
             const text = error instanceof DOMException && error.name === 'AbortError'
                 ? 'This request took too long. The backend may be waking up; try the question again.'
@@ -634,6 +700,70 @@ export const InvestmentBrainChat: React.FC = () => {
             setNotice(error instanceof Error ? error.message : 'Could not save the reference layer.');
         } finally {
             setIsReferenceSaving(false);
+        }
+    };
+
+    const openFullContextPicker = async () => {
+        if (!ready) return;
+        setIsFullContextPickerOpen(true);
+        setFullContextFilter('');
+        setIsFullContextLoading(true);
+        try {
+            const response = await request(api('/api/brain/sources?limit=250'), {}, 16000);
+            if (!response.ok) throw new Error(await errorText(response, 'Could not load your indexed research files.'));
+            const payload = await response.json() as { sources?: SourceReference[] };
+            setAvailableFullContextSources(payload.sources ?? []);
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'Could not load your indexed research files.');
+        } finally {
+            setIsFullContextLoading(false);
+        }
+    };
+
+    const closeFullContextPicker = () => {
+        setFullContextSelection(fullContextSources.flatMap(source => typeof source.id === 'number' ? [source.id] : []));
+        setIsFullContextPickerOpen(false);
+    };
+
+    const toggleFullContextSource = (sourceId: number) => {
+        setFullContextSelection(current => {
+            if (current.includes(sourceId)) return current.filter(id => id !== sourceId);
+            if (current.length >= fullContextLimit) {
+                setNotice(`Choose up to ${fullContextLimit} full-document sources.`);
+                return current;
+            }
+            return [...current, sourceId];
+        });
+    };
+
+    const saveFullContextSet = async (sourceIds = fullContextSelection, closeAfterSave = false) => {
+        if (!ready || isFullContextSaving) return;
+        setIsFullContextSaving(true);
+        try {
+            const response = await request(api('/api/brain/full-context'), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sourceIds }),
+            }, 18000);
+            if (!response.ok) {
+                throw new Error(response.status === 404
+                    ? 'The full-document context service will be available after the backend deploys.'
+                    : await errorText(response, 'Could not save the full-document context.'));
+            }
+            const payload = await response.json() as FullContextSetResponse;
+            setFullContextSources(payload.sources ?? []);
+            setFullContextSelection(payload.sourceIds ?? []);
+            setFullContextLimit(payload.maxSources ?? 4);
+            setFullContextMaxChars(payload.maxCharsPerSource ?? fullContextMaxChars);
+            setFullContextTotalMaxChars(payload.totalMaxChars ?? fullContextTotalMaxChars);
+            setNotice(payload.sources?.length
+                ? `${payload.sources.length} full document${payload.sources.length === 1 ? '' : 's'} will be in every future answer.`
+                : 'The full-document context layer is now empty.');
+            if (closeAfterSave) setIsFullContextPickerOpen(false);
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'Could not save the full-document context.');
+        } finally {
+            setIsFullContextSaving(false);
         }
     };
 
@@ -824,7 +954,7 @@ export const InvestmentBrainChat: React.FC = () => {
                                 <MessageSquare className="h-4 w-4 text-emerald-300" />
                                 <span className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Research thread</span>
                             </div>
-                            <div className="flex min-w-0 items-center justify-end gap-2">
+                            <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
                                 <button
                                     type="button"
                                     onClick={() => void openReferencePicker()}
@@ -833,9 +963,19 @@ export const InvestmentBrainChat: React.FC = () => {
                                     className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md border border-violet-500/20 bg-violet-500/[0.07] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-violet-200 transition-colors hover:bg-violet-500/[0.13] disabled:cursor-not-allowed disabled:border-white/[0.08] disabled:bg-white/[0.025] disabled:text-slate-600"
                                 >
                                     <BookOpenCheck className="h-3.5 w-3.5" />
-                                    Reference {referenceSources.length || 'set'}
+                                    <span className="hidden sm:inline">Reference </span>{referenceSources.length || 'set'}
                                 </button>
-                                {notice && <span className="max-w-[48%] truncate text-right text-[10px] font-medium text-slate-500">{notice}</span>}
+                                <button
+                                    type="button"
+                                    onClick={() => void openFullContextPicker()}
+                                    disabled={!ready}
+                                    title={fullContextSources.map(source => sourceName(source)).join('\n') || 'Choose up to four indexed files to include in full'}
+                                    className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md border border-cyan-500/20 bg-cyan-500/[0.07] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-cyan-200 transition-colors hover:bg-cyan-500/[0.13] disabled:cursor-not-allowed disabled:border-white/[0.08] disabled:bg-white/[0.025] disabled:text-slate-600"
+                                >
+                                    <FileSearch className="h-3.5 w-3.5" />
+                                    <span className="hidden sm:inline">Full files </span>{fullContextSources.length || 'set'}
+                                </button>
+                                {notice && <span className="hidden max-w-[48%] truncate text-right text-[10px] font-medium text-slate-500 sm:inline">{notice}</span>}
                             </div>
                         </div>
 
@@ -871,6 +1011,7 @@ export const InvestmentBrainChat: React.FC = () => {
                                                     {message.retrieval.semanticAvailable ? `${message.retrieval.semanticHits ?? 0} semantic` : 'exact search'}
                                                     {` + ${message.retrieval.keywordHits ?? 0} exact`}
                                                     {message.retrieval.referenceSources ? ` / ${message.retrieval.referenceSources} framework${message.retrieval.referenceSources === 1 ? '' : 's'}` : ''}
+                                                    {message.retrieval.fullDocuments ? ` / ${message.retrieval.fullDocuments} full file${message.retrieval.fullDocuments === 1 ? '' : 's'}` : ''}
                                                     {message.retrieval.expandedFiles ? ` · ${message.retrieval.expandedFiles} file read${message.retrieval.expandedFiles === 1 ? '' : 's'}` : ''}
                                                 </span>
                                             )}
@@ -937,6 +1078,13 @@ export const InvestmentBrainChat: React.FC = () => {
                                     <p className="mt-1 truncate text-xs text-slate-500">{referenceSources.length ? referenceSources.map(source => sourceName(source)).join(' / ') : 'No persistent framework selected'}</p>
                                 </div>
                                 <Button type="button" onClick={() => void openReferencePicker()} disabled={!ready} className="min-h-7 shrink-0 px-2 text-[9px]">Manage</Button>
+                            </div>
+                            <div className="mt-3 flex items-start justify-between gap-3 border-t border-white/[0.07] pt-3">
+                                <div className="min-w-0">
+                                    <div className="flex items-center gap-2"><FileSearch className="h-3.5 w-3.5 text-cyan-300" /><span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">Full-document context</span></div>
+                                    <p className="mt-1 truncate text-xs text-slate-500">{fullContextSources.length ? fullContextSources.map(source => sourceName(source)).join(' / ') : 'No whole files selected'}</p>
+                                </div>
+                                <Button type="button" onClick={() => void openFullContextPicker()} disabled={!ready} className="min-h-7 shrink-0 px-2 text-[9px]">Manage</Button>
                             </div>
                             <div className="mt-3 flex items-start justify-between gap-3 border-t border-white/[0.07] pt-3">
                                 <div className="min-w-0">
@@ -1033,6 +1181,52 @@ export const InvestmentBrainChat: React.FC = () => {
                         <div className="flex items-center justify-between gap-3 border-t border-white/[0.08] px-5 py-3">
                             <p className="text-xs text-slate-500"><span className="font-semibold text-violet-200">{referenceSelection.length}/{referenceLimit}</span> sources active in every answer</p>
                             <div className="flex gap-2"><Button type="button" onClick={closeReferencePicker}>Cancel</Button><Button type="button" tone="primary" onClick={() => void saveReferenceSet(referenceSelection, true)} disabled={isReferenceSaving}>{isReferenceSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <BookOpenCheck className="h-3.5 w-3.5" />} Save layer</Button></div>
+                        </div>
+                    </section>
+                </div>
+            )}
+            {isFullContextPickerOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
+                    <section role="dialog" aria-modal="true" aria-labelledby="full-context-title" className="flex max-h-[min(720px,calc(100vh-32px))] w-full max-w-2xl flex-col rounded-lg border border-white/[0.12] bg-[#0a0f18] shadow-2xl">
+                        <div className="flex items-start justify-between gap-4 border-b border-white/[0.08] px-5 py-4">
+                            <div>
+                                <div className="flex items-center gap-2"><FileSearch className="h-4 w-4 text-cyan-300" /><h2 id="full-context-title" className="text-sm font-bold text-white">Full-document context</h2></div>
+                                <p className="mt-1 text-xs leading-5 text-slate-400">Choose up to {fullContextLimit} indexed files. Their full extracted text is included in every future answer, subject to {formatCount(fullContextMaxChars)} characters per file and {formatCount(fullContextTotalMaxChars)} characters total. This is more deliberate than retrieval and can take longer.</p>
+                            </div>
+                            <button type="button" onClick={closeFullContextPicker} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/10 text-slate-400 transition-colors hover:bg-white/[0.07] hover:text-white" aria-label="Close full-document source picker"><X className="h-4 w-4" /></button>
+                        </div>
+                        <div className="border-b border-white/[0.08] px-5 py-3">
+                            <div className="flex items-center gap-2 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 focus-within:border-cyan-500/35"><Search className="h-3.5 w-3.5 text-slate-500" /><input value={fullContextFilter} onChange={event => setFullContextFilter(event.target.value)} aria-label="Filter full-document sources" placeholder="Find a file in your indexed Drive library" className="h-9 min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-600" /></div>
+                        </div>
+                        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-3">
+                            {isFullContextLoading ? (
+                                <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-slate-500"><LoaderCircle className="h-4 w-4 animate-spin text-cyan-300" /> Loading indexed research files...</div>
+                            ) : filteredFullContextSources.length ? (
+                                <div className="divide-y divide-white/[0.06]">
+                                    {filteredFullContextSources.map(source => {
+                                        if (typeof source.id !== 'number') return null;
+                                        const selected = fullContextSelection.includes(source.id);
+                                        const metadataPath = source.metadata?.relativePath;
+                                        const detail = source.relativePath
+                                            ?? (typeof metadataPath === 'string' ? metadataPath : undefined)
+                                            ?? source.kind
+                                            ?? 'Indexed source';
+                                        return (
+                                            <label key={source.id} className={cn('flex cursor-pointer items-start gap-3 py-3 transition-colors', selected ? 'text-white' : 'text-slate-300')}>
+                                                <input type="checkbox" checked={selected} onChange={() => toggleFullContextSource(source.id!)} className="mt-0.5 h-4 w-4 shrink-0 accent-cyan-400" />
+                                                <div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{sourceName(source)}</p><p className="mt-0.5 truncate text-xs text-slate-500">{detail}</p></div>
+                                                {sourceLink(source) && <a href={sourceLink(source)} target="_blank" rel="noreferrer" onClick={event => event.stopPropagation()} className="mt-0.5 shrink-0 text-slate-500 transition-colors hover:text-cyan-300" aria-label={`Open ${sourceName(source)}`}><ArrowUpRight className="h-3.5 w-3.5" /></a>}
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <div className="flex min-h-40 items-center justify-center text-sm text-slate-500">No indexed sources match this search.</div>
+                            )}
+                        </div>
+                        <div className="flex flex-col gap-3 border-t border-white/[0.08] px-5 py-3 sm:flex-row sm:items-center sm:justify-between">
+                            <p className="text-xs text-slate-500"><span className="font-semibold text-cyan-200">{fullContextSelection.length}/{fullContextLimit}</span> whole files in every answer</p>
+                            <div className="flex gap-2"><Button type="button" onClick={closeFullContextPicker}>Cancel</Button><Button type="button" tone="success" onClick={() => void saveFullContextSet(fullContextSelection, true)} disabled={isFullContextSaving}>{isFullContextSaving ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <FileSearch className="h-3.5 w-3.5" />} Save full context</Button></div>
                         </div>
                     </section>
                 </div>

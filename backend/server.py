@@ -96,11 +96,26 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 BRAIN_SEARCH_TIMEOUT_SECONDS = _env_float("BRAIN_SEARCH_TIMEOUT_SECONDS", 18.0)
 BRAIN_ANALYSIS_TIMEOUT_SECONDS = _env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 8.0)
 BRAIN_INDEX_TIMEOUT_SECONDS = _env_float("BRAIN_INDEX_TIMEOUT_SECONDS", 240.0)
 REFERENCE_SOURCE_IDS_SETTING = "brain.reference_source_ids.v1"
 MAX_REFERENCE_SOURCES = 6
+FULL_CONTEXT_SOURCE_IDS_SETTING = "brain.full_context_source_ids.v1"
+MAX_FULL_CONTEXT_SOURCES = 4
+FULL_CONTEXT_MAX_CHARS_PER_SOURCE = max(20_000, min(_env_int("BRAIN_FULL_CONTEXT_MAX_CHARS_PER_SOURCE", 250_000), 1_000_000))
+FULL_CONTEXT_TOTAL_MAX_CHARS = max(100_000, min(_env_int("BRAIN_FULL_CONTEXT_TOTAL_MAX_CHARS", 800_000), 1_500_000))
+FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS = max(15.0, min(_env_float("BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS", 45.0), 120.0))
 SYSTEM_PROMPT_SETTING = "brain.system_prompt.v1"
 MAX_SYSTEM_PROMPT_CHARS = 6000
 DEFAULT_BRAIN_SYSTEM_PROMPT = """You are Investment Brain, a rigorous private investing research assistant.
@@ -366,6 +381,47 @@ async def _reference_sources_from_store(store: Any) -> tuple[list[int], list[dic
     return available_ids, sources
 
 
+def _parse_full_context_source_ids(value: str | None) -> list[int]:
+    if not value:
+        return []
+    try:
+        raw_ids = json.loads(value)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw_ids, list):
+        return []
+
+    source_ids: list[int] = []
+    seen: set[int] = set()
+    for raw_id in raw_ids:
+        try:
+            source_id = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if source_id <= 0 or source_id in seen:
+            continue
+        seen.add(source_id)
+        source_ids.append(source_id)
+        if len(source_ids) >= MAX_FULL_CONTEXT_SOURCES:
+            break
+    return source_ids
+
+
+async def _full_context_sources_from_store(store: Any) -> tuple[list[int], list[dict[str, Any]]]:
+    if not hasattr(store, "get_setting"):
+        return [], []
+    raw_ids = await _run_brain_step(
+        "Full-document context lookup",
+        store.get_setting,
+        FULL_CONTEXT_SOURCE_IDS_SETTING,
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
+    source_ids = _parse_full_context_source_ids(raw_ids)
+    sources = await _load_reference_sources(store, source_ids)
+    available_ids = [int(source["id"]) for source in sources]
+    return available_ids, sources
+
+
 async def _system_prompt_from_store(store: Any) -> str:
     if not hasattr(store, "get_setting"):
         return DEFAULT_BRAIN_SYSTEM_PROMPT
@@ -377,6 +433,106 @@ async def _system_prompt_from_store(store: Any) -> str:
     )
     clean_prompt = str(saved_prompt or "").strip()
     return clean_prompt[:MAX_SYSTEM_PROMPT_CHARS] or DEFAULT_BRAIN_SYSTEM_PROMPT
+
+
+def _stitch_source_chunks(chunks: list[dict[str, Any]]) -> str:
+    """Reconstruct indexed text while removing the indexer's word overlap."""
+    stitched_words: list[str] = []
+    max_overlap_words = 160
+    for chunk in chunks:
+        words = str(chunk.get("body") or "").split()
+        if not words:
+            continue
+        overlap = 0
+        max_overlap = min(max_overlap_words, len(stitched_words), len(words))
+        for size in range(max_overlap, 0, -1):
+            if stitched_words[-size:] == words[:size]:
+                overlap = size
+                break
+        stitched_words.extend(words[overlap:])
+    return " ".join(stitched_words).strip()
+
+
+async def _build_full_document_context(
+    store: Any,
+    sources: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Load the full indexed text of selected documents with visible budgets."""
+    if not sources or not hasattr(store, "list_chunks"):
+        return []
+
+    chunk_requests = [
+        _run_brain_step(
+            "Full-document chunk lookup",
+            store.list_chunks,
+            source_id=int(source["id"]),
+            limit=500,
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+        for source in sources
+    ]
+    chunk_results = await asyncio.gather(*chunk_requests, return_exceptions=True)
+    remaining_chars = FULL_CONTEXT_TOTAL_MAX_CHARS
+    documents: list[dict[str, Any]] = []
+
+    for source, chunks in zip(sources, chunk_results):
+        if isinstance(chunks, Exception):
+            continue
+        full_text = _stitch_source_chunks(chunks or [])
+        if not full_text:
+            continue
+        available_chars = len(full_text)
+        chars_allowed = min(available_chars, FULL_CONTEXT_MAX_CHARS_PER_SOURCE, remaining_chars)
+        if chars_allowed <= 0:
+            break
+        context_text = full_text[:chars_allowed]
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        index_truncated = bool(metadata.get("truncated"))
+        documents.append({
+            "sourceId": int(source["id"]),
+            "source": _public_source_reference(source),
+            "body": context_text,
+            "chunkCount": len(chunks or []),
+            "charsIncluded": len(context_text),
+            "availableChars": available_chars,
+            "contextTruncated": len(context_text) < available_chars,
+            "indexTruncated": index_truncated,
+        })
+        remaining_chars -= len(context_text)
+    return documents
+
+
+def _public_full_document_context(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "sourceId": item.get("sourceId"),
+            "source": item.get("source"),
+            "chunkCount": item.get("chunkCount", 0),
+            "charsIncluded": item.get("charsIncluded", 0),
+            "availableChars": item.get("availableChars", 0),
+            "contextTruncated": item.get("contextTruncated", False),
+            "indexTruncated": item.get("indexTruncated", False),
+        }
+        for item in items
+    ]
+
+
+def _format_full_document_context(items: list[dict[str, Any]]) -> str:
+    blocks: list[str] = []
+    for index, item in enumerate(items, start=1):
+        source = item.get("source") or {}
+        source_title = source.get("title") or f"Source {item.get('sourceId')}"
+        flags = []
+        if item.get("contextTruncated"):
+            flags.append("context cap reached")
+        if item.get("indexTruncated"):
+            flags.append("index extraction cap reached")
+        flag_text = f" | {', '.join(flags)}" if flags else " | full indexed text"
+        blocks.append(
+            f"[F{index}] {source_title} | {item.get('charsIncluded', 0)} characters | "
+            f"{item.get('chunkCount', 0)} chunks{flag_text}\n{item.get('body', '')}"
+        )
+    return "\n\n---\n\n".join(blocks)
 
 
 async def _build_reference_context(
@@ -792,6 +948,10 @@ class BrainReferenceSetRequest(BaseModel):
     sourceIds: list[int] = Field(default_factory=list, max_length=MAX_REFERENCE_SOURCES)
 
 
+class BrainFullContextSetRequest(BaseModel):
+    sourceIds: list[int] = Field(default_factory=list, max_length=MAX_FULL_CONTEXT_SOURCES)
+
+
 class BrainSystemPromptRequest(BaseModel):
     systemPrompt: str = Field(default="", max_length=MAX_SYSTEM_PROMPT_CHARS)
 
@@ -1027,6 +1187,7 @@ async def get_brain_status():
         "gemini_company_analysis",
         "embedding_ready_schema",
         "persistent_reference_layer",
+        "full_document_context",
         "editable_system_prompt",
     ]
     if import_url_into_brain:
@@ -1548,6 +1709,50 @@ async def update_brain_reference_set(payload: BrainReferenceSetRequest):
         "maxSources": MAX_REFERENCE_SOURCES,
         "sourceIds": requested_ids,
         "sources": [_public_source_reference(source) for source in sources],
+    }
+
+
+@app.get("/api/brain/full-context")
+async def get_brain_full_context_set():
+    store = _brain_or_503()
+    source_ids, sources = await _full_context_sources_from_store(store)
+    return {
+        "maxSources": MAX_FULL_CONTEXT_SOURCES,
+        "sourceIds": source_ids,
+        "sources": [_public_source_reference(source) for source in sources],
+        "maxCharsPerSource": FULL_CONTEXT_MAX_CHARS_PER_SOURCE,
+        "totalMaxChars": FULL_CONTEXT_TOTAL_MAX_CHARS,
+    }
+
+
+@app.put("/api/brain/full-context")
+async def update_brain_full_context_set(payload: BrainFullContextSetRequest):
+    store = _brain_or_503()
+    requested_ids = _parse_full_context_source_ids(json.dumps(payload.sourceIds))
+    if len(requested_ids) != len(payload.sourceIds) or len(set(payload.sourceIds)) != len(payload.sourceIds):
+        raise HTTPException(status_code=400, detail="Full-document source IDs must be unique positive integers.")
+
+    sources = await _load_reference_sources(store, requested_ids)
+    found_ids = {int(source["id"]) for source in sources}
+    missing_ids = [source_id for source_id in requested_ids if source_id not in found_ids]
+    if missing_ids:
+        raise HTTPException(status_code=404, detail=f"Full-document source not found: {missing_ids[0]}")
+    if not hasattr(store, "set_setting"):
+        raise HTTPException(status_code=503, detail="Brain settings are not available")
+
+    await _run_brain_step(
+        "Full-document context save",
+        store.set_setting,
+        FULL_CONTEXT_SOURCE_IDS_SETTING,
+        json.dumps(requested_ids),
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
+    return {
+        "maxSources": MAX_FULL_CONTEXT_SOURCES,
+        "sourceIds": requested_ids,
+        "sources": [_public_source_reference(source) for source in sources],
+        "maxCharsPerSource": FULL_CONTEXT_MAX_CHARS_PER_SOURCE,
+        "totalMaxChars": FULL_CONTEXT_TOTAL_MAX_CHARS,
     }
 
 
@@ -2114,8 +2319,10 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     )
     retrieval_query = f"{ticker} {prior_user_questions} {question}".strip()[:4000]
     reference_sources_task = asyncio.create_task(_reference_sources_from_store(store))
+    full_context_sources_task = asyncio.create_task(_full_context_sources_from_store(store))
     system_prompt_task = asyncio.create_task(_system_prompt_from_store(store))
     _, selected_reference_sources = await reference_sources_task
+    _, selected_full_context_sources = await full_context_sources_task
     system_prompt = await system_prompt_task
 
     candidate_limit = min(payload.limit * 2, 20)
@@ -2202,8 +2409,13 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         selected_reference_sources,
         query_embedding=query_embedding,
     ))
+    full_document_context_task = asyncio.create_task(_build_full_document_context(
+        store,
+        selected_full_context_sources,
+    ))
     deep_sources = await deep_sources_task
     reference_context, reference_semantic_hits = await reference_context_task
+    full_document_context = await full_document_context_task
     timings["deepSourceExpansionMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
     prompt = f"""
@@ -2224,6 +2436,9 @@ Personal memories:
 Persistent reference layer injected into this model context:
 {_format_reference_context(reference_context) or "No persistent reference sources are selected."}
 
+Full-document context injected into this model context:
+{_format_full_document_context(full_document_context) or "No full-document sources are selected."}
+
 Retrieved source context:
 {_format_context_block(context_items, max_chars=1200) or "No retrieved source context."}
 
@@ -2241,10 +2456,15 @@ If there is previous conversation, answer as a continuation: avoid repeating ear
 Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per section. If there is no retrieved or expanded source context, say that clearly.
 When relying on a numbered item from Retrieved source context, cite it compactly as [1], [2], and so on. Never invent citations or claim a source says more than the supplied excerpt.
 Persistent reference sources are investor-selected frameworks. Use them as an always-on lens, but do not mistake a framework for company-specific evidence. Cite them as [R1], [R2], and so on when they materially shape the reasoning, and surface any tension with current company evidence.
+Full-document sources are investor-selected primary context. They contain the full text reconstructed from the indexed file, subject to any stated extraction or context cap. Cite them as [F1], [F2], and so on when they materially support the answer. Never imply an [F] source was fully available when its label says a cap was reached.
 """.strip()
 
     step_started = time.perf_counter()
-    generation_timeout = min(BRAIN_ANALYSIS_TIMEOUT_SECONDS, 7.0)
+    generation_timeout = (
+        FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS
+        if full_document_context
+        else min(BRAIN_ANALYSIS_TIMEOUT_SECONDS, 7.0)
+    )
     try:
         answer = await _run_brain_step(
             "Gemini analysis",
@@ -2280,12 +2500,15 @@ Persistent reference sources are investor-selected frameworks. Use them as an al
                 "semanticAvailable": semantic_available,
                 "referenceSources": len(reference_context),
                 "referenceSemanticHits": reference_semantic_hits,
+                "fullDocuments": len(full_document_context),
+                "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
             },
             "context": {
                 "memories": memory_results,
                 "retrieved": context_items,
                 "deepSources": deep_sources,
                 "references": reference_context,
+                "fullDocuments": _public_full_document_context(full_document_context),
             },
         }
 
@@ -2307,12 +2530,15 @@ Persistent reference sources are investor-selected frameworks. Use them as an al
             "semanticAvailable": semantic_available,
             "referenceSources": len(reference_context),
             "referenceSemanticHits": reference_semantic_hits,
+            "fullDocuments": len(full_document_context),
+            "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
         },
         "context": {
             "memories": memory_results,
             "retrieved": context_items,
             "deepSources": deep_sources,
             "references": reference_context,
+            "fullDocuments": _public_full_document_context(full_document_context),
         },
     }
 
