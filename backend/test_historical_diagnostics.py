@@ -62,6 +62,52 @@ class HistoricalDiagnosticsTests(unittest.TestCase):
         self.assertEqual(by_date["2026-01-06"]["losersCount"], 1)
         self.assertAlmostEqual(by_date["2026-01-06"]["battingAverage"], 0.0)
 
+    def test_rebalanced_nav_chains_drawdown_and_variance(self):
+        dates = pd.to_datetime(["2025-12-31", "2026-01-02", "2026-01-05", "2026-01-06"])
+        prices = pd.DataFrame(
+            {
+                "A": [100.0, 110.0, 121.0, 121.0],
+                "B": [100.0, 100.0, 90.0, 80.0],
+            },
+            index=dates,
+        )
+        snapshots = [
+            {
+                "date": "2025-12-31",
+                "executionTiming": "effective_open",
+                "positions": {"A": {"weight": 1.0, "type": "Long"}},
+            },
+            {
+                "date": "2026-01-05",
+                "executionTiming": "effective_open",
+                "positions": {"B": {"weight": 1.0, "type": "Long"}},
+            },
+        ]
+        original = risk.get_rebalance_snapshots
+        risk.get_rebalance_snapshots = lambda _name, _config: snapshots
+        try:
+            result = risk.calculate_segmented_ytd(
+                prices,
+                "test",
+                snapshots[-1]["positions"],
+                "2025-12-31",
+                margin_rate=0.0,
+                borrow_fee=0.0,
+            )
+        finally:
+            risk.get_rebalance_snapshots = original
+
+        values = result["portfolio_val_series"]
+        expected = pd.Series([1.0, 1.10, 0.99, 0.88], index=dates)
+        pd.testing.assert_series_equal(values, expected)
+
+        drawdown = risk.calculate_drawdown_series(values)
+        self.assertAlmostEqual(drawdown.min(), (0.88 - 1.10) / 1.10)
+
+        returns = values.pct_change().dropna()
+        diagnostics = risk.build_historical_diagnostics(values, pd.Series(dtype=float))
+        self.assertAlmostEqual(diagnostics[-1]["variance"], returns.var(ddof=1))
+
     def test_latest_patch_prefers_fresh_warsaw_quote_over_stale_yahoo_quote(self):
         patch_price, patch_source = risk.select_latest_patch_price(
             last_price=33.50,

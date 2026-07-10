@@ -128,6 +128,17 @@ VITE_BRAIN_API_URL=http://127.0.0.1:8000
 
 Without `VITE_BRAIN_API_URL`, the Brain frontend can default to the hosted Render backend so localhost still uses the production Drive/Supabase setup.
 
+## Cache Behavior
+
+The dashboard uses short-lived caches for responsiveness without treating cached market or research data as permanent truth:
+
+- Portfolio metrics and raw market inputs are cached in the backend for five minutes per portfolio/cost tier. `force=true` refreshes them immediately.
+- Brain status is cached for 15 seconds to avoid repeatedly querying Supabase while the page loads.
+- The Brain keeps a small versioned in-memory cache of reconstructed pinned documents. A source update changes the cache key, so new indexing invalidates the relevant document automatically.
+- The Brain page restores its last healthy status, Drive connection, pinned sources, and system prompt from browser session storage for up to 15 minutes, then refreshes from the backend in the background.
+
+These are performance caches only. Supabase remains the durable source of Brain data, and a Render restart simply starts the in-memory caches fresh.
+
 ## Investment Brain
 
 The Brain is a retrieval system, not just a chatbot.
