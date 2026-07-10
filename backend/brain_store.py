@@ -534,6 +534,18 @@ class BrainStore:
                     return self._source_from_row(row)
         return None
 
+    def get_file_source_by_hash(self, file_hash: str) -> dict[str, Any] | None:
+        file_hash = str(file_hash or "").strip()
+        if not file_hash:
+            return None
+
+        with self._lock, self._connect() as conn:
+            for row in conn.execute("SELECT * FROM sources WHERE kind = 'file' ORDER BY id").fetchall():
+                metadata = self._json_loads(row["metadata"], {})
+                if metadata.get("fileHash") == file_hash:
+                    return self._source_from_row(row)
+        return None
+
     def add_chunks(self, source_id: int, chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not chunks:
             return []

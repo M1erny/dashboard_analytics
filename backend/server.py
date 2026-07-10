@@ -1283,6 +1283,11 @@ async def list_google_drive_brain_files(limitFiles: int = 2000):
         )
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Google Drive file listing failed: {_clean_public_error(e)}",
+        )
     items = []
     for file in files:
         extension = extension_for_file(file) if extension_for_file else None

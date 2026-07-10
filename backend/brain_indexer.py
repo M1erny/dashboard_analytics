@@ -211,10 +211,11 @@ def extract_docx_text(
 def extract_file_text(
     path: Path,
     *,
+    extension: str | None = None,
     max_pdf_pages: int = DEFAULT_LOCAL_MAX_PDF_PAGES,
     max_extracted_chars: int = DEFAULT_LOCAL_MAX_EXTRACTED_CHARS,
 ) -> tuple[str, dict[str, Any]]:
-    suffix = path.suffix.lower()
+    suffix = (extension or path.suffix).lower()
     metadata: dict[str, Any] = {"extractor": "plain-text"}
 
     if suffix in TEXT_EXTENSIONS:
@@ -239,8 +240,31 @@ def extract_file_text(
     raise RuntimeError(f"Unsupported file extension: {suffix}")
 
 
-def iter_library_files(root: Path, extensions: set[str], limit_files: int) -> list[Path]:
-    files: list[Path] = []
+def detect_supported_extension(path: Path) -> str | None:
+    """Infer a supported format for synced Drive files without an extension."""
+    suffix = path.suffix.lower()
+    if suffix in SUPPORTED_EXTENSIONS:
+        return suffix
+
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(8)
+    except OSError:
+        return None
+    if header.startswith(b"%PDF-"):
+        return ".pdf"
+    if header.startswith(b"PK\x03\x04"):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                if "word/document.xml" in archive.namelist():
+                    return ".docx"
+        except (OSError, zipfile.BadZipFile):
+            return None
+    return None
+
+
+def iter_library_files(root: Path, extensions: set[str], limit_files: int) -> list[tuple[Path, str]]:
+    files: list[tuple[Path, str]] = []
     for current_root, dirs, names in os.walk(root):
         dirs[:] = [
             directory
@@ -252,13 +276,14 @@ def iter_library_files(root: Path, extensions: set[str], limit_files: int) -> li
             if name.startswith("."):
                 continue
             path = Path(current_root) / name
-            if path.suffix.lower() not in extensions:
+            extension = detect_supported_extension(path)
+            if extension not in extensions:
                 continue
-            files.append(path)
+            files.append((path, extension))
             if len(files) >= limit_files:
                 return files
 
-    return sorted(files)
+    return sorted(files, key=lambda item: item[0].as_posix().lower())
 
 
 def source_preview(path: Path, relative_path: str, text: str) -> str:
@@ -304,7 +329,7 @@ def index_local_library(
     results: list[dict[str, Any]] = []
     changed_files_started = 0
 
-    for path in iter_library_files(root, allowed_extensions, limit_files):
+    for path, detected_extension in iter_library_files(root, allowed_extensions, limit_files):
         relative_path = path.relative_to(root).as_posix()
         try:
             stat = path.stat()
@@ -333,6 +358,22 @@ def index_local_library(
                 })
                 continue
 
+            matching_source = (
+                store.get_file_source_by_hash(file_hash)
+                if not existing and hasattr(store, "get_file_source_by_hash")
+                else None
+            )
+            if matching_source:
+                results.append({
+                    "path": str(path),
+                    "relativePath": relative_path,
+                    "status": "skipped",
+                    "reason": "duplicate of indexed file content",
+                    "sourceId": matching_source["id"],
+                    "bytes": stat.st_size,
+                })
+                continue
+
             if changed_files_limit is not None and changed_files_started >= changed_files_limit:
                 results.append({
                     "path": str(path),
@@ -346,6 +387,7 @@ def index_local_library(
             changed_files_started += 1
             extracted_text, extraction_metadata = extract_file_text(
                 path,
+                extension=detected_extension,
                 max_pdf_pages=max_pdf_pages,
                 max_extracted_chars=max_extracted_chars,
             )
@@ -360,9 +402,10 @@ def index_local_library(
                 })
                 continue
 
-            title = path.stem.replace("_", " ").replace("-", " ").strip() or path.name
+            title_source = path.stem if path.suffix.lower() == detected_extension else path.name
+            title = title_source.replace("_", " ").replace("-", " ").strip() or path.name
             title = title[:300]
-            tags = ["local-file", path.suffix.lower().lstrip(".")]
+            tags = ["local-file", detected_extension.lstrip(".")]
             metadata = {
                 "sourceType": "local_file",
                 "fileIdentity": file_identity,
@@ -370,7 +413,8 @@ def index_local_library(
                 "fileName": path.name,
                 "relativePath": relative_path,
                 "absolutePath": str(path.resolve()),
-                "extension": path.suffix.lower(),
+                "extension": detected_extension,
+                "extensionDetected": path.suffix.lower() != detected_extension,
                 "bytes": stat.st_size,
                 "modifiedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
                 "indexedAt": indexed_at,
