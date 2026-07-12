@@ -21,6 +21,7 @@ from gemini_client import GeminiClient, load_backend_env
 DEFAULT_EMBED_BATCH_SIZE = 10
 DEFAULT_EMBED_MAX_CHUNKS = 250
 DEFAULT_EMBED_BATCH_PAUSE_SECONDS = 3.0
+DEFAULT_EMBED_BATCH_MAX_CHARS = 60_000
 
 
 def parse_bytes(value: str | int | None, default: int) -> int:
@@ -130,7 +131,9 @@ def run_embedding_backfill(args: argparse.Namespace, store) -> dict[str, Any]:
 
     max_chunks = max(1, int(args.embed_max_chunks))
     batch_size = max(1, min(int(args.embed_batch_size), 50))
+    batch_max_chars = max(24_000, int(args.embed_batch_max_chars))
     sleep_seconds = max(0.0, float(args.embed_sleep))
+    verbose = not args.quiet and not args.json
     embedded = 0
     errors: list[dict[str, Any]] = []
     skipped_chunk_ids: set[int] = set()
@@ -139,10 +142,18 @@ def run_embedding_backfill(args: argparse.Namespace, store) -> dict[str, Any]:
     while embedded < max_chunks:
         limit = min(batch_size, max_chunks - embedded)
         fetch_limit = limit + len(skipped_chunk_ids)
-        chunks = [
+        candidates = [
             chunk for chunk in store.list_chunks_for_embedding(limit=fetch_limit, force=args.embed_force)
             if int(chunk["id"]) not in skipped_chunk_ids
         ][:limit]
+        chunks = []
+        batch_chars = 0
+        for candidate in candidates:
+            candidate_chars = min(len(str(candidate.get("body") or "")), 24_000)
+            if chunks and batch_chars + candidate_chars > batch_max_chars:
+                break
+            chunks.append(candidate)
+            batch_chars += candidate_chars
         if not chunks:
             break
 
@@ -164,7 +175,7 @@ def run_embedding_backfill(args: argparse.Namespace, store) -> dict[str, Any]:
                     )
             embedded += len(updates)
             made_progress = bool(updates)
-            if not args.quiet:
+            if verbose:
                 batch_start = embedded - len(updates)
                 for offset, (chunk, _embedding) in enumerate(zip(chunks, embeddings), start=1):
                     chunk_id = int(chunk["id"])
@@ -204,7 +215,7 @@ def run_embedding_backfill(args: argparse.Namespace, store) -> dict[str, Any]:
                     )
                     embedded += 1
                     made_progress = True
-                    if not args.quiet:
+                    if verbose:
                         print(f"Embedded {embedded}/{max_chunks}: {title[:110]}")
                     if sleep_seconds:
                         time.sleep(sleep_seconds)
@@ -216,7 +227,7 @@ def run_embedding_backfill(args: argparse.Namespace, store) -> dict[str, Any]:
                         "error": clean_error(exc),
                         "batchError": clean_error(batch_error),
                     })
-                    if not args.quiet:
+                    if verbose:
                         print(f"Embedding failed for {chunk_id}: {clean_error(exc)}", file=sys.stderr)
                     if len(errors) >= args.max_errors:
                         return {
@@ -284,6 +295,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Re-index files even if their hash has not changed.")
     parser.add_argument("--embed-max-chunks", type=int, default=DEFAULT_EMBED_MAX_CHUNKS)
     parser.add_argument("--embed-batch-size", type=int, default=DEFAULT_EMBED_BATCH_SIZE)
+    parser.add_argument(
+        "--embed-batch-max-chars",
+        type=int,
+        default=DEFAULT_EMBED_BATCH_MAX_CHARS,
+        help="Maximum text payload per Gemini embedding batch.",
+    )
     parser.add_argument(
         "--embed-sleep",
         type=float,
