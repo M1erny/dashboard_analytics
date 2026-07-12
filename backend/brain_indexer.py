@@ -1,5 +1,6 @@
 import hashlib
 import html
+import multiprocessing
 import os
 import re
 import zipfile
@@ -59,6 +60,7 @@ SKIP_DIRS = {
 DEFAULT_LOCAL_MAX_BYTES = 250 * 1024 * 1024
 DEFAULT_LOCAL_MAX_PDF_PAGES = 2000
 DEFAULT_LOCAL_MAX_EXTRACTED_CHARS = 5_000_000
+DEFAULT_PDF_EXTRACTION_TIMEOUT_SECONDS = 90
 
 
 def _env_int(name: str, default: int) -> int:
@@ -132,8 +134,8 @@ def strip_html(value: str) -> str:
     return html.unescape(text)
 
 
-def extract_pdf_text(
-    path: Path,
+def _extract_pdf_text_direct(
+    path_value: str,
     *,
     max_pages: int = DEFAULT_LOCAL_MAX_PDF_PAGES,
     max_chars: int = DEFAULT_LOCAL_MAX_EXTRACTED_CHARS,
@@ -141,7 +143,9 @@ def extract_pdf_text(
     if PdfReader is None:
         raise RuntimeError("PDF extraction requires pypdf. Install backend requirements first.")
 
-    reader = PdfReader(str(path))
+    # Some investor-relations PDFs have imperfect cross-reference tables. Strict
+    # parsing rejects files that pypdf can still read safely in tolerant mode.
+    reader = PdfReader(path_value, strict=False)
     parts: list[str] = []
     pages_read = 0
     chars = 0
@@ -172,6 +176,69 @@ def extract_pdf_text(
         "maxPdfPages": max_pages,
         "maxExtractedChars": max_chars,
     }
+
+
+def _extract_pdf_worker(
+    connection,
+    path_value: str,
+    max_pages: int,
+    max_chars: int,
+) -> None:
+    """Run pypdf out of process so one bad PDF cannot stall a sync indefinitely."""
+    try:
+        text, metadata = _extract_pdf_text_direct(
+            path_value,
+            max_pages=max_pages,
+            max_chars=max_chars,
+        )
+        connection.send({"ok": True, "text": text, "metadata": metadata})
+    except Exception as exc:
+        connection.send({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+    finally:
+        connection.close()
+
+
+def extract_pdf_text(
+    path: Path,
+    *,
+    max_pages: int = DEFAULT_LOCAL_MAX_PDF_PAGES,
+    max_chars: int = DEFAULT_LOCAL_MAX_EXTRACTED_CHARS,
+    timeout_seconds: int | None = None,
+) -> tuple[str, dict[str, Any]]:
+    if PdfReader is None:
+        raise RuntimeError("PDF extraction requires pypdf. Install backend requirements first.")
+
+    configured_timeout = _env_int("BRAIN_PDF_EXTRACTION_TIMEOUT_SECONDS", DEFAULT_PDF_EXTRACTION_TIMEOUT_SECONDS)
+    timeout = max(5, int(timeout_seconds or configured_timeout))
+    context = multiprocessing.get_context("spawn")
+    parent_connection, child_connection = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_extract_pdf_worker,
+        args=(child_connection, str(path), max_pages, max_chars),
+        daemon=True,
+    )
+    process.start()
+    child_connection.close()
+
+    try:
+        if not parent_connection.poll(timeout):
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=5)
+            raise RuntimeError(f"PDF extraction timed out after {timeout} seconds")
+
+        result = parent_connection.recv()
+    finally:
+        parent_connection.close()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+
+    if not result.get("ok"):
+        raise RuntimeError(f"PDF extraction failed: {result.get('error') or 'unknown error'}")
+
+    return str(result["text"]), dict(result["metadata"])
 
 
 def extract_docx_text(
@@ -328,6 +395,17 @@ def index_local_library(
     indexed_at = datetime.now(timezone.utc).isoformat()
     results: list[dict[str, Any]] = []
     changed_files_started = 0
+    existing_sources = store.list_file_source_lookup() if hasattr(store, "list_file_source_lookup") else []
+    sources_by_identity = {
+        str((source.get("metadata") or {}).get("fileIdentity") or ""): source
+        for source in existing_sources
+        if (source.get("metadata") or {}).get("fileIdentity")
+    }
+    sources_by_hash = {
+        str((source.get("metadata") or {}).get("fileHash") or ""): source
+        for source in existing_sources
+        if (source.get("metadata") or {}).get("fileHash")
+    }
 
     for path, detected_extension in iter_library_files(root, allowed_extensions, limit_files):
         relative_path = path.relative_to(root).as_posix()
@@ -345,7 +423,7 @@ def index_local_library(
 
             file_identity = f"local-file:{str(path.resolve()).lower()}"
             file_hash = file_sha256(path)
-            existing = store.get_file_source_by_identity(file_identity)
+            existing = sources_by_identity.get(file_identity)
             existing_hash = (existing or {}).get("metadata", {}).get("fileHash") if existing else None
             if existing and existing_hash == file_hash and not force:
                 results.append({
@@ -358,11 +436,7 @@ def index_local_library(
                 })
                 continue
 
-            matching_source = (
-                store.get_file_source_by_hash(file_hash)
-                if not existing and hasattr(store, "get_file_source_by_hash")
-                else None
-            )
+            matching_source = sources_by_hash.get(file_hash) if not existing else None
             if matching_source:
                 results.append({
                     "path": str(path),

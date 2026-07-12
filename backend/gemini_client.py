@@ -138,6 +138,51 @@ class GeminiClient:
             raise RuntimeError("Gemini embedding response did not include embedding values")
         return [float(value) for value in values]
 
+    def embed_texts(self, texts: list[str], *, task_type: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
+        """Embed multiple chunks in one Gemini request while preserving input order."""
+        api_key = self._require_key()
+        clean_texts = [(text or "").strip() for text in texts]
+        if not clean_texts or any(not text for text in clean_texts):
+            raise ValueError("Cannot embed an empty batch or empty text")
+
+        url = f"{GEMINI_API_BASE}/models/{self.embedding_model}:batchEmbedContents"
+        payload = {
+            "requests": [
+                {
+                    "model": f"models/{self.embedding_model}",
+                    "content": {"parts": [{"text": text[:24000]}]},
+                    "taskType": task_type,
+                }
+                for text in clean_texts
+            ]
+        }
+
+        # A batch contains more work than a single query embedding. Keep the
+        # interactive timeout configurable while allowing the worker enough room.
+        timeout = max(self.embedding_timeout, 45.0)
+        with httpx.Client(timeout=timeout) as client:
+            try:
+                response = client.post(url, headers={"x-goog-api-key": api_key}, json=payload)
+            except httpx.TimeoutException as exc:
+                raise RuntimeError(f"Gemini embedding batch timed out after {timeout:.0f}s") from exc
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise RuntimeError(_safe_provider_error(exc)) from exc
+            data = response.json()
+
+        raw_embeddings = data.get("embeddings")
+        if not isinstance(raw_embeddings, list) or len(raw_embeddings) != len(clean_texts):
+            raise RuntimeError("Gemini embedding batch response did not match the submitted chunks")
+
+        embeddings: list[list[float]] = []
+        for item in raw_embeddings:
+            values = item.get("values") if isinstance(item, dict) else None
+            if not isinstance(values, list):
+                raise RuntimeError("Gemini embedding batch response included an invalid vector")
+            embeddings.append([float(value) for value in values])
+        return embeddings
+
     def generate_text(
         self,
         prompt: str,

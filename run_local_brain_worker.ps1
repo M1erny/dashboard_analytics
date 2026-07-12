@@ -9,6 +9,7 @@ param(
     [int]$ChangedFilesLimit = 25,
     [int]$EmbedMaxChunks = 250,
     [int]$EmbedBatchSize = 10,
+    [double]$EmbedSleep = 3,
     [double]$WatchMinutes = 0,
     [switch]$Force,
     [switch]$Json
@@ -26,7 +27,8 @@ $workerArgs = @(
     "--max-extracted-chars", "$MaxExtractedChars",
     "--changed-files-limit", "$ChangedFilesLimit",
     "--embed-max-chunks", "$EmbedMaxChunks",
-    "--embed-batch-size", "$EmbedBatchSize"
+    "--embed-batch-size", "$EmbedBatchSize",
+    "--embed-sleep", "$EmbedSleep"
 )
 
 if ($Root) {

@@ -54,6 +54,8 @@ type DriveStatus = {
     folderUrl?: string | null;
     authConfigured: boolean;
     connected: boolean;
+    connectionState?: 'ready' | 'needs_reconnect' | 'not_configured';
+    connectionMessage?: string;
     writeScope?: boolean;
 };
 
@@ -1122,6 +1124,7 @@ export const InvestmentBrainChat: React.FC = () => {
                                 {!drive?.connected ? <Button type="button" tone="primary" onClick={() => void connectDrive()} disabled={!ready}><Cloud className="h-3.5 w-3.5" /> Connect</Button> : <Button type="button" onClick={() => void syncDrive()} disabled={!ready}><FolderSync className="h-3.5 w-3.5" /> Sync Drive</Button>}
                                 <Button type="button" tone="success" onClick={() => void embedMissing()} disabled={!ready || (embeddings.missing ?? 0) === 0}><Sparkles className="h-3.5 w-3.5" /> Embed {embeddings.missing ? formatCount(embeddings.missing) : 'Ready'}</Button>
                             </div>
+                            {drive?.connectionState === 'needs_reconnect' && <p className="mt-2 text-xs leading-5 text-amber-300">{drive.connectionMessage ?? 'Google Drive authorization expired. Reconnect to sync new files.'}</p>}
                             {drive?.folderUrl && <a href={drive.folderUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 transition-colors hover:text-emerald-300">Open Drive folder <ExternalLink className="h-3.5 w-3.5" /></a>}
                             <div className="mt-4 flex items-start justify-between gap-3 border-t border-white/[0.07] pt-3">
                                 <div className="min-w-0">

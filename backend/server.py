@@ -1320,7 +1320,22 @@ def _drive_or_503() -> GoogleDriveClient:
 async def get_drive_indexer_status():
     client = _drive_or_503()
     folder_id = parse_drive_folder_id() if parse_drive_folder_id else None
-    return await _run_brain_step("Drive index status", client.status, folder_id)
+    status = await _run_brain_step("Drive index status", client.status, folder_id)
+    if not status.get("configured"):
+        status["connectionState"] = "not_configured"
+        return status
+
+    try:
+        await _run_brain_step("Drive authorization", client.get_access_token, timeout=35)
+        status["connected"] = True
+        status["connectionState"] = "ready"
+    except Exception:
+        # A stored token alone is not proof that Google will still authorize it.
+        # Keep the raw provider error server-side and give the UI an actionable state.
+        status["connected"] = False
+        status["connectionState"] = "needs_reconnect"
+        status["connectionMessage"] = "Google Drive authorization expired. Reconnect to sync new files."
+    return status
 
 
 @app.get("/api/brain/index/drive/job/status")

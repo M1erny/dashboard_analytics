@@ -20,6 +20,7 @@ from gemini_client import GeminiClient, load_backend_env
 
 DEFAULT_EMBED_BATCH_SIZE = 10
 DEFAULT_EMBED_MAX_CHUNKS = 250
+DEFAULT_EMBED_BATCH_PAUSE_SECONDS = 3.0
 
 
 def parse_bytes(value: str | int | None, default: int) -> int:
@@ -55,6 +56,18 @@ def clean_error(error: Exception | str) -> str:
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:500]
+
+
+def is_retryable_embedding_error(error: Exception | str) -> bool:
+    text = str(error).lower()
+    return any(marker in text for marker in (
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "timed out",
+        "connection is lost",
+    ))
 
 
 def print_json(data: dict[str, Any]) -> None:
@@ -134,43 +147,86 @@ def run_embedding_backfill(args: argparse.Namespace, store) -> dict[str, Any]:
             break
 
         made_progress = False
-        for chunk in chunks:
-            if embedded >= max_chunks:
-                break
-            chunk_id = int(chunk["id"])
-            title = str(chunk.get("title") or f"chunk {chunk_id}")
-            body = str(chunk.get("body") or "")
-            try:
-                embedding = client.embed_text(body, task_type="RETRIEVAL_DOCUMENT")
-                store.update_chunk_embedding(
-                    chunk_id,
-                    embedding_model=client.embedding_model,
-                    embedding=embedding,
-                )
-                embedded += 1
-                made_progress = True
-                if not args.quiet:
-                    print(f"Embedded {embedded}/{max_chunks}: {title[:110]}")
-                if sleep_seconds:
-                    time.sleep(sleep_seconds)
-            except Exception as exc:
-                skipped_chunk_ids.add(chunk_id)
+        try:
+            embeddings = client.embed_texts(
+                [str(chunk.get("body") or "") for chunk in chunks],
+                task_type="RETRIEVAL_DOCUMENT",
+            )
+            updates = [(int(chunk["id"]), embedding) for chunk, embedding in zip(chunks, embeddings)]
+            if hasattr(store, "update_chunk_embeddings"):
+                store.update_chunk_embeddings(embedding_model=client.embedding_model, updates=updates)
+            else:
+                for chunk_id, embedding in updates:
+                    store.update_chunk_embedding(
+                        chunk_id,
+                        embedding_model=client.embedding_model,
+                        embedding=embedding,
+                    )
+            embedded += len(updates)
+            made_progress = bool(updates)
+            if not args.quiet:
+                batch_start = embedded - len(updates)
+                for offset, (chunk, _embedding) in enumerate(zip(chunks, embeddings), start=1):
+                    chunk_id = int(chunk["id"])
+                    title = str(chunk.get("title") or f"chunk {chunk_id}")
+                    print(f"Embedded {batch_start + offset}/{max_chunks}: {title[:110]}")
+            if sleep_seconds:
+                time.sleep(sleep_seconds)
+        except Exception as batch_error:
+            if is_retryable_embedding_error(batch_error):
                 errors.append({
-                    "id": chunk_id,
-                    "title": title[:160],
-                    "error": clean_error(exc),
+                    "id": None,
+                    "title": "embedding batch",
+                    "error": clean_error(batch_error),
                 })
-                if not args.quiet:
-                    print(f"Embedding failed for {chunk_id}: {clean_error(exc)}", file=sys.stderr)
-                if len(errors) >= args.max_errors:
-                    return {
-                        "embedded": embedded,
-                        "errors": errors,
-                        "stopped": "too_many_errors",
-                        "model": client.embedding_model,
-                        "seconds": round(time.perf_counter() - started, 2),
-                        "embeddings": store.embedding_stats() if hasattr(store, "embedding_stats") else None,
-                    }
+                return {
+                    "embedded": embedded,
+                    "errors": errors,
+                    "stopped": "provider_backoff",
+                    "model": client.embedding_model,
+                    "seconds": round(time.perf_counter() - started, 2),
+                    "embeddings": store.embedding_stats() if hasattr(store, "embedding_stats") else None,
+                }
+            # Keep one unusual chunk from blocking the whole batch. A failed
+            # batch falls back to individual requests so the error is traceable.
+            for chunk in chunks:
+                if embedded >= max_chunks:
+                    break
+                chunk_id = int(chunk["id"])
+                title = str(chunk.get("title") or f"chunk {chunk_id}")
+                body = str(chunk.get("body") or "")
+                try:
+                    embedding = client.embed_text(body, task_type="RETRIEVAL_DOCUMENT")
+                    store.update_chunk_embedding(
+                        chunk_id,
+                        embedding_model=client.embedding_model,
+                        embedding=embedding,
+                    )
+                    embedded += 1
+                    made_progress = True
+                    if not args.quiet:
+                        print(f"Embedded {embedded}/{max_chunks}: {title[:110]}")
+                    if sleep_seconds:
+                        time.sleep(sleep_seconds)
+                except Exception as exc:
+                    skipped_chunk_ids.add(chunk_id)
+                    errors.append({
+                        "id": chunk_id,
+                        "title": title[:160],
+                        "error": clean_error(exc),
+                        "batchError": clean_error(batch_error),
+                    })
+                    if not args.quiet:
+                        print(f"Embedding failed for {chunk_id}: {clean_error(exc)}", file=sys.stderr)
+                    if len(errors) >= args.max_errors:
+                        return {
+                            "embedded": embedded,
+                            "errors": errors,
+                            "stopped": "too_many_errors",
+                            "model": client.embedding_model,
+                            "seconds": round(time.perf_counter() - started, 2),
+                            "embeddings": store.embedding_stats() if hasattr(store, "embedding_stats") else None,
+                        }
 
         if not made_progress and errors:
             break
@@ -228,7 +284,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Re-index files even if their hash has not changed.")
     parser.add_argument("--embed-max-chunks", type=int, default=DEFAULT_EMBED_MAX_CHUNKS)
     parser.add_argument("--embed-batch-size", type=int, default=DEFAULT_EMBED_BATCH_SIZE)
-    parser.add_argument("--embed-sleep", type=float, default=0.05, help="Pause between embedding calls.")
+    parser.add_argument(
+        "--embed-sleep",
+        type=float,
+        default=DEFAULT_EMBED_BATCH_PAUSE_SECONDS,
+        help="Pause between embedding batches to stay within provider throughput limits.",
+    )
     parser.add_argument("--embed-force", action="store_true", help="Re-embed existing embedded chunks too.")
     parser.add_argument("--max-errors", type=int, default=3)
     parser.add_argument("--watch-minutes", type=float, default=0.0, help="Repeat forever every N minutes.")

@@ -2,7 +2,8 @@ param(
     [int]$IntervalMinutes = 15,
     [int]$ChangedFilesLimit = 10,
     [int]$EmbedMaxChunks = 500,
-    [int]$EmbedBatchSize = 10,
+    [int]$EmbedBatchSize = 50,
+    [double]$EmbedSleep = 3,
     [string]$MaxBytes = "50MB",
     [int]$MaxPdfPages = 300,
     [int]$MaxExtractedChars = 750000
@@ -33,6 +34,7 @@ while ($true) {
             -ChangedFilesLimit $ChangedFilesLimit `
             -EmbedMaxChunks $EmbedMaxChunks `
             -EmbedBatchSize $EmbedBatchSize `
+            -EmbedSleep $EmbedSleep `
             -MaxBytes $MaxBytes `
             -MaxPdfPages $MaxPdfPages `
             -MaxExtractedChars $MaxExtractedChars

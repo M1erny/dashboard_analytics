@@ -768,6 +768,17 @@ class PostgresBrainStore:
             ).fetchone()
             return self._source_from_row(row) if row else None
 
+    def list_file_source_lookup(self) -> list[dict[str, Any]]:
+        """Return the compact metadata needed by a local indexing pass in one query."""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, metadata FROM sources WHERE kind = 'file'"
+            ).fetchall()
+            return [
+                {"id": int(row["id"]), "metadata": self._json_loads(row["metadata"], {})}
+                for row in rows
+            ]
+
     def get_file_source_by_hash(self, file_hash: str) -> dict[str, Any] | None:
         file_hash = str(file_hash or "").strip()
         if not file_hash:
@@ -955,6 +966,28 @@ class PostgresBrainStore:
                 """,
                 (embedding_model, embedding_literal, now, chunk_id),
             )
+
+    def update_chunk_embeddings(
+        self,
+        *,
+        embedding_model: str,
+        updates: list[tuple[int, list[float]]],
+    ) -> None:
+        if not updates:
+            return
+        now = self._now()
+        with self._lock, self._connect() as conn:
+            for chunk_id, embedding in updates:
+                conn.execute(
+                    """
+                    UPDATE chunks
+                       SET embedding_model = %s,
+                           embedding = %s::vector,
+                           updated_at = %s
+                     WHERE id = %s
+                    """,
+                    (embedding_model, self._embedding_literal(embedding), now, int(chunk_id)),
+                )
 
     def semantic_search_chunks(
         self,

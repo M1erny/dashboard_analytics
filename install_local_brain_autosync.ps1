@@ -3,7 +3,8 @@ param(
     [int]$IntervalMinutes = 15,
     [int]$ChangedFilesLimit = 10,
     [int]$EmbedMaxChunks = 500,
-    [int]$EmbedBatchSize = 10,
+    [int]$EmbedBatchSize = 50,
+    [double]$EmbedSleep = 3,
     [string]$MaxBytes = "50MB",
     [int]$MaxPdfPages = 300,
     [int]$MaxExtractedChars = 750000,
@@ -27,6 +28,7 @@ $argument = "-NoProfile -ExecutionPolicy Bypass -File $quotedRunner " +
     "-ChangedFilesLimit $ChangedFilesLimit " +
     "-EmbedMaxChunks $EmbedMaxChunks " +
     "-EmbedBatchSize $EmbedBatchSize " +
+    "-EmbedSleep $EmbedSleep " +
     "-MaxBytes $MaxBytes " +
     "-MaxPdfPages $MaxPdfPages " +
     "-MaxExtractedChars $MaxExtractedChars"
@@ -68,6 +70,7 @@ try {
         "-ChangedFilesLimit $ChangedFilesLimit " +
         "-EmbedMaxChunks $EmbedMaxChunks " +
         "-EmbedBatchSize $EmbedBatchSize " +
+        "-EmbedSleep $EmbedSleep " +
         "-MaxBytes $MaxBytes " +
         "-MaxPdfPages $MaxPdfPages " +
         "-MaxExtractedChars $MaxExtractedChars"
@@ -77,7 +80,7 @@ try {
 
     if ($RunNow) {
         Start-Process powershell.exe `
-            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $quotedLoopRunner -IntervalMinutes $IntervalMinutes -ChangedFilesLimit $ChangedFilesLimit -EmbedMaxChunks $EmbedMaxChunks -EmbedBatchSize $EmbedBatchSize -MaxBytes $MaxBytes -MaxPdfPages $MaxPdfPages -MaxExtractedChars $MaxExtractedChars" `
+            -ArgumentList "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File $quotedLoopRunner -IntervalMinutes $IntervalMinutes -ChangedFilesLimit $ChangedFilesLimit -EmbedMaxChunks $EmbedMaxChunks -EmbedBatchSize $EmbedBatchSize -EmbedSleep $EmbedSleep -MaxBytes $MaxBytes -MaxPdfPages $MaxPdfPages -MaxExtractedChars $MaxExtractedChars" `
             -WindowStyle Hidden
     }
 
