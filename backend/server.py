@@ -257,13 +257,24 @@ def _public_source_reference(source: dict[str, Any] | None) -> dict[str, Any] | 
         return None
 
     metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
-    drive_file_id = metadata.get("driveFileId")
-    web_url = (
-        metadata.get("webViewLink")
-        or metadata.get("driveWebViewLink")
-        or (f"https://drive.google.com/file/d/{drive_file_id}/view" if drive_file_id else None)
+    raw_drive_file_id = metadata.get("driveFileId")
+    drive_file_id = str(raw_drive_file_id).strip() if raw_drive_file_id else None
+    web_url = next(
+        (
+            value.strip()
+            for value in (
+                metadata.get("webViewLink"),
+                metadata.get("driveWebViewLink"),
+                metadata.get("sourceUrl"),
+                metadata.get("finalUrl"),
+                metadata.get("url"),
+            )
+            if isinstance(value, str) and value.strip()
+        ),
+        None,
     )
-    local_path = metadata.get("absolutePath") or metadata.get("localPath")
+    if not web_url and drive_file_id:
+        web_url = f"https://drive.google.com/file/d/{drive_file_id}/view"
     relative_path = metadata.get("relativePath")
 
     return {
@@ -275,7 +286,6 @@ def _public_source_reference(source: dict[str, Any] | None) -> dict[str, Any] | 
         "fileName": metadata.get("fileName"),
         "relativePath": relative_path,
         "webUrl": web_url,
-        "localPath": local_path,
         "driveFileId": drive_file_id,
     }
 
@@ -1019,7 +1029,7 @@ class BrainConversationTurn(BaseModel):
 
 
 class BrainCompanyAnalysisRequest(BaseModel):
-    ticker: str = Field(..., min_length=1, max_length=40)
+    ticker: str | None = Field(default=None, max_length=40)
     question: str | None = None
     limit: int = Field(default=8, ge=1, le=20)
     useSemantic: bool = True
@@ -2391,10 +2401,12 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     started_at = time.perf_counter()
     timings: dict[str, Any] = {}
 
-    ticker = payload.ticker.strip().upper()
+    ticker = (payload.ticker or "").strip().upper()
     question = (payload.question or "").strip() or (
         f"Analyze {ticker} using my investment brain. Focus on evidence, contradictions, risks, "
         "and what would change my mind."
+        if ticker
+        else "Analyze the strongest relevant evidence in my investment brain. Focus on evidence, contradictions, risks, and what would change my mind."
     )
     conversation_history = _format_conversation_history(payload.conversation)
     prior_user_questions = " ".join(
@@ -2509,7 +2521,7 @@ Do not pretend missing information is present.
 When deep source context is available, treat it as the main evidence base: semantic search found a relevant chunk, then the backend expanded into the surrounding file chunks.
 Prefer specific source titles and chunk numbers when explaining evidence.
 
-Company/ticker: {ticker}
+Company/ticker context: {ticker or "Not specified; infer the relevant subject from the user's question and retrieved sources."}
 User question: {question}
 
 Previous conversation in this same brain thread:

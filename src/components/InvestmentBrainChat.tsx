@@ -66,6 +66,7 @@ type SourceReference = {
     fileName?: string;
     relativePath?: string;
     webUrl?: string;
+    driveFileId?: string;
     tags?: string[];
     metadata?: Record<string, unknown>;
 };
@@ -241,8 +242,17 @@ const sourceName = (source?: SourceReference | null, fallback = 'Untitled source
 const sourceLink = (source?: SourceReference | null) => {
     if (!source) return undefined;
     const metadata = source.metadata ?? {};
-    const fromMetadata = metadata.webViewLink ?? metadata.driveWebViewLink ?? metadata.sourceUrl;
-    return source.webUrl ?? (typeof fromMetadata === 'string' ? fromMetadata : undefined);
+    const candidates = [
+        source.webUrl,
+        metadata.webViewLink,
+        metadata.driveWebViewLink,
+        metadata.sourceUrl,
+        metadata.finalUrl,
+    ];
+    for (const candidate of candidates) {
+        if (typeof candidate === 'string' && /^https?:\/\//i.test(candidate.trim())) return candidate.trim();
+    }
+    return source.driveFileId ? `https://drive.google.com/file/d/${source.driveFileId}/view` : undefined;
 };
 
 const evidenceFor = (context?: AnalysisContext) => {
@@ -402,15 +412,20 @@ const EvidenceList: React.FC<{ context?: AnalysisContext }> = ({ context }) => {
             {open && (
                 <div className="mt-3 space-y-2">
                     {evidence.map((source, index) => (
-                        <article key={source.key} className="rounded-md border border-white/[0.07] bg-black/20 px-3 py-2.5">
+                        <article key={source.key} className={cn('rounded-md border border-white/[0.07] bg-black/20 px-3 py-2.5 transition-colors', source.link && 'hover:border-emerald-400/25 hover:bg-emerald-400/[0.025]')}>
                             <div className="flex items-start gap-2">
                                 <span className="mt-0.5 font-mono text-[10px] font-bold text-emerald-300">[{source.marker ?? index + 1}]</span>
                                 <div className="min-w-0 flex-1">
                                     <div className="flex items-start justify-between gap-3">
-                                        <p className="text-xs font-semibold leading-5 text-slate-100">{source.title}</p>
+                                        {source.link ? (
+                                            <a href={source.link} target="_blank" rel="noreferrer" className="group inline-flex min-w-0 items-start gap-1 text-xs font-semibold leading-5 text-slate-100 transition-colors hover:text-emerald-200" title={`Open ${source.title}`}>
+                                                <span>{source.title}</span>
+                                                <ArrowUpRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-300/80 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                                            </a>
+                                        ) : <p className="text-xs font-semibold leading-5 text-slate-100">{source.title}</p>}
                                         {source.link && (
-                                            <a href={source.link} target="_blank" rel="noreferrer" className="shrink-0 text-slate-400 transition-colors hover:text-emerald-300" aria-label={`Open ${source.title}`}>
-                                                <ArrowUpRight className="h-3.5 w-3.5" />
+                                            <a href={source.link} target="_blank" rel="noreferrer" className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500 transition-colors hover:text-emerald-300" aria-label={`Open ${source.title}`}>
+                                                Open file
                                             </a>
                                         )}
                                     </div>
@@ -469,7 +484,7 @@ export const InvestmentBrainChat: React.FC = () => {
     const [isSystemPromptOpen, setIsSystemPromptOpen] = useState(false);
     const [isSystemPromptLoading, setIsSystemPromptLoading] = useState(false);
     const [isSystemPromptSaving, setIsSystemPromptSaving] = useState(false);
-    const [ticker, setTicker] = useState('META');
+    const [ticker, setTicker] = useState('');
     const [draft, setDraft] = useState('What does my research say about the moat, risks, valuation lens, and what would change my mind?');
     const [thread, setThread] = useState<ChatMessage[]>([]);
     const [isAsking, setIsAsking] = useState(false);
@@ -581,7 +596,7 @@ export const InvestmentBrainChat: React.FC = () => {
     const sendQuestion = async () => {
         const cleanedTicker = ticker.trim().toUpperCase();
         const question = draft.trim();
-        if (!ready || !cleanedTicker || !question || isAsking) return;
+        if (!ready || !question || isAsking) return;
 
         const userMessage: ChatMessage = { id: messageId(), role: 'user', content: question };
         const priorConversation = thread.map(message => ({ role: message.role, content: message.content }));
@@ -597,7 +612,7 @@ export const InvestmentBrainChat: React.FC = () => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    ticker: cleanedTicker,
+                    ticker: cleanedTicker || undefined,
                     question,
                     limit: 6,
                     useSemantic: true,
@@ -971,6 +986,7 @@ export const InvestmentBrainChat: React.FC = () => {
 
     const resetThread = () => {
         setThread([]);
+        setTicker('');
         setDraft('What does my research say about the moat, risks, valuation lens, and what would change my mind?');
         setNotice('New research thread.');
     };
@@ -1094,7 +1110,7 @@ export const InvestmentBrainChat: React.FC = () => {
                         <div className="border-t border-white/[0.07] bg-[#080d15] p-3 sm:p-4">
                             <div className="rounded-lg border border-white/[0.1] bg-white/[0.025] p-2 focus-within:border-emerald-500/35">
                                 <div className="flex gap-2">
-                                    <input value={ticker} onChange={event => setTicker(event.target.value.toUpperCase())} aria-label="Ticker" placeholder="META" className="h-10 w-[78px] shrink-0 rounded-md border border-white/[0.09] bg-[#080d15] px-2.5 font-mono text-sm font-bold text-white outline-none focus:border-emerald-500/35 sm:w-[92px]" />
+                                    <input value={ticker} onChange={event => setTicker(event.target.value.toUpperCase())} aria-label="Optional ticker context" title="Optional ticker context" placeholder="Ticker (opt.)" className="h-10 w-[104px] shrink-0 rounded-md border border-white/[0.09] bg-[#080d15] px-2.5 font-mono text-sm font-bold text-white outline-none placeholder:font-sans placeholder:font-normal focus:border-emerald-500/35 sm:w-[126px]" />
                                     <textarea
                                         value={draft}
                                         onChange={event => setDraft(event.target.value)}
@@ -1104,7 +1120,7 @@ export const InvestmentBrainChat: React.FC = () => {
                                         placeholder="Ask about a company, thesis, trend, or source..."
                                         className="min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 text-white outline-none placeholder:text-slate-600"
                                     />
-                                    <Button type="button" tone="primary" onClick={() => void sendQuestion()} disabled={!ready || !ticker.trim() || !draft.trim() || isAsking} className="h-10 min-h-10 w-10 shrink-0 px-0" aria-label="Send question">
+                                    <Button type="button" tone="primary" onClick={() => void sendQuestion()} disabled={!ready || !draft.trim() || isAsking} className="h-10 min-h-10 w-10 shrink-0 px-0" aria-label="Send question">
                                         {isAsking ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                                     </Button>
                                 </div>
