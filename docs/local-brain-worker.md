@@ -112,6 +112,7 @@ max file size:          50 MB
 max PDF pages:          300
 max extracted chars:    750,000
 embedding chunks/run:   500
+embedding request size: 1 passage (reliable provider fallback)
 ```
 
 Logs are written to:

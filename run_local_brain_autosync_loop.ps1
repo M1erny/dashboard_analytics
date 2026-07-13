@@ -2,7 +2,7 @@ param(
     [int]$IntervalMinutes = 15,
     [int]$ChangedFilesLimit = 10,
     [int]$EmbedMaxChunks = 500,
-    [int]$EmbedBatchSize = 50,
+    [int]$EmbedBatchSize = 1,
     [double]$EmbedSleep = 3,
     [string]$MaxBytes = "50MB",
     [int]$MaxPdfPages = 300,

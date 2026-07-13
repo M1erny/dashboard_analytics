@@ -8,7 +8,7 @@ param(
     [int]$MaxExtractedChars = 5000000,
     [int]$ChangedFilesLimit = 25,
     [int]$EmbedMaxChunks = 250,
-    [int]$EmbedBatchSize = 10,
+    [int]$EmbedBatchSize = 1,
     [double]$EmbedSleep = 3,
     [double]$WatchMinutes = 0,
     [switch]$Force,

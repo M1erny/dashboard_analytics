@@ -18,7 +18,7 @@ from brain_store import create_brain_store
 from gemini_client import GeminiClient, load_backend_env
 
 
-DEFAULT_EMBED_BATCH_SIZE = 10
+DEFAULT_EMBED_BATCH_SIZE = 1
 DEFAULT_EMBED_MAX_CHUNKS = 250
 DEFAULT_EMBED_BATCH_PAUSE_SECONDS = 3.0
 DEFAULT_EMBED_BATCH_MAX_CHARS = 60_000
@@ -159,10 +159,16 @@ def run_embedding_backfill(args: argparse.Namespace, store) -> dict[str, Any]:
 
         made_progress = False
         try:
-            embeddings = client.embed_texts(
-                [str(chunk.get("body") or "") for chunk in chunks],
-                task_type="RETRIEVAL_DOCUMENT",
-            )
+            if len(chunks) == 1:
+                embeddings = [client.embed_text(
+                    str(chunks[0].get("body") or ""),
+                    task_type="RETRIEVAL_DOCUMENT",
+                )]
+            else:
+                embeddings = client.embed_texts(
+                    [str(chunk.get("body") or "") for chunk in chunks],
+                    task_type="RETRIEVAL_DOCUMENT",
+                )
             updates = [(int(chunk["id"]), embedding) for chunk, embedding in zip(chunks, embeddings)]
             if hasattr(store, "update_chunk_embeddings"):
                 store.update_chunk_embeddings(embedding_model=client.embedding_model, updates=updates)

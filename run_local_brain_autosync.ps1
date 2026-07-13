@@ -1,7 +1,7 @@
 param(
     [int]$ChangedFilesLimit = 10,
     [int]$EmbedMaxChunks = 500,
-    [int]$EmbedBatchSize = 50,
+    [int]$EmbedBatchSize = 1,
     [double]$EmbedSleep = 3,
     [string]$MaxBytes = "50MB",
     [int]$MaxPdfPages = 300,
@@ -45,14 +45,18 @@ $PID | Set-Content -LiteralPath $LockPath -Encoding ASCII
 
 try {
     Write-AutosyncLog "Starting local brain autosync."
-    & (Join-Path $RepoRoot "run_local_brain_worker.ps1") `
+    $indexOutput = & (Join-Path $RepoRoot "run_local_brain_worker.ps1") `
         -Mode index `
         -ChangedFilesLimit $ChangedFilesLimit `
         -EmbedSleep $EmbedSleep `
         -MaxBytes $MaxBytes `
         -MaxPdfPages $MaxPdfPages `
         -MaxExtractedChars $MaxExtractedChars `
-        -Json *>> $LogPath
+        -Json 2>&1
+    $indexOutputText = ($indexOutput | Out-String)
+    if ($indexOutputText.Trim()) {
+        Add-Content -LiteralPath $LogPath -Value $indexOutputText -Encoding UTF8
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Local index worker failed with exit code $LASTEXITCODE."
     }
