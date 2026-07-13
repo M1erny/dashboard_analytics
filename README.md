@@ -112,6 +112,7 @@ BRAIN_LLM_MODEL=gemini-3.1-flash-lite
 BRAIN_EMBEDDING_MODEL=gemini-embedding-001
 GOOGLE_DRIVE_REFRESH_TOKEN=...
 BRAIN_SEARCH_TIMEOUT_SECONDS=18
+BRAIN_SEMANTIC_MIN_SCORE=0.66
 BRAIN_ANALYSIS_TIMEOUT_SECONDS=8
 BRAIN_INDEX_TIMEOUT_SECONDS=240
 BRAIN_FULL_CONTEXT_MAX_CHARS_PER_SOURCE=250000
@@ -127,6 +128,8 @@ VITE_BRAIN_API_URL=http://127.0.0.1:8000
 ```
 
 Without `VITE_BRAIN_API_URL`, the Brain frontend can default to the hosted Render backend so localhost still uses the production Drive/Supabase setup.
+
+`BRAIN_SEMANTIC_MIN_SCORE` rejects weak nearest-neighbor matches before they enter an answer. Keep the default unless retrieval diagnostics show a consistent false-negative or false-positive pattern; exact keyword search remains active either way.
 
 ## Cache Behavior
 

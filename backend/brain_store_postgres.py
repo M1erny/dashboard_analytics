@@ -1123,6 +1123,9 @@ class PostgresBrainStore:
                            i.title,
                            i.body,
                            i.tags,
+                           c.ordinal,
+                           c.page_start,
+                           c.page_end,
                            CASE
                                WHEN i.entity_type = 'source' THEN i.entity_id
                                ELSE c.source_id
@@ -1149,6 +1152,9 @@ class PostgresBrainStore:
                         "tags": row["tags"].split() if row["tags"] else [],
                         "rank": float(row["rank"]),
                         "sourceId": int(row["source_id"]) if row["source_id"] is not None else None,
+                        "ordinal": int(row["ordinal"]) if row["ordinal"] is not None else None,
+                        "pageStart": int(row["page_start"]) if row["page_start"] is not None else None,
+                        "pageEnd": int(row["page_end"]) if row["page_end"] is not None else None,
                     }
                     for row in conn.execute(sql, params).fetchall()
                 ]

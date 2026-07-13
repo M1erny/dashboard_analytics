@@ -4,6 +4,7 @@ import html
 import re
 import asyncio
 import json
+import math
 from collections import OrderedDict
 
 # Force unbuffered output
@@ -110,6 +111,7 @@ def _env_int(name: str, default: int) -> int:
 BRAIN_SEARCH_TIMEOUT_SECONDS = _env_float("BRAIN_SEARCH_TIMEOUT_SECONDS", 18.0)
 BRAIN_ANALYSIS_TIMEOUT_SECONDS = _env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 8.0)
 BRAIN_INDEX_TIMEOUT_SECONDS = _env_float("BRAIN_INDEX_TIMEOUT_SECONDS", 240.0)
+SEMANTIC_MIN_SCORE = max(0.0, min(_env_float("BRAIN_SEMANTIC_MIN_SCORE", 0.66), 1.0))
 REFERENCE_SOURCE_IDS_SETTING = "brain.reference_source_ids.v1"
 MAX_REFERENCE_SOURCES = 6
 FULL_CONTEXT_SOURCE_IDS_SETTING = "brain.full_context_source_ids.v1"
@@ -629,6 +631,7 @@ async def _build_reference_context(
                 limit=len(source_ids) * 3,
                 timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
             ) or []
+            semantic_hits = _filter_semantic_results(semantic_hits)
         except Exception:
             semantic_hits = []
 
@@ -1030,7 +1033,7 @@ class BrainConversationTurn(BaseModel):
 
 class BrainCompanyAnalysisRequest(BaseModel):
     ticker: str | None = Field(default=None, max_length=40)
-    question: str | None = None
+    question: str | None = Field(default=None, max_length=4000)
     limit: int = Field(default=8, ge=1, le=20)
     useSemantic: bool = True
     conversation: list[BrainConversationTurn] = Field(default_factory=list, max_length=12)
@@ -1983,21 +1986,33 @@ async def list_brain_source_chunks(source_id: int, limit: int = 100):
     return {"chunks": chunks}
 
 
+def _clean_brain_search_query(value: str) -> str:
+    query = (value or "").strip()
+    if not query:
+        raise HTTPException(status_code=422, detail="Search query cannot be blank")
+    return query
+
+
 @app.get("/api/brain/search")
-async def search_brain(q: str, limit: int = 50, entity_type: str | None = None):
+async def search_brain(
+    q: str = Query(min_length=1, max_length=4000),
+    limit: int = Query(default=50, ge=1, le=100),
+    entity_type: str | None = None,
+):
     store = _brain_or_503()
+    query = _clean_brain_search_query(q)
     started_at = time.perf_counter()
     results = await _run_brain_step(
         "Keyword brain search",
         store.search,
-        query=q,
+        query=query,
         limit=limit,
         entity_type=entity_type,
     )
     results = await _attach_source_references(store, results)
     counts = await _run_brain_step("Brain counts", store.counts)
     return {
-        "query": q,
+        "query": query,
         "results": results,
         "counts": counts,
         "timings": {
@@ -2082,15 +2097,19 @@ async def start_brain_embedding_backfill(payload: BrainEmbeddingBackfillStartReq
 
 
 @app.get("/api/brain/search/semantic")
-async def semantic_brain_search(q: str, limit: int = 10):
+async def semantic_brain_search(
+    q: str = Query(min_length=1, max_length=4000),
+    limit: int = Query(default=10, ge=1, le=50),
+):
     store = _brain_or_503()
     client = _gemini_or_503()
+    query = _clean_brain_search_query(q)
     started_at = time.perf_counter()
     try:
         query_embedding = await _run_brain_step(
             "Semantic embedding",
             client.embed_text,
-            q,
+            query,
             task_type="RETRIEVAL_QUERY",
         )
     except HTTPException:
@@ -2101,7 +2120,7 @@ async def semantic_brain_search(q: str, limit: int = 10):
     embedding_ms = round((time.perf_counter() - started_at) * 1000, 1)
     search_started_at = time.perf_counter()
     try:
-        chunks = await _run_brain_step(
+        raw_chunks = await _run_brain_step(
             "Supabase vector search",
             store.semantic_search_chunks,
             query_embedding,
@@ -2118,6 +2137,7 @@ async def semantic_brain_search(q: str, limit: int = 10):
                 "action": "Check pgvector schema, embedding dimensions, and database availability.",
             },
         )
+    chunks = _filter_semantic_results(raw_chunks)
     search_ms = round((time.perf_counter() - search_started_at) * 1000, 1)
     counts = await _run_brain_step("Brain counts", store.counts)
     results = await _attach_source_references(store, [
@@ -2130,13 +2150,17 @@ async def semantic_brain_search(q: str, limit: int = 10):
             "rank": chunk.get("score"),
             "score": chunk.get("score"),
             "sourceId": chunk.get("sourceId"),
+            "ordinal": chunk.get("ordinal"),
+            "pageStart": chunk.get("pageStart"),
+            "pageEnd": chunk.get("pageEnd"),
         }
         for chunk in chunks
     ])
     return {
-        "query": q,
+        "query": query,
         "model": client.embedding_model,
         "results": results,
+        "rejectedWeakMatches": len(raw_chunks) - len(chunks),
         "counts": counts,
         "timings": {
             "embeddingMs": embedding_ms,
@@ -2211,6 +2235,24 @@ def _merge_retrieval_results(
         reverse=True,
     )
     return ordered[: max(1, min(int(limit), 20))]
+
+
+def _filter_semantic_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only semantic matches that clear the configured relevance floor.
+
+    A nearest-neighbour query always has an answer, including for nonsense and
+    off-topic text. Weak matches are excluded from the model context; keyword
+    retrieval remains available for precise but low-similarity terms.
+    """
+    accepted: list[dict[str, Any]] = []
+    for item in results:
+        try:
+            score = float(item.get("score"))
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(score) and score >= SEMANTIC_MIN_SCORE:
+            accepted.append(item)
+    return accepted
 
 
 def _context_excerpt(item: dict[str, Any], *, max_chars: int = 360) -> str:
@@ -2300,12 +2342,12 @@ def _expand_semantic_hits_into_sources(
         if source_id is None:
             continue
         if source_id not in source_ids:
+            if len(source_ids) >= max_sources:
+                continue
             source_ids.append(source_id)
         ordinal = item.get("ordinal")
         if isinstance(ordinal, int):
             hit_ordinals.setdefault(source_id, []).append(ordinal)
-        if len(source_ids) >= max_sources:
-            break
 
     for source_id in source_ids:
         source = store.get_source(source_id) if hasattr(store, "get_source") else None
@@ -2457,13 +2499,14 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
                 task_type="RETRIEVAL_QUERY",
                 timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
             )
-            semantic_results = await _run_brain_step(
+            raw_semantic_results = await _run_brain_step(
                 "Supabase vector search",
                 store.semantic_search_chunks,
                 query_embedding,
                 limit=candidate_limit,
                 timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
             ) or []
+            semantic_results = _filter_semantic_results(raw_semantic_results)
             semantic_available = True
         except Exception as e:
             timings["semanticError"] = _clean_public_error(e)[:240]

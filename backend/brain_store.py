@@ -905,6 +905,9 @@ class BrainStore:
                    brain_index.title,
                    brain_index.body,
                    brain_index.tags,
+                   c.ordinal,
+                   c.page_start,
+                   c.page_end,
                    CASE
                        WHEN brain_index.entity_type = 'source' THEN CAST(brain_index.entity_id AS INTEGER)
                        ELSE c.source_id
@@ -932,6 +935,9 @@ class BrainStore:
                     "tags": row["tags"].split() if row["tags"] else [],
                     "rank": row["rank"],
                     "sourceId": int(row["source_id"]) if row["source_id"] is not None else None,
+                    "ordinal": int(row["ordinal"]) if row["ordinal"] is not None else None,
+                    "pageStart": int(row["page_start"]) if row["page_start"] is not None else None,
+                    "pageEnd": int(row["page_end"]) if row["page_end"] is not None else None,
                 }
                 for row in conn.execute(sql, params).fetchall()
             ]
