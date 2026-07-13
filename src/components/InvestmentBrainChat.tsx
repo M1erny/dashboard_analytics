@@ -919,11 +919,16 @@ export const InvestmentBrainChat: React.FC = () => {
                 }),
             }, 90000);
             if (!response.ok) throw new Error(await errorText(response, 'Source import failed.'));
-            const payload = await response.json() as { status?: string; chunks?: unknown[]; driveFile?: { webViewLink?: string } };
+            const payload = await response.json() as {
+                status?: string;
+                chunks?: unknown[];
+                driveFile?: { webViewLink?: string };
+                document?: { convertedToMarkdown?: boolean };
+            };
             setAgentUrl('');
             setNotice(payload.status === 'skipped'
                 ? 'That source was already indexed and has not changed.'
-                : `Source indexed as ${payload.chunks?.length ?? 0} passages${payload.driveFile?.webViewLink ? ' and saved to Drive' : ''}.`);
+                : `Source indexed as ${payload.chunks?.length ?? 0} passages${payload.document?.convertedToMarkdown ? ' in Markdown' : ''}${payload.driveFile?.webViewLink ? ' and saved to Drive' : ''}.`);
             await refresh();
         } catch (error) {
             setNotice(error instanceof Error ? error.message : 'Source import failed.');

@@ -161,8 +161,9 @@ Agent acquisition flow:
 ```text
 URL or official-source task
 -> guarded public download
--> optional Google Drive upload into Agent Downloads
--> text extraction and chunking
+-> text extraction and canonical Markdown conversion
+-> optional Markdown upload into Agent Downloads
+-> chunking
 -> Supabase source/chunk upsert
 -> embedding backfill queue
 ```
@@ -177,7 +178,7 @@ Main Brain capabilities:
 - Editable system prompt stored with the Brain and sent to Gemini as a native system instruction.
 - Google Drive OAuth connection.
 - Drive folder sync.
-- Research Agent URL import into Drive + Supabase.
+- Research Agent URL import into Drive + Supabase, with HTML/PDF/DOCX content normalized to an auditable Markdown source before Drive upload.
 - Official SEC source finder for public-company filings and earnings exhibits.
 - PDF, DOCX, Google Docs/Sheets/Slides exports, TXT, Markdown, CSV, JSON, and HTML extraction.
 - Chunk storage with stable file and chunk hashes.

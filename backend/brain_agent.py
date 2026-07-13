@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import mimetypes
 import os
 import re
@@ -139,6 +140,72 @@ def _filename_from_response(url: str, content_disposition: str | None, extension
     return _safe_filename(urlparse(url).hostname or "source", extension)
 
 
+def _markdown_filename(filename: str, original_extension: str) -> str:
+    """Return the Drive filename for the canonical, AI-readable source."""
+    clean_name = PurePosixPath(filename).name
+    if clean_name.lower().endswith(original_extension.lower()):
+        clean_name = clean_name[: -len(original_extension)]
+    return _safe_filename(clean_name or "source", ".md")
+
+
+def _markdown_body(text: str) -> str:
+    """Keep extracted text readable while giving PDF page boundaries Markdown structure."""
+    clean_text = normalize_text(text)
+    return re.sub(r"(?m)^\[Page\s+(\d+)\]\s*$", r"## Page \1", clean_text)
+
+
+def _canonical_markdown_document(
+    document: DownloadedDocument,
+    *,
+    title: str,
+    source_url: str,
+    retrieved_at: str,
+    extracted_text: str,
+    agent_task: str | None = None,
+) -> bytes:
+    """Create the single durable Drive artifact for a web-acquired source.
+
+    The raw HTML/PDF/DOCX is intentionally not uploaded. The original URL and
+    source-format details stay in the Markdown front matter and database
+    metadata so the conversion remains auditable.
+    """
+    front_matter = {
+        "title": title,
+        "source_url": source_url,
+        "resolved_url": document.final_url,
+        "retrieved_at_utc": retrieved_at,
+        "original_filename": document.filename,
+        "original_extension": document.extension,
+        "original_mime_type": document.mime_type,
+        "conversion": "extracted text normalized to markdown by Investment Brain",
+    }
+    if agent_task:
+        front_matter["research_task"] = agent_task
+
+    metadata_lines = [f"{key}: {json.dumps(value, ensure_ascii=True)}" for key, value in front_matter.items()]
+    body = _markdown_body(extracted_text)
+    markdown = "\n".join([
+        "---",
+        *metadata_lines,
+        "---",
+        "",
+        f"# {title}",
+        "",
+        "## Source",
+        "",
+        f"- Original URL: <{source_url}>",
+        f"- Resolved URL: <{document.final_url}>",
+        f"- Retrieved: {retrieved_at}",
+        f"- Converted from: `{document.extension.lstrip('.') or 'unknown'}` to Markdown for indexing and retrieval.",
+        "",
+        "## Extracted Content",
+        "",
+        body,
+        "",
+    ])
+    return markdown.encode("utf-8")
+
+
 def download_public_document(
     url: str,
     *,
@@ -234,6 +301,18 @@ def import_document_into_brain(
     if not clean_text:
         raise RuntimeError("Downloaded document had no extractable text.")
 
+    source_title = re.sub(r"\s+", " ", (title or source_label or document.filename.rsplit(".", 1)[0])).strip()[:300]
+    canonical_filename = _markdown_filename(document.filename, document.extension)
+    canonical_data = _canonical_markdown_document(
+        document,
+        title=source_title,
+        source_url=original_url,
+        retrieved_at=indexed_at,
+        extracted_text=clean_text,
+        agent_task=agent_task,
+    )
+    canonical_hash = sha256_bytes(canonical_data)
+
     drive_file = None
     upload_error = None
     clean_drive_folder_id = parse_drive_folder_id(drive_folder_id)
@@ -245,11 +324,14 @@ def import_document_into_brain(
             if parent_id and drive_subfolder:
                 target_folder_id = client.ensure_folder(parent_id, drive_subfolder)["id"]
             drive_file = client.upload_file(
-                name=document.filename,
-                data=document.data,
-                mime_type=document.mime_type,
+                name=canonical_filename,
+                data=canonical_data,
+                mime_type="text/markdown; charset=utf-8",
                 folder_id=target_folder_id,
-                description=f"Imported by Investment Brain agent from {document.final_url}",
+                description=(
+                    f"Markdown conversion created by Investment Brain agent from {document.final_url}. "
+                    f"Original format: {document.extension}."
+                ),
             )
         except Exception as exc:
             upload_error = str(exc)[:500]
@@ -259,8 +341,7 @@ def import_document_into_brain(
                     f"Google said: {upload_error}"
                 ) from exc
 
-    source_title = (title or source_label or document.filename.rsplit(".", 1)[0]).strip()[:300]
-    clean_tags = ["agent-import", document.extension.lstrip(".")]
+    clean_tags = ["agent-import", "markdown", document.extension.lstrip(".")]
     for tag in tags or []:
         if tag and tag not in clean_tags:
             clean_tags.append(tag)
@@ -273,12 +354,20 @@ def import_document_into_brain(
         "finalUrl": document.final_url,
         "sourceLabel": source_label,
         "agentTask": agent_task,
-        "fileName": document.filename,
-        "extension": document.extension,
-        "mimeType": document.mime_type,
-        "bytes": len(document.data),
+        "fileName": canonical_filename,
+        "extension": ".md",
+        "mimeType": "text/markdown",
+        "bytes": len(canonical_data),
+        "canonicalFileName": canonical_filename,
+        "canonicalFileHash": canonical_hash,
+        "canonicalExtension": ".md",
+        "canonicalMimeType": "text/markdown",
+        "originalFileName": document.filename,
+        "originalExtension": document.extension,
+        "originalMimeType": document.mime_type,
+        "originalBytes": len(document.data),
         "indexedAt": indexed_at,
-        "storageMode": "agent_download_drive_metadata_source_preview_chunks_full_text",
+        "storageMode": "agent_download_markdown_drive_metadata_source_preview_chunks_full_text",
         "driveFolderId": clean_drive_folder_id,
         "driveSubfolder": drive_subfolder if upload_to_drive else None,
         "uploadError": upload_error,
@@ -332,10 +421,17 @@ def import_document_into_brain(
         "document": {
             "url": document.url,
             "finalUrl": document.final_url,
-            "filename": document.filename,
-            "extension": document.extension,
-            "mimeType": document.mime_type,
-            "bytes": len(document.data),
+            "filename": canonical_filename,
+            "extension": ".md",
+            "mimeType": "text/markdown",
+            "bytes": len(canonical_data),
+            "convertedToMarkdown": True,
+            "original": {
+                "filename": document.filename,
+                "extension": document.extension,
+                "mimeType": document.mime_type,
+                "bytes": len(document.data),
+            },
         },
     }
 

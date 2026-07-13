@@ -449,8 +449,9 @@ Acquire source -> save source -> index chunks -> embed -> retrieve -> analyze
 Current agent abilities:
 
 - paste a public URL and import it into the Brain
-- upload the imported document into Google Drive under `Agent Downloads`
-- extract text, chunk it, and upsert it into Supabase/Postgres
+- extract readable text and write one canonical Markdown research source into Google Drive under `Agent Downloads`
+- retain original URL, resolved URL, retrieval time, raw hash, and original format in the Markdown front matter and source metadata
+- chunk the normalized content and upsert it into Supabase/Postgres
 - queue embedding backfill after import
 - find official SEC candidates for public-company result/filing tasks
 - run a first guarded loop that imports the top trusted official source
