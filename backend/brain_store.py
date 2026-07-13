@@ -522,6 +522,25 @@ class BrainStore:
             row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
             return self._source_from_row(row) if row else None
 
+    def update_source_metadata(self, source_id: int, updates: dict[str, Any]) -> dict[str, Any] | None:
+        """Merge durable metadata into a source without touching its indexed text or chunks."""
+        clean_updates = updates if isinstance(updates, dict) else {}
+        if not clean_updates:
+            return self.get_source(source_id)
+
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+            if not row:
+                return None
+            metadata = self._json_loads(row["metadata"], {})
+            metadata.update(clean_updates)
+            conn.execute(
+                "UPDATE sources SET metadata = ?, updated_at = ? WHERE id = ?",
+                (self._json_dumps(metadata), self._now(), source_id),
+            )
+            updated = conn.execute("SELECT * FROM sources WHERE id = ?", (source_id,)).fetchone()
+            return self._source_from_row(updated)
+
     def get_file_source_by_identity(self, file_identity: str) -> dict[str, Any] | None:
         file_identity = str(file_identity or "").strip()
         if not file_identity:

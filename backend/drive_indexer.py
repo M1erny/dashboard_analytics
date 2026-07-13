@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import unicodedata
 import zipfile
 from datetime import datetime, timezone
 from typing import Any
@@ -535,6 +536,141 @@ def source_preview(file: dict[str, Any], text: str) -> str:
     ).strip()
 
 
+def _canonical_drive_text(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKD", str(value or "")).casefold()
+    return re.sub(r"[^a-z0-9]+", "", normalized)
+
+
+def _drive_match_parts(relative_path: Any, extension: Any = None) -> tuple[str, str, str, str]:
+    clean_path = str(relative_path or "").replace("\\", "/").strip("/")
+    parts = [part for part in clean_path.split("/") if part]
+    file_name = parts[-1] if parts else clean_path
+    parent = "/".join(parts[:-1])
+    clean_extension = str(extension or "").strip().casefold()
+    if clean_extension and not clean_extension.startswith("."):
+        clean_extension = f".{clean_extension}"
+    if not clean_extension and "." in file_name:
+        clean_extension = f".{file_name.rsplit('.', 1)[-1].casefold()}"
+    stem = file_name[:-len(clean_extension)] if clean_extension and file_name.casefold().endswith(clean_extension) else file_name
+    return (
+        _canonical_drive_text(clean_path),
+        _canonical_drive_text(parent),
+        _canonical_drive_text(stem),
+        clean_extension,
+    )
+
+
+def match_legacy_sources_to_drive(
+    source_lookup: list[dict[str, Any]],
+    files: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Match locally indexed Drive files to cloud IDs without re-reading their contents."""
+    drive_candidates: list[dict[str, Any]] = []
+    for file in files:
+        file_id = str(file.get("id") or "").strip()
+        relative_path = file.get("relativePath") or file.get("name")
+        if not file_id or not relative_path:
+            continue
+        extension = extension_for_file(file)
+        full_key, parent_key, stem_key, clean_extension = _drive_match_parts(relative_path, extension)
+        try:
+            size = int(file.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        drive_candidates.append({
+            "file": file,
+            "fullKey": full_key,
+            "parentKey": parent_key,
+            "stemKey": stem_key,
+            "extension": clean_extension,
+            "size": size,
+        })
+
+    matches: list[dict[str, Any]] = []
+    for source in source_lookup:
+        metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+        identity = str(metadata.get("fileIdentity") or "")
+        if metadata.get("driveFileId") or not (
+            metadata.get("sourceType") == "local_file" or identity.startswith("local-file:")
+        ):
+            continue
+
+        relative_path = metadata.get("relativePath") or metadata.get("fileName")
+        if not relative_path:
+            continue
+        full_key, parent_key, stem_key, clean_extension = _drive_match_parts(
+            relative_path,
+            metadata.get("extension"),
+        )
+        try:
+            source_size = int(metadata.get("bytes") or 0)
+        except (TypeError, ValueError):
+            source_size = 0
+
+        scored: list[tuple[int, str, dict[str, Any]]] = []
+        for candidate in drive_candidates:
+            same_extension = bool(clean_extension and clean_extension == candidate["extension"])
+            same_parent = bool(parent_key and parent_key == candidate["parentKey"])
+            same_stem = bool(stem_key and stem_key == candidate["stemKey"])
+            same_size = bool(source_size and source_size == candidate["size"])
+            if full_key and full_key == candidate["fullKey"]:
+                scored.append((100, "exact_relative_path", candidate))
+            elif same_parent and same_extension and same_size:
+                scored.append((90, "folder_size_extension", candidate))
+            elif same_parent and same_extension and same_stem:
+                scored.append((80, "folder_filename", candidate))
+            elif same_extension and same_size and same_stem:
+                scored.append((70, "filename_size_extension", candidate))
+
+        if not scored:
+            continue
+        best_score = max(item[0] for item in scored)
+        best = [item for item in scored if item[0] == best_score]
+        if len(best) != 1:
+            continue
+        _, match_type, candidate = best[0]
+        matches.append({
+            "sourceId": int(source["id"]),
+            "file": candidate["file"],
+            "matchType": match_type,
+        })
+    return matches
+
+
+def reconcile_legacy_source_drive_links(
+    store: Any,
+    files: list[dict[str, Any]],
+    *,
+    folder_id: str,
+    linked_at: str,
+) -> list[dict[str, Any]]:
+    if not hasattr(store, "list_file_source_lookup") or not hasattr(store, "update_source_metadata"):
+        return []
+
+    matches = match_legacy_sources_to_drive(store.list_file_source_lookup(), files)
+    linked: list[dict[str, Any]] = []
+    for match in matches:
+        file = match["file"]
+        file_id = str(file.get("id") or "").strip()
+        web_view_link = file.get("webViewLink") or f"https://drive.google.com/file/d/{file_id}/view"
+        updated = store.update_source_metadata(match["sourceId"], {
+            "driveFileId": file_id,
+            "driveFolderId": folder_id,
+            "driveRelativePath": file.get("relativePath") or file.get("name"),
+            "webViewLink": web_view_link,
+            "driveLinkedAt": linked_at,
+            "driveLinkMatch": match["matchType"],
+        })
+        if updated:
+            linked.append({
+                "sourceId": match["sourceId"],
+                "driveFileId": file_id,
+                "webViewLink": web_view_link,
+                "matchType": match["matchType"],
+            })
+    return linked
+
+
 def index_drive_folder(
     store,
     *,
@@ -563,6 +699,12 @@ def index_drive_folder(
 
     results: list[dict[str, Any]] = []
     files = client.iter_files(clean_folder_id, limit_files=limit_files)
+    linked_legacy_sources = reconcile_legacy_source_drive_links(
+        store,
+        files,
+        folder_id=clean_folder_id,
+        linked_at=indexed_at,
+    )
     changed_files_started = 0
 
     def emit_progress(current_file: str | None = None) -> None:
@@ -768,11 +910,13 @@ def index_drive_folder(
         "maxBytes": max_bytes,
         "maxPdfPages": max_pdf_pages,
         "maxExtractedChars": max_extracted_chars,
+        "linkedLegacySources": len(linked_legacy_sources),
     }
     return {
         "folderId": clean_folder_id,
         "folderUrl": drive_folder_url(clean_folder_id),
         "summary": summary,
         "results": results,
+        "linkedLegacySources": linked_legacy_sources,
         "counts": store.counts(),
     }

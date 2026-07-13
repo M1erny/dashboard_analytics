@@ -6,6 +6,7 @@ from pathlib import Path
 
 import server
 from brain_store import BrainStore
+from drive_indexer import match_legacy_sources_to_drive
 from pydantic import ValidationError
 
 
@@ -41,6 +42,53 @@ try:
 except server.HTTPException as error:
     assert error.status_code == 422
 
+drive_reference = server._public_source_reference({
+    "id": 10,
+    "kind": "file",
+    "title": "Annual report",
+    "metadata": {"driveFileId": "drive-123"},
+})
+assert drive_reference["webUrl"] == "https://drive.google.com/file/d/drive-123/view"
+assert drive_reference["linkType"] == "drive_file"
+
+legacy_reference = server._public_source_reference({
+    "id": 11,
+    "kind": "file",
+    "title": "Legacy framework",
+    "metadata": {
+        "sourceType": "local_file",
+        "fileName": "Legacy framework.pdf",
+        "relativePath": "Books/Legacy framework.pdf",
+    },
+})
+assert legacy_reference["webUrl"] is None
+assert legacy_reference["linkType"] == "drive_search"
+assert legacy_reference["driveSearchUrl"].startswith("https://drive.google.com/drive/u/0/search?q=")
+
+legacy_matches = match_legacy_sources_to_drive(
+    [{
+        "id": 21,
+        "metadata": {
+            "sourceType": "local_file",
+            "fileIdentity": "local-file:legacy.pdf",
+            "relativePath": "Books/Old descriptive filename.pdf",
+            "extension": ".pdf",
+            "bytes": 1635920,
+        },
+    }],
+    [{
+        "id": "drive-file-21",
+        "name": "Renamed edition.pdf",
+        "relativePath": "Books/Renamed edition.pdf",
+        "mimeType": "application/pdf",
+        "size": "1635920",
+        "webViewLink": "https://drive.google.com/file/d/drive-file-21/view",
+    }],
+)
+assert legacy_matches[0]["sourceId"] == 21
+assert legacy_matches[0]["file"]["id"] == "drive-file-21"
+assert legacy_matches[0]["matchType"] == "folder_size_extension"
+
 
 class ExpansionStore:
     def get_source(self, source_id):
@@ -73,6 +121,8 @@ assert [chunk["ordinal"] for chunk in expanded[0]["chunks"]] == [1, 9]
 with tempfile.TemporaryDirectory() as directory:
     store = BrainStore(Path(directory) / "brain.db")
     source = store.add_source("file", "Test source", "metadata only")
+    updated_source = store.update_source_metadata(source["id"], {"driveFileId": "linked-file"})
+    assert updated_source["metadata"]["driveFileId"] == "linked-file"
     store.add_chunks(source["id"], [{
         "ordinal": 9,
         "title": "Underwriting passage",

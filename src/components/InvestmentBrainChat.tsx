@@ -62,11 +62,14 @@ type DriveStatus = {
 type SourceReference = {
     id?: number;
     kind?: string;
+    sourceType?: string;
     title?: string;
     fileName?: string;
     relativePath?: string;
     webUrl?: string;
     driveFileId?: string;
+    driveSearchUrl?: string;
+    linkType?: 'drive_file' | 'drive_search' | 'web';
     tags?: string[];
     metadata?: Record<string, unknown>;
 };
@@ -252,11 +255,25 @@ const sourceLink = (source?: SourceReference | null) => {
     for (const candidate of candidates) {
         if (typeof candidate === 'string' && /^https?:\/\//i.test(candidate.trim())) return candidate.trim();
     }
-    return source.driveFileId ? `https://drive.google.com/file/d/${source.driveFileId}/view` : undefined;
+    if (source.driveFileId) return `https://drive.google.com/file/d/${source.driveFileId}/view`;
+    if (typeof source.driveSearchUrl === 'string' && /^https?:\/\//i.test(source.driveSearchUrl.trim())) {
+        return source.driveSearchUrl.trim();
+    }
+    const localSearchTerm = source.sourceType === 'local_file'
+        ? source.fileName ?? source.title ?? source.relativePath
+        : undefined;
+    return localSearchTerm
+        ? `https://drive.google.com/drive/u/0/search?q=${encodeURIComponent(localSearchTerm)}`
+        : undefined;
 };
 
+const sourceLinkLabel = (source?: SourceReference | null) =>
+    source?.linkType === 'drive_search' || (
+        source?.sourceType === 'local_file' && !source.webUrl && !source.driveFileId
+    ) ? 'Find in Drive' : source?.linkType === 'web' ? 'Open source' : 'Open file';
+
 const evidenceFor = (context?: AnalysisContext) => {
-    const entries: Array<{ key: string; marker?: string; title: string; detail: string; text?: string; link?: string }> = [];
+    const entries: Array<{ key: string; marker?: string; title: string; detail: string; text?: string; link?: string; linkLabel?: string }> = [];
     const used = new Set<string>();
 
     for (const [documentIndex, document] of (context?.fullDocuments ?? []).entries()) {
@@ -272,6 +289,7 @@ const evidenceFor = (context?: AnalysisContext) => {
             title: sourceName(source),
             detail: `${formatCount(document.charsIncluded)} characters from ${formatCount(document.chunkCount)} indexed passages${flags ? ` · ${flags}` : ' · full indexed text'}`,
             link: sourceLink(source),
+            linkLabel: sourceLinkLabel(source),
         });
     }
 
@@ -289,6 +307,7 @@ const evidenceFor = (context?: AnalysisContext) => {
             detail: location,
             text: result.body,
             link: sourceLink(source),
+            linkLabel: sourceLinkLabel(source),
         });
     }
 
@@ -304,6 +323,7 @@ const evidenceFor = (context?: AnalysisContext) => {
             detail: hits,
             text: deep.chunks?.[0]?.body,
             link: sourceLink(source),
+            linkLabel: sourceLinkLabel(source),
         });
     }
 
@@ -318,6 +338,7 @@ const evidenceFor = (context?: AnalysisContext) => {
             detail: semantic ? 'persistent framework · relevant passage' : 'persistent framework · anchor passage',
             text: reference.chunks?.[0]?.body,
             link: sourceLink(source),
+            linkLabel: sourceLinkLabel(source),
         });
     }
 
@@ -425,7 +446,7 @@ const EvidenceList: React.FC<{ context?: AnalysisContext }> = ({ context }) => {
                                         ) : <p className="text-xs font-semibold leading-5 text-slate-100">{source.title}</p>}
                                         {source.link && (
                                             <a href={source.link} target="_blank" rel="noreferrer" className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.08em] text-slate-500 transition-colors hover:text-emerald-300" aria-label={`Open ${source.title}`}>
-                                                Open file
+                                                {source.linkLabel ?? 'Open file'}
                                             </a>
                                         )}
                                     </div>

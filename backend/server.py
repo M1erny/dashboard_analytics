@@ -20,6 +20,7 @@ import time
 import yfinance as yf
 from datetime import datetime
 from typing import Any
+from urllib.parse import quote_plus
 
 # Import risk.py (Now local)
 try:
@@ -278,17 +279,31 @@ def _public_source_reference(source: dict[str, Any] | None) -> dict[str, Any] | 
     if not web_url and drive_file_id:
         web_url = f"https://drive.google.com/file/d/{drive_file_id}/view"
     relative_path = metadata.get("relativePath")
+    source_type = metadata.get("sourceType")
+    drive_search_url = None
+    if not web_url and (source_type == "local_file" or str(metadata.get("fileIdentity") or "").startswith("local-file:")):
+        search_term = metadata.get("fileName") or source.get("title") or relative_path
+        if isinstance(search_term, str) and search_term.strip():
+            drive_search_url = f"https://drive.google.com/drive/u/0/search?q={quote_plus(search_term.strip())}"
+
+    link_type = None
+    if web_url:
+        link_type = "drive_file" if drive_file_id or "drive.google.com" in web_url or "docs.google.com" in web_url else "web"
+    elif drive_search_url:
+        link_type = "drive_search"
 
     return {
         "id": source.get("id"),
         "title": source.get("title"),
         "kind": source.get("kind"),
         "tags": source.get("tags", []),
-        "sourceType": metadata.get("sourceType"),
+        "sourceType": source_type,
         "fileName": metadata.get("fileName"),
         "relativePath": relative_path,
         "webUrl": web_url,
         "driveFileId": drive_file_id,
+        "driveSearchUrl": drive_search_url,
+        "linkType": link_type,
     }
 
 
