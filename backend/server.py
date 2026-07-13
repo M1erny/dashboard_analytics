@@ -3144,6 +3144,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
         response["ytdHistory"] = []
         if metrics.get('YTD_Stream') is not None:
             ytd_port = metrics['YTD_Stream']
+            ytd_port_gross = metrics.get('YTD_Gross_Stream')
             # Reconstruct YTD Benchmark Value Series (Start=1.0)
             ytd_bench_ret = metrics.get('YTD_Benchmark_Stream')
             
@@ -3158,6 +3159,9 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 for date in ytd_port.index:
                     date_str = date.strftime('%Y-%m-%d')
                     port_val = ytd_port.loc[date] * 100000
+                    gross_val = None
+                    if ytd_port_gross is not None and date in ytd_port_gross.index:
+                        gross_val = ytd_port_gross.loc[date] * 100000
                     
                     beta_val = None
                     if ytd_beta_hist is not None and date in ytd_beta_hist.index:
@@ -3166,6 +3170,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                     response["ytdHistory"].append({
                         "date": date_str,
                         "portfolio": to_float(port_val),
+                        "portfolioGross": to_float(gross_val),
                         "benchmark": None, # calculated below
                         "beta": to_float(beta_val)
                     })

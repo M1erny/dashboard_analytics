@@ -672,7 +672,7 @@ export const Dashboard: React.FC = () => {
                 {/* ROW 1.5: Returns Heatmap & Portfolio Contribution (Full Width) */}
                 <ReturnsHeatmap periodicReturns={periodicReturns} activeRisks={activeRisks} periodLabel={vitals?.periodLabel ?? "YTD"} vitals={vitals} />
 
-                <HistoricalDiagnostics data={analyticsHistory} periodLabel={vitals?.periodLabel ?? "YTD"} />
+                <HistoricalDiagnostics data={analyticsHistory} performance={ytdHistory} periodLabel={vitals?.periodLabel ?? "YTD"} />
 
                 {/* ROW 2: Convexity Analysis */}
                 <ConvexityWidget convexity={convexity} />

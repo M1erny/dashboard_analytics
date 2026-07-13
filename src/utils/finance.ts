@@ -229,6 +229,7 @@ export interface CurrentBookScenario {
 export interface HistoryPoint {
     date: string;
     portfolio: number;
+    portfolioGross?: number | null;
     benchmark: number;
     drawdown: number;
     beta?: number;

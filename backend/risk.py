@@ -1891,6 +1891,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         },
         'Fx_Watchlist': fx_watchlist_metrics,
         'YTD_Stream': portfolio_val_series if 'portfolio_val_series' in locals() else None,
+        'YTD_Gross_Stream': portfolio_val_series_gross if 'portfolio_val_series_gross' in locals() else None,
         'YTD_Benchmark_Stream': ytd_benchmark if 'ytd_benchmark' in locals() else None,
         'YTD_Beta_History': ytd_beta_history if 'ytd_beta_history' in locals() else None,
         'YTD_Position_Contributions': ytd_position_contributions if 'ytd_position_contributions' in locals() else {},
