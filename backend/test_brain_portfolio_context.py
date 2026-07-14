@@ -103,6 +103,8 @@ try:
     prompt_context = server._format_brain_portfolio_context(context)
     assert "Current drifted exposure" in prompt_context
     assert "underlying returns are security returns" in prompt_context
+    assert "NAV/equity" in prompt_context
+    assert "Pre-ranked 3m position-adjusted leaders" in prompt_context
     assert "SHORT Short | target +40.0% | current +35.0%" in prompt_context
 
     async def fake_get_metrics(force=False, costTier="retail", portfolio="main"):

@@ -2612,7 +2612,7 @@ def _build_brain_portfolio_context(
             "financingCostYtd": _finite_number(vitals.get("ytdFinancingCost")),
         },
         "concentration": {
-            "topFiveGrossWeight": top_five_weight,
+            "topFiveAbsoluteWeight": top_five_weight,
             "topFiveShareOfGross": top_five_weight / current_gross if current_gross else None,
             "largestPositions": [
                 {"ticker": item["ticker"], "side": item["side"], "currentWeight": item["currentWeight"]}
@@ -2684,11 +2684,25 @@ def _format_brain_portfolio_context(context: dict[str, Any]) -> str:
         f"compounded CAPM alpha {pct(performance.get('compoundedCapmAlphaYtd'))}, annualized Jensen alpha {pct(performance.get('annualizedJensenAlpha'))}, "
         f"beta {(_finite_number(performance.get('betaYtd')) or 0):.2f}, vol {pct(performance.get('volatilityYtd'))}, "
         f"max drawdown {pct(performance.get('maxDrawdownYtd'))}, financing {pct(performance.get('financingCostYtd'))}.",
-        f"Concentration: top five current gross weights total {pct(concentration.get('topFiveGrossWeight'))} "
-        f"({pct(concentration.get('topFiveShareOfGross'))} of gross exposure).",
+        f"Concentration: top five absolute current position weights total {pct(concentration.get('topFiveAbsoluteWeight'))} of NAV/equity. "
+        f"That is {pct(concentration.get('topFiveShareOfGross'))} of the portfolio's current gross exposure; do not confuse these two denominators.",
         "Position convention: underlying returns are security returns; position momentum flips the sign for shorts. "
-        "Current weight is drifted with performance and is distinct from target weight. Prices are adjusted and USD-converted for comparability.",
+        "Higher positive position momentum helps the book; lower negative position momentum hurts it. Current weight is absolute exposure versus NAV, "
+        "drifted with performance, and distinct from target weight. Prices are adjusted and USD-converted for comparability.",
     ]
+    momentum_context = context.get("momentum", {})
+    leaders = momentum_context.get("leaders3mPositionAdjusted", [])
+    laggards = momentum_context.get("laggards3mPositionAdjusted", [])
+    if leaders:
+        lines.append("Pre-ranked 3m position-adjusted leaders (helping the book): " + ", ".join(
+            f"{item.get('ticker')} {item.get('side')} {pct(item.get('value'))}"
+            for item in leaders
+        ) + ".")
+    if laggards:
+        lines.append("Pre-ranked 3m position-adjusted laggards (hurting the book): " + ", ".join(
+            f"{item.get('ticker')} {item.get('side')} {pct(item.get('value'))}"
+            for item in laggards
+        ) + ".")
     risk_context = context.get("risk", {})
     risk_contributors = risk_context.get("topContributors", [])
     if risk_contributors:
@@ -2914,7 +2928,7 @@ Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per sect
 When relying on a numbered item from Retrieved source context, cite it compactly as [1], [2], and so on. Never invent citations or claim a source says more than the supplied excerpt.
 Persistent reference sources are investor-selected frameworks. Use them as an always-on lens, but do not mistake a framework for company-specific evidence. Cite them as [R1], [R2], and so on when they materially shape the reasoning, and surface any tension with current company evidence.
 Full-document sources are investor-selected primary context. They contain the full text reconstructed from the indexed file, subject to any stated extraction or context cap. Cite them as [F1], [F2], and so on when they materially support the answer. Never imply an [F] source was fully available when its label says a cap was reached.
-Use the live portfolio context whenever the question concerns holdings, sizing, momentum, concentration, exposure, contribution, portfolio risk, or potential action. Always distinguish target weight from current drifted weight. A positive underlying return helps a long but hurts a short; use position-adjusted momentum when ranking what is helping or hurting the book. Describe this data as live portfolio context as of its stated date, not as a numbered document citation. If fresh=false or the as-of date is unknown, explicitly warn that the market snapshot may be stale.
+Use the live portfolio context whenever the question concerns holdings, sizing, momentum, concentration, exposure, contribution, portfolio risk, or potential action. Always distinguish target weight from current drifted weight. A positive underlying return helps a long but hurts a short. Position-adjusted momentum is already side-corrected: higher values help the book and lower values hurt it. When ranking momentum, use the supplied pre-ranked position-adjusted lists across both sides; never classify a rising adverse short as a leader. Keep NAV weight and share of gross exposure as separate denominators. Describe this data as live portfolio context as of its stated date, not as a numbered document citation. If fresh=false or the as-of date is unknown, explicitly warn that the market snapshot may be stale.
 """.strip()
 
     step_started = time.perf_counter()
@@ -2930,7 +2944,7 @@ Use the live portfolio context whenever the question concerns holdings, sizing, 
             prompt,
             system_instruction=system_prompt,
             temperature=0.2,
-            max_output_tokens=700,
+            max_output_tokens=1100,
             timeout_seconds=generation_timeout,
             timeout=generation_timeout + 1.0,
         )
