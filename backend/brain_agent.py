@@ -4,8 +4,10 @@ import mimetypes
 import os
 import re
 import socket
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import unquote, urljoin, urlparse
@@ -28,6 +30,7 @@ DEFAULT_AGENT_MAX_BYTES = 15 * 1024 * 1024
 DEFAULT_AGENT_DOWNLOAD_FOLDER = "Agent Downloads"
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
+SEC_SUBMISSIONS_FILE_URL = "https://data.sec.gov/submissions/{name}"
 SEC_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
 TRUSTED_OFFICIAL_DOMAINS = {
     "sec.gov",
@@ -47,6 +50,10 @@ COMMON_COMPANY_TICKERS = {
     "walmart": "WMT",
     "microsoft": "MSFT",
 }
+CORE_SEC_FORMS = {"10-K", "10-Q", "8-K", "6-K", "20-F", "40-F"}
+QUERYABLE_SEC_FORMS = CORE_SEC_FORMS | {"DEF 14A", "S-1", "S-3", "13F-HR", "SC 13D", "SC 13G"}
+RESULTS_WINDOW_MAX_DAYS = 75
+SEC_JSON_CACHE_SECONDS = 5 * 60
 
 
 @dataclass
@@ -441,6 +448,48 @@ def _target_years_from_query(query: str) -> set[str]:
     return years
 
 
+def _base_sec_form(form: str | None) -> str:
+    clean = str(form or "").strip().upper()
+    return clean[:-2] if clean.endswith("/A") else clean
+
+
+def _requested_forms_from_query(query: str) -> set[str]:
+    clean = re.sub(r"\s+", " ", str(query or "").lower()).strip()
+    patterns = {
+        "10-K": r"(?<![a-z0-9])10\s*[- ]?\s*k(?![a-z0-9])",
+        "10-Q": r"(?<![a-z0-9])10\s*[- ]?\s*q(?![a-z0-9])",
+        "8-K": r"(?<![a-z0-9])8\s*[- ]?\s*k(?![a-z0-9])",
+        "6-K": r"(?<![a-z0-9])6\s*[- ]?\s*k(?![a-z0-9])",
+        "20-F": r"(?<![a-z0-9])20\s*[- ]?\s*f(?![a-z0-9])",
+        "40-F": r"(?<![a-z0-9])40\s*[- ]?\s*f(?![a-z0-9])",
+        "DEF 14A": r"(?<![a-z0-9])def\s*14a(?![a-z0-9])",
+        "13F-HR": r"(?<![a-z0-9])13f(?:\s*[- ]?\s*hr)?(?![a-z0-9])",
+        "SC 13D": r"(?<![a-z0-9])(?:sc\s*)?13d(?![a-z0-9])",
+        "SC 13G": r"(?<![a-z0-9])(?:sc\s*)?13g(?![a-z0-9])",
+        "S-1": r"(?<![a-z0-9])s\s*[- ]?\s*1(?![a-z0-9])",
+        "S-3": r"(?<![a-z0-9])s\s*[- ]?\s*3(?![a-z0-9])",
+    }
+    explicit = {form for form, pattern in patterns.items() if re.search(pattern, clean)}
+    if explicit:
+        return explicit
+    if any(term in clean for term in ("annual report", "annual filing")):
+        return {"10-K", "20-F", "40-F"}
+    if any(term in clean for term in ("quarterly report", "quarterly filing")):
+        return {"10-Q", "6-K"}
+    if any(term in clean for term in ("proxy statement", "proxy filing")):
+        return {"DEF 14A"}
+    return set()
+
+
+def _filing_search_intent(query: str) -> dict[str, Any]:
+    return {
+        "requestedForms": sorted(_requested_forms_from_query(query)),
+        "requestedYears": sorted(_target_years_from_query(query)),
+        "requestedQuarter": _target_quarter_from_query(query),
+        "needsResultsDocument": _query_needs_results_document(query),
+    }
+
+
 def _target_quarter_from_query(query: str) -> int | None:
     clean = query.lower()
     match = re.search(r"\bq([1-4])\b", clean)
@@ -471,13 +520,19 @@ def _quarter_from_date(value: str | None) -> int | None:
 def _document_has_target_quarter(document_text: str, *, quarter: int, year: str) -> bool:
     short_year = year[-2:]
     clean = document_text.lower()
+    compact = re.sub(r"[^a-z0-9]+", "", clean)
+    quarter_end = {1: "0331", 2: "0630", 3: "0930", 4: "1231"}[quarter]
     patterns = [
         rf"(?:^|[^a-z0-9])q{quarter}[-_ ]?{short_year}(?:$|[^a-z0-9])",
         rf"(?:^|[^a-z0-9])q{quarter}[-_ ]?{year}(?:$|[^a-z0-9])",
         rf"(?:^|[^a-z0-9]){year}[-_ ]?q{quarter}(?:$|[^a-z0-9])",
         rf"(?:^|[^a-z0-9]){short_year}[-_ ]?q{quarter}(?:$|[^a-z0-9])",
     ]
-    return any(re.search(pattern, clean) for pattern in patterns)
+    return (
+        any(re.search(pattern, clean) for pattern in patterns)
+        or f"{quarter_end}{year}" in compact
+        or f"{year}{quarter_end}" in compact
+    )
 
 
 def _document_has_different_quarter(document_text: str, *, quarter: int, years: set[str]) -> bool:
@@ -491,14 +546,22 @@ def _document_has_different_quarter(document_text: str, *, quarter: int, years: 
     return False
 
 
-def _filing_is_before_target_quarter_end(filing_date: str, *, quarter: int, year: str) -> bool:
-    if not filing_date.startswith(year) or len(filing_date) < 7:
-        return False
+def _results_window_days(filing_date: str, *, quarter: int, year: str) -> int | None:
+    quarter_end_days = {1: 31, 2: 30, 3: 30, 4: 31}
     try:
-        filing_month = int(filing_date[5:7])
-    except ValueError:
-        return False
-    return filing_month <= quarter * 3
+        filed = datetime.strptime(filing_date, "%Y-%m-%d")
+        quarter_end = datetime(int(year), quarter * 3, quarter_end_days[quarter])
+    except (TypeError, ValueError):
+        return None
+    return (filed - quarter_end).days
+
+
+def _filing_is_in_results_window(filing_date: str, *, quarter: int, years: set[str]) -> bool:
+    return any(
+        (days := _results_window_days(filing_date, quarter=quarter, year=year)) is not None
+        and 0 <= days <= RESULTS_WINDOW_MAX_DAYS
+        for year in years
+    )
 
 
 def _query_needs_results_document(query: str) -> bool:
@@ -518,11 +581,28 @@ def _infer_ticker(company: str | None, ticker: str | None) -> str | None:
     return None
 
 
-def _sec_get_json(url: str) -> Any:
+@lru_cache(maxsize=16)
+def _sec_get_json_cached(url: str, cache_bucket: int) -> Any:
     with httpx.Client(timeout=45, headers={"User-Agent": _agent_user_agent(), "Accept": "application/json"}) as client:
         response = client.get(url)
         response.raise_for_status()
         return response.json()
+
+
+def _sec_get_json(url: str) -> Any:
+    return _sec_get_json_cached(url, int(time.time() // SEC_JSON_CACHE_SECONDS))
+
+
+def _company_name_tokens(value: str | None) -> list[str]:
+    ignored = {
+        "inc", "incorporated", "corp", "corporation", "company", "co", "plc", "ltd", "limited",
+        "holdings", "holding", "group", "sa", "se", "nv", "the",
+    }
+    return [
+        token
+        for token in re.findall(r"[a-z0-9]+", str(value or "").lower())
+        if token not in ignored and len(token) >= 2
+    ]
 
 
 def resolve_sec_company(company: str | None = None, ticker: str | None = None) -> dict[str, Any] | None:
@@ -530,17 +610,39 @@ def resolve_sec_company(company: str | None = None, ticker: str | None = None) -
     companies = _sec_get_json(SEC_COMPANY_TICKERS_URL)
     rows = companies.values() if isinstance(companies, dict) else companies
     clean_company = (company or "").strip().lower()
+    query_tokens = {
+        token.upper()
+        for token in re.findall(r"(?<![a-z0-9])[a-z][a-z0-9.-]{0,9}(?![a-z0-9])", clean_company)
+    }
 
     best: dict[str, Any] | None = None
+    fuzzy_best: tuple[float, dict[str, Any]] | None = None
+    query_words = set(_company_name_tokens(clean_company))
     for row in rows:
         row_ticker = str(row.get("ticker") or "").upper()
         row_title = str(row.get("title") or "")
         if inferred_ticker and row_ticker == inferred_ticker:
             best = row
             break
+        if row_ticker and row_ticker in query_tokens:
+            best = row
+            break
         if clean_company and clean_company in row_title.lower():
             best = row
             break
+        if row_title and row_title.lower() in clean_company:
+            best = row
+            break
+        title_words = _company_name_tokens(row_title)
+        overlap = query_words.intersection(title_words)
+        primary_match = bool(title_words and title_words[0] in query_words and len(title_words[0]) >= 4)
+        if not primary_match and len(overlap) < min(2, len(title_words)):
+            continue
+        score = len(overlap) / max(1, len(title_words)) + (1.0 if primary_match else 0.0)
+        if fuzzy_best is None or score > fuzzy_best[0]:
+            fuzzy_best = (score, row)
+    if not best and fuzzy_best:
+        best = fuzzy_best[1]
     if not best:
         return None
 
@@ -578,31 +680,52 @@ def _score_filing(
     years = _target_years_from_query(clean_query)
     target_quarter = _target_quarter_from_query(clean_query)
     needs_results = _query_needs_results_document(clean_query)
+    requested_forms = _requested_forms_from_query(clean_query)
+    base_form = _base_sec_form(form)
+    periodic_form = base_form in {"10-K", "20-F", "40-F", "10-Q"}
     document_text = f"{description or ''} {document or ''}"
     score = 1.0
-    if form in {"10-K", "10-Q", "8-K", "6-K", "20-F"}:
+    if base_form in CORE_SEC_FORMS:
         score += 2.0
+    if requested_forms and base_form in requested_forms:
+        score += 40.0
     if "results" in clean_query or "earnings" in clean_query:
-        if form in {"8-K", "6-K"}:
+        if base_form in {"8-K", "6-K"}:
+            score += 12.0
+        if base_form in {"10-K", "10-Q"}:
             score += 4.0
-        if form in {"10-K", "10-Q"}:
-            score += 2.0
     if "q4" in clean_query or "fourth quarter" in clean_query:
-        if form in {"8-K", "10-K"}:
+        if base_form in {"8-K", "10-K"}:
             score += 3.0
     for year in years:
-        if year in (report_date or ""):
-            score += 4.0
-        if year in filing_date:
-            score += 2.0
-        if target_quarter and _quarter_from_date(report_date) == target_quarter and str(report_date or "").startswith(year):
-            score += 8.0
+        if periodic_form:
+            if year in (report_date or ""):
+                score += 18.0
+            if year in filing_date:
+                score += 8.0
+            if target_quarter and _quarter_from_date(report_date) == target_quarter and str(report_date or "").startswith(year):
+                score += 18.0
+        elif not (needs_results and target_quarter):
+            if year in filing_date:
+                score += 18.0
+            elif year in (report_date or ""):
+                score += 8.0
         if target_quarter == 4 and filing_date.startswith(str(int(year) + 1)) and filing_date[5:7] in {"01", "02"}:
             score += 4.0
         if target_quarter and _document_has_target_quarter(document_text, quarter=target_quarter, year=year):
             score += 8.0
-        if needs_results and target_quarter and _filing_is_before_target_quarter_end(filing_date, quarter=target_quarter, year=year):
-            score -= 14.0
+    if needs_results and target_quarter and years and not periodic_form:
+        window_days = [
+            days
+            for year in years
+            if (days := _results_window_days(filing_date, quarter=target_quarter, year=year)) is not None
+        ]
+        if any(0 <= days <= RESULTS_WINDOW_MAX_DAYS for days in window_days):
+            score += 30.0
+        elif any(days < 0 for days in window_days):
+            score -= 30.0
+        else:
+            score -= 10.0
     if target_quarter and years and _document_has_different_quarter(document_text, quarter=target_quarter, years=years):
         score -= 5.0
     if any(term in document_text.lower() for term in ("stocksplit", "stock split", "compensation", "employment agreement", "bylaws")):
@@ -610,6 +733,106 @@ def _score_filing(
     if description and any(term in description.lower() for term in ("earnings", "results", "ex-99", "press release")):
         score += 2.0
     return score
+
+
+def _period_label(form: str, report_date: str | None) -> str | None:
+    if not report_date or len(report_date) < 7:
+        return None
+    year = report_date[:4]
+    base_form = _base_sec_form(form)
+    if base_form in {"10-K", "20-F", "40-F"}:
+        return f"FY {year}"
+    if base_form in {"10-Q", "6-K"}:
+        quarter = _quarter_from_date(report_date)
+        return f"Q{quarter} {year}" if quarter else year
+    return report_date
+
+
+def _filing_title(ticker: str, form: str, filing_date: str, report_date: str | None) -> str:
+    base_form = _base_sec_form(form)
+    period = _period_label(form, report_date)
+    amendment = " amendment" if str(form).upper().endswith("/A") else ""
+    if base_form in {"10-K", "20-F", "40-F"}:
+        return f"{ticker} {period or 'Annual Report'} {base_form}{amendment}"
+    if base_form in {"10-Q", "6-K"}:
+        return f"{ticker} {period or 'Quarterly Report'} {base_form}{amendment}"
+    return f"{ticker} {base_form}{amendment} filed {filing_date}"
+
+
+def _candidate_match_details(
+    *,
+    form: str,
+    filing_date: str,
+    report_date: str | None,
+    requested_forms: set[str],
+    target_years: set[str],
+    target_quarter: int | None,
+    needs_results: bool = False,
+) -> tuple[bool, list[str]]:
+    base_form = _base_sec_form(form)
+    periodic_form = base_form in {"10-K", "20-F", "40-F", "10-Q"}
+    reasons: list[str] = []
+    form_match = not requested_forms or base_form in requested_forms
+    if requested_forms and form_match:
+        reasons.append(f"Exact {base_form} form")
+    report_year_match = bool(target_years and str(report_date or "")[:4] in target_years)
+    filing_year_match = bool(target_years and filing_date[:4] in target_years)
+    if report_year_match:
+        reasons.append(f"Reporting period {str(report_date)[:4]}")
+    elif filing_year_match:
+        reasons.append(f"Filed in {filing_date[:4]}")
+    results_window_match = bool(
+        needs_results
+        and target_quarter
+        and target_years
+        and _filing_is_in_results_window(filing_date, quarter=target_quarter, years=target_years)
+    )
+    quarter_match = bool(
+        target_quarter
+        and (
+            periodic_form and _quarter_from_date(report_date) == target_quarter
+            or not periodic_form and results_window_match
+        )
+    )
+    if quarter_match:
+        reasons.append(
+            f"Q{target_quarter} reporting period"
+            if periodic_form
+            else f"Q{target_quarter} results filing window"
+        )
+    year_match = report_year_match if periodic_form else results_window_match or report_year_match or filing_year_match
+    exact = form_match and (not target_years or year_match) and (not target_quarter or quarter_match)
+    if not reasons:
+        reasons.append("Official SEC filing")
+    return exact, reasons
+
+
+def _filing_batches(submissions: dict[str, Any], target_years: set[str]) -> tuple[list[dict[str, Any]], int]:
+    filings = submissions.get("filings", {}) if isinstance(submissions, dict) else {}
+    batches = [filings.get("recent", {})]
+    archives_loaded = 0
+    if not target_years:
+        return batches, archives_loaded
+
+    target_numbers = {int(year) for year in target_years}
+    for archive in filings.get("files", []):
+        name = str(archive.get("name") or "").strip()
+        filing_from = str(archive.get("filingFrom") or "")[:4]
+        filing_to = str(archive.get("filingTo") or "")[:4]
+        if not name or not filing_from.isdigit() or not filing_to.isdigit():
+            continue
+        archive_start = int(filing_from)
+        archive_end = int(filing_to)
+        if not any(archive_start <= year + 1 and archive_end >= year for year in target_numbers):
+            continue
+        try:
+            payload = _sec_get_json(SEC_SUBMISSIONS_FILE_URL.format(name=name))
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            batches.append(payload)
+            archives_loaded += 1
+    return batches, archives_loaded
 
 
 def find_official_source_candidates(
@@ -629,45 +852,97 @@ def find_official_source_candidates(
         }
 
     submissions = _sec_get_json(SEC_SUBMISSIONS_URL.format(cik=resolved["cik"]))
-    recent = submissions.get("filings", {}).get("recent", {})
     candidates: list[dict[str, Any]] = []
-    forms = recent.get("form", [])
-    accessions = recent.get("accessionNumber", [])
-    primary_docs = recent.get("primaryDocument", [])
-    filing_dates = recent.get("filingDate", [])
-    report_dates = recent.get("reportDate", [])
-    descriptions = recent.get("primaryDocDescription", [])
     needs_results = _query_needs_results_document(task)
     target_quarter = _target_quarter_from_query(task)
     target_years = _target_years_from_query(task)
+    requested_forms = _requested_forms_from_query(task)
+    intent = _filing_search_intent(task)
+    batches, archives_loaded = _filing_batches(submissions, target_years)
+    filings_reviewed = 0
+    exhibit_directories_checked = 0
+    seen_documents: set[tuple[str, str]] = set()
 
-    for index, form in enumerate(forms):
-        if form not in {"10-K", "10-Q", "8-K", "6-K", "20-F"}:
-            continue
-        accession = accessions[index]
-        primary_doc = primary_docs[index]
-        filing_date = filing_dates[index]
-        report_date = report_dates[index] if index < len(report_dates) else None
-        description = descriptions[index] if index < len(descriptions) else None
-        score = _score_filing(task, form, filing_date, report_date, description, primary_doc)
-        primary_url = _filing_document_url(resolved["cikInt"], accession, primary_doc)
-        candidates.append({
-            "title": f"{resolved['ticker']} {form} filed {filing_date}",
-            "url": primary_url,
-            "source": "SEC EDGAR",
-            "domain": "sec.gov",
-            "form": form,
-            "filingDate": filing_date,
-            "reportDate": report_date,
-            "accessionNumber": accession,
-            "document": primary_doc,
-            "score": round(score, 2),
-            "confidence": min(0.98, score / 12.0),
-            "reason": f"Official SEC {form} filing. {description or ''}".strip(),
-            "trusted": True,
-        })
+    for batch in batches:
+        forms = batch.get("form", []) if isinstance(batch, dict) else []
+        accessions = batch.get("accessionNumber", []) if isinstance(batch, dict) else []
+        primary_docs = batch.get("primaryDocument", []) if isinstance(batch, dict) else []
+        filing_dates = batch.get("filingDate", []) if isinstance(batch, dict) else []
+        report_dates = batch.get("reportDate", []) if isinstance(batch, dict) else []
+        descriptions = batch.get("primaryDocDescription", []) if isinstance(batch, dict) else []
 
-        if form in {"8-K", "6-K"} and score >= 10:
+        for index, raw_form in enumerate(forms):
+            filings_reviewed += 1
+            form = str(raw_form or "").upper()
+            base_form = _base_sec_form(form)
+            if requested_forms:
+                if base_form not in requested_forms:
+                    continue
+            elif base_form not in CORE_SEC_FORMS:
+                continue
+            if base_form not in QUERYABLE_SEC_FORMS:
+                continue
+            if index >= len(accessions) or index >= len(primary_docs) or index >= len(filing_dates):
+                continue
+            accession = str(accessions[index] or "").strip()
+            primary_doc = str(primary_docs[index] or "").strip()
+            filing_date = str(filing_dates[index] or "").strip()
+            if not accession or not primary_doc or not filing_date:
+                continue
+            document_key = (accession, primary_doc)
+            if document_key in seen_documents:
+                continue
+            seen_documents.add(document_key)
+            report_date = str(report_dates[index] or "").strip() if index < len(report_dates) else None
+            description = str(descriptions[index] or "").strip() if index < len(descriptions) else None
+            score = _score_filing(task, form, filing_date, report_date, description, primary_doc)
+            exact_match, match_reasons = _candidate_match_details(
+                form=form,
+                filing_date=filing_date,
+                report_date=report_date,
+                requested_forms=requested_forms,
+                target_years=target_years,
+                target_quarter=target_quarter,
+                needs_results=needs_results,
+            )
+            primary_url = _filing_document_url(resolved["cikInt"], accession, primary_doc)
+            candidates.append({
+                "title": _filing_title(resolved["ticker"], form, filing_date, report_date),
+                "url": primary_url,
+                "source": "SEC EDGAR",
+                "domain": "sec.gov",
+                "form": form,
+                "baseForm": base_form,
+                "filingDate": filing_date,
+                "reportDate": report_date,
+                "periodLabel": _period_label(form, report_date),
+                "accessionNumber": accession,
+                "document": primary_doc,
+                "score": round(score, 2),
+                "confidence": round(max(0.2, min(0.99, (score + 10.0) / 70.0)), 3),
+                "matchQuality": "Exact match" if exact_match else "Relevant filing",
+                "matchReasons": match_reasons,
+                "isExactMatch": exact_match,
+                "isAmendment": form.endswith("/A"),
+                "reason": f"Official SEC {form} filing. {description or ''}".strip(),
+                "trusted": True,
+            })
+
+            include_exhibits = (
+                base_form in {"8-K", "6-K"}
+                and needs_results
+                and (not requested_forms or base_form in requested_forms)
+                and score >= 10
+                and exhibit_directories_checked < 6
+                and (
+                    not target_quarter
+                    or not target_years
+                    or _filing_is_in_results_window(filing_date, quarter=target_quarter, years=target_years)
+                )
+            )
+            if not include_exhibits:
+                continue
+            exhibit_directories_checked += 1
             for item in _sec_directory_documents(resolved["cikInt"], accession):
                 name = str(item.get("name") or "")
                 low_name = name.lower()
@@ -677,34 +952,73 @@ def find_official_source_candidates(
                     continue
                 if not any(low_name.endswith(ext) for ext in (".htm", ".html", ".pdf", ".txt")):
                     continue
-                if needs_results and target_quarter and target_years and not any(
+                if target_quarter and target_years and not any(
                     _document_has_target_quarter(name, quarter=target_quarter, year=year)
                     for year in target_years
                 ) and not any(term in low_name for term in ("earn", "result", "letter")):
                     continue
+                exhibit_key = (accession, name)
+                if exhibit_key in seen_documents:
+                    continue
+                seen_documents.add(exhibit_key)
                 item_score = _score_filing(task, form, filing_date, report_date, f"{description or ''} {name}", name) + 3.0
                 candidates.append({
-                    "title": f"{resolved['ticker']} earnings exhibit {filing_date}",
+                    "title": f"{resolved['ticker']} {(_period_label(form, report_date) or filing_date)} earnings exhibit",
                     "url": _filing_document_url(resolved["cikInt"], accession, name),
                     "source": "SEC EDGAR exhibit",
                     "domain": "sec.gov",
                     "form": form,
+                    "baseForm": base_form,
                     "filingDate": filing_date,
                     "reportDate": report_date,
+                    "periodLabel": _period_label(form, report_date),
                     "accessionNumber": accession,
                     "document": name,
                     "score": round(item_score, 2),
-                    "confidence": min(0.99, item_score / 12.0),
+                    "confidence": round(max(0.2, min(0.99, (item_score + 10.0) / 70.0)), 3),
+                    "matchQuality": "Exact match" if exact_match else "Relevant exhibit",
+                    "matchReasons": [*match_reasons, "Earnings exhibit"],
+                    "isExactMatch": exact_match,
+                    "isAmendment": False,
                     "reason": "Official SEC filing exhibit likely containing the earnings release or result document.",
                     "trusted": True,
                 })
 
-    candidates = sorted(candidates, key=lambda item: (item.get("score", 0), item.get("confidence", 0), item.get("filingDate") or ""), reverse=True)
+    candidates = sorted(
+        candidates,
+        key=lambda item: (
+            item.get("score", 0),
+            bool(item.get("isExactMatch")),
+            not bool(item.get("isAmendment")),
+            item.get("reportDate") or "",
+            item.get("filingDate") or "",
+        ),
+        reverse=True,
+    )
+    selected = candidates[: max(1, min(int(limit), 20))]
+    for index, candidate in enumerate(selected):
+        candidate["isBestMatch"] = index == 0
+    requested_label = ", ".join(sorted(requested_forms)) if requested_forms else "core filings"
+    period_bits = [*(f"FY {year}" for year in sorted(target_years))]
+    if target_quarter:
+        period_bits.append(f"Q{target_quarter}")
+    period_label = " / ".join(period_bits)
+    if candidates:
+        message = f"Found {len(candidates)} {requested_label} candidate(s){f' for {period_label}' if period_label else ''}."
+    else:
+        message = f"No {requested_label} filing matched{f' {period_label}' if period_label else ''} for {resolved['ticker']}."
     return {
         "query": task,
         "resolvedCompany": resolved,
-        "candidates": candidates[: max(1, min(int(limit), 20))],
-        "message": f"Found {len(candidates)} official SEC candidate(s).",
+        "intent": intent,
+        "candidates": selected,
+        "searched": {
+            "filingsReviewed": filings_reviewed,
+            "archivesLoaded": archives_loaded,
+            "exhibitDirectoriesChecked": exhibit_directories_checked,
+            "matchingCandidates": len(candidates),
+        },
+        "message": message,
     }
 
 

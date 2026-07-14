@@ -164,9 +164,34 @@ type AgentCandidate = {
     url: string;
     source?: string;
     filingDate?: string;
+    reportDate?: string;
+    periodLabel?: string;
     form?: string;
+    baseForm?: string;
     confidence?: number;
     trusted?: boolean;
+    matchQuality?: string;
+    matchReasons?: string[];
+    isExactMatch?: boolean;
+    isBestMatch?: boolean;
+    isAmendment?: boolean;
+};
+
+type AgentSearchResponse = {
+    candidates?: AgentCandidate[];
+    message?: string;
+    resolvedCompany?: { ticker?: string; title?: string } | null;
+    intent?: {
+        requestedForms?: string[];
+        requestedYears?: string[];
+        requestedQuarter?: number | null;
+        needsResultsDocument?: boolean;
+    };
+    searched?: {
+        filingsReviewed?: number;
+        archivesLoaded?: number;
+        matchingCandidates?: number;
+    };
 };
 
 type ChatMessage = {
@@ -513,11 +538,10 @@ export const InvestmentBrainChat: React.FC = () => {
     const [libraryQuery, setLibraryQuery] = useState('');
     const [librarySearch, setLibrarySearch] = useState<LibrarySearch | null>(null);
     const [isSearching, setIsSearching] = useState(false);
-    const [agentTask, setAgentTask] = useState('Download Netflix Q4 2025 results');
-    const [agentCompany, setAgentCompany] = useState('Netflix');
-    const [agentTicker, setAgentTicker] = useState('NFLX');
+    const [agentTask, setAgentTask] = useState('');
     const [agentUrl, setAgentUrl] = useState('');
     const [agentCandidates, setAgentCandidates] = useState<AgentCandidate[]>([]);
+    const [agentSearch, setAgentSearch] = useState<AgentSearchResponse | null>(null);
     const [isAgentWorking, setIsAgentWorking] = useState(false);
     const outputRef = useRef<HTMLDivElement | null>(null);
 
@@ -917,17 +941,20 @@ export const InvestmentBrainChat: React.FC = () => {
     const findOfficialSources = async () => {
         if (!ready || !agentTask.trim() || isAgentWorking) return;
         setIsAgentWorking(true);
-        setNotice('Finding official company sources...');
+        setAgentCandidates([]);
+        setAgentSearch(null);
+        setNotice('Searching SEC filings by form and reporting period...');
         try {
             const response = await request(api('/api/brain/agent/find-official-sources'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ task: agentTask.trim(), company: agentCompany.trim() || undefined, ticker: agentTicker.trim() || undefined, limit: 6 }),
+                body: JSON.stringify({ task: agentTask.trim(), limit: 10 }),
             }, 45000);
             if (!response.ok) throw new Error(await errorText(response, 'Official source search failed.'));
-            const payload = await response.json() as { candidates?: AgentCandidate[]; message?: string };
+            const payload = await response.json() as AgentSearchResponse;
             setAgentCandidates(payload.candidates ?? []);
-            setNotice(payload.candidates?.length ? `${payload.candidates.length} official source candidates found.` : payload.message ?? 'No official sources found.');
+            setAgentSearch(payload);
+            setNotice(payload.message ?? (payload.candidates?.length ? `${payload.candidates.length} official filings found.` : 'No matching official filing found.'));
         } catch (error) {
             setNotice(error instanceof Error ? error.message : 'Official source search failed.');
         } finally {
@@ -983,8 +1010,6 @@ export const InvestmentBrainChat: React.FC = () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     task: agentTask.trim(),
-                    company: agentCompany.trim() || undefined,
-                    ticker: agentTicker.trim() || undefined,
                     importBest: true,
                     uploadToDrive: true,
                     embedAfterImport: true,
@@ -992,8 +1017,9 @@ export const InvestmentBrainChat: React.FC = () => {
                 }),
             }, 90000);
             if (!response.ok) throw new Error(await errorText(response, 'Research agent could not complete the import.'));
-            const payload = await response.json() as { plan?: { candidates?: AgentCandidate[] }; import?: { status?: string; chunks?: unknown[] } };
+            const payload = await response.json() as { plan?: AgentSearchResponse; import?: { status?: string; chunks?: unknown[] } };
             setAgentCandidates(payload.plan?.candidates ?? []);
+            setAgentSearch(payload.plan ?? null);
             setNotice(payload.import?.status === 'skipped'
                 ? 'The strongest official source was already indexed.'
                 : `Official source imported as ${payload.import?.chunks?.length ?? 0} passages.`);
@@ -1211,26 +1237,65 @@ export const InvestmentBrainChat: React.FC = () => {
                         </section>
 
                         <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
-                            <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-violet-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Acquire research</h2></div>
-                            <p className="mt-2 text-xs leading-5 text-slate-500">Find an official filing or import a public source. It is saved to Drive, indexed, and made searchable.</p>
-                            <textarea value={agentTask} onChange={event => setAgentTask(event.target.value)} rows={2} className="mt-3 w-full resize-none rounded-md border border-white/[0.09] bg-white/[0.025] px-3 py-2 text-sm leading-5 text-white outline-none placeholder:text-slate-600 focus:border-violet-500/35" placeholder="Download a company result or filing" />
-                            <div className="mt-2 grid grid-cols-2 gap-2">
-                                <input value={agentCompany} onChange={event => setAgentCompany(event.target.value)} className="h-9 min-w-0 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-sm text-white outline-none focus:border-violet-500/35" placeholder="Company" />
-                                <input value={agentTicker} onChange={event => setAgentTicker(event.target.value.toUpperCase())} className="h-9 min-w-0 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 font-mono text-sm text-white outline-none focus:border-violet-500/35" placeholder="Ticker" />
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2"><FileSearch className="h-4 w-4 text-violet-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Official filing finder</h2></div>
+                                <span className="rounded border border-white/[0.08] px-1.5 py-1 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-500">SEC EDGAR</span>
                             </div>
-                            <div className="mt-2 grid grid-cols-2 gap-2">
-                                <Button type="button" onClick={() => void findOfficialSources()} disabled={!ready || !agentTask.trim() || isAgentWorking}><FileSearch className="h-3.5 w-3.5" /> Find</Button>
-                                <Button type="button" tone="primary" onClick={() => void runAndImport()} disabled={!ready || !agentTask.trim() || isAgentWorking}><Sparkles className="h-3.5 w-3.5" /> Import best</Button>
+                            <div className="mt-3 flex gap-2">
+                                <input
+                                    value={agentTask}
+                                    onChange={event => { setAgentTask(event.target.value); setAgentSearch(null); setAgentCandidates([]); }}
+                                    onKeyDown={event => { if (event.key === 'Enter') void findOfficialSources(); }}
+                                    aria-label="Find an official filing"
+                                    className="h-10 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-violet-500/35"
+                                    placeholder="META 2025 10-K"
+                                />
+                                <Button type="button" tone="primary" onClick={() => void findOfficialSources()} disabled={!ready || !agentTask.trim() || isAgentWorking} className="min-h-10 shrink-0 px-3" aria-label="Search SEC filings">
+                                    {isAgentWorking ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                                </Button>
                             </div>
-                            <div className="mt-3 flex gap-2 border-t border-white/[0.07] pt-3">
-                                <input value={agentUrl} onChange={event => setAgentUrl(event.target.value)} className="h-9 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-violet-500/35" placeholder="Paste a public URL" />
-                                <Button type="button" onClick={() => void importUrl(agentUrl)} disabled={!ready || !agentUrl.trim() || isAgentWorking} className="min-h-9 px-2.5"><Plus className="h-3.5 w-3.5" /></Button>
-                            </div>
-                            {agentCandidates.length > 0 && (
-                                <div className="mt-3 space-y-2 border-t border-white/[0.07] pt-3">
-                                    {agentCandidates.slice(0, 3).map(candidate => <article key={candidate.url} className="rounded-md border border-white/[0.06] bg-black/15 px-3 py-2.5"><div className="flex items-start justify-between gap-2"><a href={candidate.url} target="_blank" rel="noreferrer" className="min-w-0 text-xs font-semibold leading-5 text-slate-200 hover:text-violet-200">{candidate.title}</a><Button type="button" onClick={() => void importUrl(candidate.url, candidate.title, true)} disabled={isAgentWorking} className="min-h-7 shrink-0 px-2 text-[9px]">Add</Button></div><p className="mt-1 text-[10px] text-slate-500">{[candidate.form, candidate.filingDate, candidate.source].filter(Boolean).join(' · ')}</p></article>)}
+
+                            {agentSearch && (
+                                <div className="mt-3 border-t border-white/[0.07] pt-3">
+                                    <div className="flex flex-wrap items-center gap-1.5">
+                                        {agentSearch.resolvedCompany?.ticker && <span className="rounded border border-violet-400/20 bg-violet-400/[0.08] px-2 py-1 font-mono text-[10px] font-bold text-violet-200">{agentSearch.resolvedCompany.ticker}</span>}
+                                        {(agentSearch.intent?.requestedForms ?? []).map(form => <span key={form} className="rounded border border-white/[0.08] px-2 py-1 text-[9px] font-bold uppercase text-slate-400">{form}</span>)}
+                                        {(agentSearch.intent?.requestedYears ?? []).map(year => <span key={year} className="rounded border border-white/[0.08] px-2 py-1 text-[9px] font-bold uppercase text-slate-400">FY {year}</span>)}
+                                        {agentSearch.intent?.requestedQuarter && <span className="rounded border border-white/[0.08] px-2 py-1 text-[9px] font-bold uppercase text-slate-400">Q{agentSearch.intent.requestedQuarter}</span>}
+                                    </div>
+                                    <p className="mt-2 text-[11px] leading-5 text-slate-500">{agentSearch.message}</p>
                                 </div>
                             )}
+
+                            {agentCandidates.length > 0 && (
+                                <div className="mt-3 border-t border-white/[0.07] pt-3">
+                                    <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
+                                        {agentCandidates.slice(0, 8).map(candidate => (
+                                            <article key={candidate.url} className={cn('rounded-md border bg-black/15 px-3 py-3', candidate.isBestMatch && candidate.isExactMatch ? 'border-emerald-400/25' : 'border-white/[0.06]')}>
+                                                <div className="flex items-start justify-between gap-3">
+                                                    <a href={candidate.url} target="_blank" rel="noreferrer" className="min-w-0 text-xs font-semibold leading-5 text-slate-100 transition-colors hover:text-violet-200">{candidate.title}</a>
+                                                    <Button type="button" onClick={() => void importUrl(candidate.url, candidate.title, true)} disabled={isAgentWorking} className="min-h-7 shrink-0 px-2 text-[9px]">Add</Button>
+                                                </div>
+                                                <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-slate-500">
+                                                    <span className={candidate.isExactMatch ? 'font-semibold text-emerald-300' : 'text-slate-400'}>{candidate.matchQuality ?? 'Official filing'}</span>
+                                                    {candidate.periodLabel && <span>{candidate.periodLabel}</span>}
+                                                    {candidate.filingDate && <span>Filed {candidate.filingDate}</span>}
+                                                    {candidate.isAmendment && <span>Amended</span>}
+                                                </div>
+                                                {candidate.matchReasons?.length ? <p className="mt-1 text-[10px] leading-4 text-slate-600">{candidate.matchReasons.join(' · ')}</p> : null}
+                                            </article>
+                                        ))}
+                                    </div>
+                                    <Button type="button" tone="success" onClick={() => void runAndImport()} disabled={!ready || isAgentWorking || agentCandidates.length === 0} className="mt-3 w-full"><Sparkles className="h-3.5 w-3.5" /> Import top match</Button>
+                                </div>
+                            )}
+
+                            {agentSearch && agentCandidates.length === 0 && <p className="mt-3 rounded-md border border-amber-400/15 bg-amber-400/[0.04] px-3 py-2 text-xs leading-5 text-amber-200/80">No matching SEC filing was returned. Check the company or reporting period.</p>}
+
+                            <div className="mt-4 flex gap-2 border-t border-white/[0.07] pt-3">
+                                <input value={agentUrl} onChange={event => setAgentUrl(event.target.value)} className="h-9 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-violet-500/35" placeholder="Import public URL" />
+                                <Button type="button" onClick={() => void importUrl(agentUrl)} disabled={!ready || !agentUrl.trim() || isAgentWorking} className="min-h-9 px-2.5" aria-label="Import public URL"><Plus className="h-3.5 w-3.5" /></Button>
+                            </div>
                         </section>
                     </aside>
                 </div>
