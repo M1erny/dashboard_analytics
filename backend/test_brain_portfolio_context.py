@@ -108,7 +108,11 @@ try:
     assert "NAV/equity" in prompt_context
     assert "Pre-ranked 3m position-adjusted leaders" in prompt_context
     assert "Ranking guardrail" in prompt_context
+    assert "MANDATORY RANKING FACTS" in prompt_context
+    assert "realized YTD contribution leader=LONG Long +10.0%" in prompt_context
     assert "SHORT Short | target +40.0% | current +35.0%" in prompt_context
+    assert "SHORT INTERPRETATION: underlying 3m +10.0% becomes BOOK EFFECT 3m -10.0%" in prompt_context
+    assert "must never be called a book leader" in prompt_context
 
     assert server._brain_market_data_intent("Analyze the moat in my Drive research")["requested"] is False
     live_intent = server._brain_market_data_intent("Which holding has weak momentum and adverse volume?")

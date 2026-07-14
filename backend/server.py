@@ -3020,6 +3020,27 @@ def _format_brain_portfolio_context(context: dict[str, Any]) -> str:
             "Ranking guardrail: 'YTD portfolio winner/detractor' means realized dated-ledger YTD contribution. "
             "Raw calendar-YTD security return is a different market statistic, and since-rebalance contribution is a different holding period."
         )
+        mandatory_rankings = []
+        for label, key in (
+            ("realized YTD contribution leader", "realizedYtdContributionLeaders"),
+            ("realized YTD contribution laggard", "realizedYtdContributionLaggards"),
+            ("since-rebalance contribution leader", "sinceRebalanceContributionLeaders"),
+            ("since-rebalance contribution laggard", "sinceRebalanceContributionLaggards"),
+            ("raw calendar-YTD security-return leader", "calendarYtdSecurityReturnLeaders"),
+            ("raw calendar-YTD security-return laggard", "calendarYtdSecurityReturnLaggards"),
+        ):
+            items = performance_rankings.get(key, [])
+            if items:
+                item = items[0]
+                mandatory_rankings.append(
+                    f"{label}={item.get('ticker')} {item.get('side')} {pct(item.get('value'))}"
+                )
+        if mandatory_rankings:
+            lines.append(
+                "MANDATORY RANKING FACTS (copy these tickers, signs, and metric labels exactly when the user asks about performance): "
+                + "; ".join(mandatory_rankings)
+                + "."
+            )
     technical_screen = context.get("volumeMomentumScreen", {})
     review_candidates = technical_screen.get("reviewCandidates", [])
     if review_candidates:
@@ -3054,11 +3075,19 @@ def _format_brain_portfolio_context(context: dict[str, Any]) -> str:
         position_momentum = item.get("positionMomentum", {})
         volume = item.get("volume", {})
         technical = item.get("technical", {})
+        side = item.get("side")
+        side_interpretation = (
+            f"SHORT INTERPRETATION: underlying 3m {pct(returns.get('3m'))} becomes BOOK EFFECT 3m "
+            f"{pct(position_momentum.get('3m'))}; a positive stock return hurts this short and must never be called a book leader"
+            if side == "Short"
+            else f"LONG INTERPRETATION: BOOK EFFECT 3m {pct(position_momentum.get('3m'))}; positive helps and negative hurts the book"
+        )
         lines.append(
-            f"{item.get('ticker')} {item.get('side')} | target {pct(item.get('targetWeight'))} | current {pct(item.get('currentWeight'))} | "
+            f"{item.get('ticker')} {side} | target {pct(item.get('targetWeight'))} | current {pct(item.get('currentWeight'))} | "
             f"underlying 1d {pct(returns.get('1d'))}, 1m {pct(returns.get('1m'))}, 3m {pct(returns.get('3m'))}, "
             f"6m {pct(returns.get('6m'))}, 12-1 {pct(returns.get('12mEx1m'))}, raw security YTD {pct(returns.get('ytd'))} | "
-            f"position 3m {pct(position_momentum.get('3m'))}, position calendar-YTD {pct(position_momentum.get('calendarYtdSecurity'))} | "
+            f"position 3m {pct(position_momentum.get('3m'))}, position calendar-YTD {pct(position_momentum.get('calendarYtdSecurity'))}; "
+            f"{side_interpretation} | "
             f"RS1m {pct(item.get('relativeStrength1m'))} "
             f"vs {item.get('relativeStrengthBenchmark') or 'n/a'} | 50d {pct(item.get('priceVs50d'))}, "
             f"200d {pct(item.get('priceVs200d'))}, 52wDD {pct(item.get('drawdown52w'))} | "
@@ -3244,7 +3273,7 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         else "Authoritative portfolio composition from the dated configuration (market data not fetched)"
     )
     market_data_guidance = (
-        """Use the live portfolio context whenever the question concerns holdings, sizing, momentum, volume, concentration, exposure, contribution, portfolio risk, or potential action. Always distinguish target weight from current drifted weight. A positive underlying return helps a long but hurts a short. Position-adjusted momentum is already side-corrected: higher values help the book and lower values hurt it. When ranking momentum, use the supplied pre-ranked position-adjusted lists across both sides; never classify a rising adverse short as a leader. Keep raw calendar-YTD security return, side-adjusted calendar-YTD return, realized YTD contribution, and since-rebalance contribution separate. A 'YTD portfolio winner/detractor' must be ranked by realized YTD contribution. Keep NAV weight and share of gross exposure as separate denominators. Completed-session volume only is used in rolling volume diagnostics. Treat the volume/momentum screen as a review queue, not a trade instruction: do not recommend selling or covering solely from technical signals; require thesis/valuation/catalyst evidence, or explicitly label the conclusion 'technical review candidate'. Describe market data as live portfolio context as of its stated date, not as a numbered document citation. If fresh=false or the as-of date is unknown, explicitly warn that the market snapshot may be stale."""
+        """Use the live portfolio context whenever the question concerns holdings, sizing, momentum, volume, concentration, exposure, contribution, portfolio risk, or potential action. Always distinguish target weight from current drifted weight. A positive underlying return helps a long but hurts a short. Position-adjusted momentum is already side-corrected: higher values help the book and lower values hurt it. When ranking momentum, use the supplied pre-ranked position-adjusted lists across both sides; never classify a rising adverse short as a leader. For every short, copy the signed BOOK EFFECT rather than the underlying stock return when discussing portfolio momentum. Keep raw calendar-YTD security return, side-adjusted calendar-YTD return, realized YTD contribution, and since-rebalance contribution separate. A 'YTD portfolio winner/detractor' must be ranked by realized YTD contribution. If the question asks to distinguish performance measures, explicitly report the MANDATORY RANKING FACTS before interpreting technical signals. Keep NAV weight and share of gross exposure as separate denominators. Completed-session volume only is used in rolling volume diagnostics. Treat the volume/momentum screen as a review queue, not a trade instruction: do not recommend selling or covering solely from technical signals; require thesis/valuation/catalyst evidence, or explicitly label the conclusion 'technical review candidate'. Describe market data as live portfolio context as of its stated date, not as a numbered document citation. If fresh=false or the as-of date is unknown, explicitly warn that the market snapshot may be stale."""
         if portfolio_context.get("marketDataAvailable")
         else "Live market data was intentionally not fetched because this question did not require it. Use target composition when relevant, but do not invent current weights, prices, momentum, volume, performance, contribution, or risk."
     )
