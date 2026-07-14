@@ -1986,7 +1986,13 @@ def calculate_momentum_metrics(returns_df, portfolio_name="main"):
         return {
             'top_rs': top_rs,
             'bot_rs': bot_rs,
-            'corr_surges': top_surges
+            'all_rs': rs_data,
+            'corr_surges': top_surges,
+            'methodology': {
+                'source': 'Yahoo Finance adjusted close via yfinance',
+                'currencyBasis': 'USD-converted adjusted prices for portfolio comparability',
+                'relativeStrength': '21-session security total return minus regional benchmark total return',
+            },
         }
     except Exception as ex:
         print(f"Error calculating momentum metrics: {ex}")

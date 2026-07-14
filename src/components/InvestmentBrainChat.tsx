@@ -3,6 +3,7 @@ import {
     ArrowLeft,
     ArrowUpRight,
     BrainCircuit,
+    BriefcaseBusiness,
     BookOpenCheck,
     ChevronDown,
     Cloud,
@@ -100,6 +101,36 @@ type AnalysisContext = {
     deepSources?: DeepSource[];
     references?: DeepSource[];
     fullDocuments?: FullDocumentContext[];
+    portfolio?: BrainPortfolioContext;
+};
+
+type PortfolioExposure = {
+    long?: number;
+    short?: number;
+    gross?: number;
+    net?: number;
+};
+
+type BrainPortfolioContext = {
+    portfolio?: string;
+    generatedAt?: string;
+    dataAsOf?: string | null;
+    cacheAgeSeconds?: number | null;
+    fresh?: boolean;
+    positionCount?: number;
+    source?: string;
+    exposure?: {
+        target?: PortfolioExposure;
+        currentDrifted?: PortfolioExposure;
+    };
+    performance?: {
+        ytdNet?: number | null;
+        benchmarkYtd?: number | null;
+        activeReturnYtd?: number | null;
+        annualizedJensenAlpha?: number | null;
+        compoundedCapmAlphaYtd?: number | null;
+        betaYtd?: number | null;
+    };
 };
 
 type FullDocumentContext = {
@@ -122,6 +153,9 @@ type RetrievalDiagnostics = {
     referenceSemanticHits?: number;
     fullDocuments?: number;
     fullContextChars?: number;
+    portfolioPositions?: number;
+    portfolioDataAsOf?: string | null;
+    portfolioFresh?: boolean;
 };
 
 type ReferenceSetResponse = {
@@ -530,9 +564,9 @@ export const InvestmentBrainChat: React.FC = () => {
     const [isSystemPromptOpen, setIsSystemPromptOpen] = useState(false);
     const [isSystemPromptLoading, setIsSystemPromptLoading] = useState(false);
     const [isSystemPromptSaving, setIsSystemPromptSaving] = useState(false);
-    const [ticker, setTicker] = useState('');
     const [draft, setDraft] = useState('What does my research say about the moat, risks, valuation lens, and what would change my mind?');
     const [thread, setThread] = useState<ChatMessage[]>([]);
+    const [portfolioContext, setPortfolioContext] = useState<BrainPortfolioContext | null>(null);
     const [isAsking, setIsAsking] = useState(false);
     const [notice, setNotice] = useState('');
     const [libraryQuery, setLibraryQuery] = useState('');
@@ -548,7 +582,7 @@ export const InvestmentBrainChat: React.FC = () => {
     const refresh = async () => {
         try {
             const [statusResult, driveResult, referenceResult, fullContextResult, systemPromptResult] = await Promise.allSettled([
-                request(api('/api/brain/status'), {}, 12000),
+                request(api('/api/brain/status'), {}, 50000),
                 request(api('/api/brain/index/drive/status'), {}, 12000),
                 request(api('/api/brain/references'), {}, 12000),
                 request(api('/api/brain/full-context'), {}, 12000),
@@ -601,6 +635,11 @@ export const InvestmentBrainChat: React.FC = () => {
             bootstrapSnapshot.current = snapshot;
             writeBrainBootstrapSnapshot(snapshot);
             setBackendState('ready');
+            void request(api('/api/brain/portfolio-context'), {}, 65000)
+                .then(async response => {
+                    if (response.ok) setPortfolioContext(await response.json() as BrainPortfolioContext);
+                })
+                .catch(() => undefined);
         } catch {
             setBackendState('offline');
         }
@@ -617,6 +656,7 @@ export const InvestmentBrainChat: React.FC = () => {
     const embeddings = status?.embeddings ?? {};
     const allEmbedded = (embeddings.missing ?? 0) === 0 && (embeddings.total ?? counts.chunks ?? 0) > 0;
     const libraryState = !ready ? 'Offline' : !drive?.connected ? 'Drive needs access' : !allEmbedded ? 'Embedding pending' : 'Library ready';
+
     const filteredReferenceSources = useMemo(() => {
         const query = referenceFilter.trim().toLowerCase();
         if (!query) return availableReferenceSources;
@@ -639,7 +679,6 @@ export const InvestmentBrainChat: React.FC = () => {
     }, [availableFullContextSources, fullContextFilter]);
 
     const sendQuestion = async () => {
-        const cleanedTicker = ticker.trim().toUpperCase();
         const question = draft.trim();
         if (!ready || !question || isAsking) return;
 
@@ -657,7 +696,6 @@ export const InvestmentBrainChat: React.FC = () => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    ticker: cleanedTicker || undefined,
                     question,
                     limit: 6,
                     useSemantic: true,
@@ -666,6 +704,7 @@ export const InvestmentBrainChat: React.FC = () => {
             }, fullContextSources.length ? 120000 : 65000);
             if (!response.ok) throw new Error(await errorText(response, 'The Brain could not complete this question.'));
             const payload = await response.json() as AnalysisResponse;
+            if (payload.context?.portfolio) setPortfolioContext(payload.context.portfolio);
             setThread(current => [...current, {
                 id: messageId(),
                 role: 'assistant',
@@ -677,7 +716,10 @@ export const InvestmentBrainChat: React.FC = () => {
             }]);
             const readCount = payload.retrieval?.expandedFiles ?? 0;
             const fullDocumentCount = payload.retrieval?.fullDocuments ?? 0;
-            setNotice(`${payload.model} answered in ${formatSeconds(payload.timings?.totalMs)}${fullDocumentCount ? ` with ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context` : readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.`);
+            const liveBook = payload.retrieval?.portfolioPositions
+                ? ` with the ${payload.retrieval.portfolioPositions}-position live book as of ${payload.retrieval.portfolioDataAsOf ?? 'the latest market close'}`
+                : '';
+            setNotice(`${payload.model} answered in ${formatSeconds(payload.timings?.totalMs)}${liveBook}${fullDocumentCount ? ` and ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context` : readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.`);
         } catch (error) {
             const text = error instanceof DOMException && error.name === 'AbortError'
                 ? 'This request took too long. The backend may be waking up; try the question again.'
@@ -1033,7 +1075,6 @@ export const InvestmentBrainChat: React.FC = () => {
 
     const resetThread = () => {
         setThread([]);
-        setTicker('');
         setDraft('What does my research say about the moat, risks, valuation lens, and what would change my mind?');
         setNotice('New research thread.');
     };
@@ -1058,6 +1099,16 @@ export const InvestmentBrainChat: React.FC = () => {
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
+                        {portfolioContext && (
+                            <span
+                                title={`Current drifted book as of ${portfolioContext.dataAsOf ?? 'unknown'}: ${formatPercent(portfolioContext.exposure?.currentDrifted?.long)} long / ${formatPercent(portfolioContext.exposure?.currentDrifted?.short)} short`}
+                                className={cn('inline-flex min-h-8 items-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.08em]', portfolioContext.fresh ? 'border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-200' : 'border-amber-500/25 bg-amber-500/[0.08] text-amber-200')}
+                            >
+                                <BriefcaseBusiness className="h-3.5 w-3.5" />
+                                <span>{portfolioContext.positionCount ?? 0} positions</span>
+                                <span className="hidden border-l border-current/20 pl-2 sm:inline">{formatPercent(portfolioContext.exposure?.currentDrifted?.gross)} gross</span>
+                            </span>
+                        )}
                         <span className={cn('inline-flex min-h-8 items-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em]', ready ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300')}>
                             <span className={cn('h-1.5 w-1.5 rounded-full', ready ? 'bg-emerald-300' : 'bg-amber-300')} />
                             {ready ? libraryState : backendState === 'checking' ? 'Checking Brain' : 'Backend offline'}
@@ -1105,12 +1156,13 @@ export const InvestmentBrainChat: React.FC = () => {
                                 <div className="mx-auto flex max-w-2xl flex-col items-start py-12 sm:py-20">
                                     <span className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-300"><Sparkles className="h-3.5 w-3.5" /> Evidence-first research</span>
                                     <h2 className="mt-4 text-2xl font-bold leading-tight text-white sm:text-3xl">A second mind for the work that compounds.</h2>
-                                    <p className="mt-3 max-w-xl text-sm leading-6 text-slate-400">The Brain retrieves your Drive research by meaning and exact terms, reads the strongest source files around the matches, then keeps sources attached to every answer.</p>
+                                    <p className="mt-3 max-w-xl text-sm leading-6 text-slate-400">The Brain combines your current portfolio, Yahoo-adjusted market momentum, and Drive research retrieved by meaning. Every answer keeps its market date and research sources attached.</p>
                                     <div className="mt-6 flex flex-wrap gap-2">
                                         {[
+                                            'Where is momentum strongest and weakest in my current book?',
+                                            'Which holdings create the most concentration risk today?',
                                             'Where does value accrue in AI infrastructure?',
                                             'What is the strongest bear case?',
-                                            'Compare this against my historical framework.',
                                         ].map(suggestion => (
                                             <button key={suggestion} type="button" onClick={() => setDraft(suggestion)} className="rounded-md border border-white/[0.09] bg-white/[0.025] px-3 py-2 text-left text-xs text-slate-300 transition-colors hover:border-emerald-500/30 hover:bg-emerald-500/[0.06] hover:text-white">
                                                 {suggestion}
@@ -1133,6 +1185,7 @@ export const InvestmentBrainChat: React.FC = () => {
                                                     {` + ${message.retrieval.keywordHits ?? 0} exact`}
                                                     {message.retrieval.referenceSources ? ` / ${message.retrieval.referenceSources} framework${message.retrieval.referenceSources === 1 ? '' : 's'}` : ''}
                                                     {message.retrieval.fullDocuments ? ` / ${message.retrieval.fullDocuments} full file${message.retrieval.fullDocuments === 1 ? '' : 's'}` : ''}
+                                                    {message.retrieval.portfolioPositions ? ` / ${message.retrieval.portfolioPositions} live positions` : ''}
                                                     {message.retrieval.expandedFiles ? ` · ${message.retrieval.expandedFiles} file read${message.retrieval.expandedFiles === 1 ? '' : 's'}` : ''}
                                                 </span>
                                             )}
@@ -1149,7 +1202,7 @@ export const InvestmentBrainChat: React.FC = () => {
 
                             {isAsking && (
                                 <article className="max-w-3xl rounded-lg border border-white/[0.08] bg-white/[0.025] px-4 py-4 sm:px-5">
-                                    <div className="flex items-center gap-2 text-sm text-slate-400"><LoaderCircle className="h-4 w-4 animate-spin text-emerald-300" /> Retrieving evidence and reading the relevant source passages.</div>
+                                    <div className="flex items-center gap-2 text-sm text-slate-400"><LoaderCircle className="h-4 w-4 animate-spin text-emerald-300" /> Refreshing the live book, calculating momentum, and retrieving evidence.</div>
                                 </article>
                             )}
                         </div>
@@ -1157,7 +1210,6 @@ export const InvestmentBrainChat: React.FC = () => {
                         <div className="border-t border-white/[0.07] bg-[#080d15] p-3 sm:p-4">
                             <div className="rounded-lg border border-white/[0.1] bg-white/[0.025] p-2 focus-within:border-emerald-500/35">
                                 <div className="flex gap-2">
-                                    <input value={ticker} onChange={event => setTicker(event.target.value.toUpperCase())} aria-label="Optional ticker context" title="Optional ticker context" placeholder="Ticker (opt.)" className="h-10 w-[104px] shrink-0 rounded-md border border-white/[0.09] bg-[#080d15] px-2.5 font-mono text-sm font-bold text-white outline-none placeholder:font-sans placeholder:font-normal focus:border-emerald-500/35 sm:w-[126px]" />
                                     <textarea
                                         value={draft}
                                         onChange={event => setDraft(event.target.value)}
@@ -1188,6 +1240,20 @@ export const InvestmentBrainChat: React.FC = () => {
                                 <div><dt className="text-slate-500">Semantic index</dt><dd className={cn('mt-0.5 font-semibold', allEmbedded ? 'text-emerald-300' : 'text-amber-300')}>{formatPercent(embeddings.coverage)}</dd></div>
                                 <div><dt className="text-slate-500">Storage</dt><dd className="mt-0.5 font-semibold text-white">{status?.storage === 'postgres_pgvector' ? 'Supabase' : 'Local'}</dd></div>
                             </dl>
+                            {portfolioContext && (
+                                <div className="mt-4 border-t border-white/[0.07] pt-3">
+                                    <div className="flex items-center justify-between gap-3">
+                                        <div className="flex items-center gap-2"><BriefcaseBusiness className="h-3.5 w-3.5 text-cyan-300" /><span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">Live portfolio</span></div>
+                                        <span className={cn('text-[9px] font-bold uppercase tracking-[0.08em]', portfolioContext.fresh ? 'text-emerald-300' : 'text-amber-300')}>As of {portfolioContext.dataAsOf ?? 'unknown'}</span>
+                                    </div>
+                                    <dl className="mt-2 grid grid-cols-4 gap-2 text-[10px]">
+                                        <div><dt className="text-slate-600">Long</dt><dd className="mt-0.5 font-semibold text-emerald-300">{formatPercent(portfolioContext.exposure?.currentDrifted?.long)}</dd></div>
+                                        <div><dt className="text-slate-600">Short</dt><dd className="mt-0.5 font-semibold text-rose-300">{formatPercent(portfolioContext.exposure?.currentDrifted?.short)}</dd></div>
+                                        <div><dt className="text-slate-600">Gross</dt><dd className="mt-0.5 font-semibold text-white">{formatPercent(portfolioContext.exposure?.currentDrifted?.gross)}</dd></div>
+                                        <div><dt className="text-slate-600">Net</dt><dd className="mt-0.5 font-semibold text-cyan-200">{formatPercent(portfolioContext.exposure?.currentDrifted?.net)}</dd></div>
+                                    </dl>
+                                </div>
+                            )}
                             <div className="mt-4 grid grid-cols-2 gap-2">
                                 {!drive?.connected ? <Button type="button" tone="primary" onClick={() => void connectDrive()} disabled={!ready}><Cloud className="h-3.5 w-3.5" /> Connect</Button> : <Button type="button" onClick={() => void syncDrive()} disabled={!ready}><FolderSync className="h-3.5 w-3.5" /> Sync Drive</Button>}
                                 <Button type="button" tone="success" onClick={() => void embedMissing()} disabled={!ready || (embeddings.missing ?? 0) === 0}><Sparkles className="h-3.5 w-3.5" /> Embed {embeddings.missing ? formatCount(embeddings.missing) : 'Ready'}</Button>

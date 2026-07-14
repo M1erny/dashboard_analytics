@@ -77,6 +77,7 @@ app.add_middleware(
 # Response cache (mapped by costTier, 5 minute TTL)
 _cache = {}
 _data_cache = {}  # Shared raw market data cache keyed by portfolio
+_brain_portfolio_context_lock = asyncio.Lock()
 if load_backend_env:
     load_backend_env()
 brain_store_error = None
@@ -1279,6 +1280,8 @@ async def get_brain_status():
         "persistent_reference_layer",
         "full_document_context",
         "editable_system_prompt",
+        "live_portfolio_context",
+        "yahoo_momentum_context",
     ]
     if import_url_into_brain:
         capabilities.append("agentic_url_import")
@@ -2451,6 +2454,293 @@ def _format_conversation_history(turns: list[BrainConversationTurn], *, max_turn
     return "\n".join(lines)
 
 
+def _finite_number(value: Any) -> float | None:
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _signed_position_return(value: Any, side: str) -> float | None:
+    result = _finite_number(value)
+    if result is None:
+        return None
+    return result if side == "Long" else -result
+
+
+def _build_brain_portfolio_context(
+    metrics_payload: dict[str, Any] | None,
+    *,
+    portfolio: str = "main",
+    cache_timestamp: float | None = None,
+) -> dict[str, Any]:
+    """Build the compact, authoritative live-book snapshot supplied to the Brain."""
+    payload = metrics_payload if isinstance(metrics_payload, dict) else {}
+    portfolio_config = risk.get_effective_portfolio_config(portfolio) if risk else {}
+    return_rows = {
+        str(row.get("ticker")): row
+        for row in payload.get("periodicReturns", [])
+        if isinstance(row, dict) and row.get("ticker")
+    }
+    relative_strength = {
+        str(row.get("ticker")): row
+        for row in ((payload.get("momentum") or {}).get("all_rs") or [])
+        if isinstance(row, dict) and row.get("ticker")
+    }
+
+    positions: list[dict[str, Any]] = []
+    for ticker, config in portfolio_config.items():
+        row = return_rows.get(ticker, {})
+        side = config.get("type", "Long")
+        target_weight = _finite_number(config.get("weight")) or 0.0
+        current_weight = _finite_number(row.get("currentWeight"))
+        if current_weight is None:
+            current_weight = target_weight
+        rs = relative_strength.get(ticker, {})
+        position = {
+            "ticker": ticker,
+            "side": side,
+            "targetWeight": target_weight,
+            "currentWeight": current_weight,
+            "signedCurrentWeight": current_weight if side == "Long" else -current_weight,
+            "sector": config.get("sector", "Unknown"),
+            "country": config.get("country", "Unknown"),
+            "currency": config.get("currency", "USD"),
+            "lastPrice": _finite_number(row.get("lastPrice")),
+            "returns": {
+                "1d": _finite_number(row.get("r1d")),
+                "1w": _finite_number(row.get("r7d")),
+                "1m": _finite_number(row.get("r1m")),
+                "3m": _finite_number(row.get("r3m")),
+                "6m": _finite_number(row.get("r6m")),
+                "12m": _finite_number(row.get("r12m")),
+                "12mEx1m": _finite_number(row.get("r12mEx1m")),
+                "ytd": _finite_number(row.get("ytd")),
+            },
+            "positionMomentum": {
+                "1m": _signed_position_return(row.get("r1m"), side),
+                "3m": _signed_position_return(row.get("r3m"), side),
+                "6m": _signed_position_return(row.get("r6m"), side),
+                "12mEx1m": _signed_position_return(row.get("r12mEx1m"), side),
+            },
+            "relativeStrength1m": _finite_number(rs.get("rs")),
+            "relativeStrengthBenchmark": rs.get("bmk"),
+            "priceVs50d": _finite_number(row.get("priceVs50d")),
+            "priceVs200d": _finite_number(row.get("priceVs200d")),
+            "drawdown52w": _finite_number(row.get("drawdown52w")),
+            "trendSignal": row.get("trendSignal"),
+            "annualizedVolatility": _finite_number(row.get("volatility")),
+            "volumeVsYtdAverage": _finite_number(row.get("volumeIndicator")),
+            "ytdContribution": _finite_number(row.get("ytdContribution")),
+            "sinceRebalanceContribution": _finite_number(row.get("sinceRebalanceContribution")),
+            "sinceRebalanceStartDate": row.get("sinceRebalanceStartDate"),
+        }
+        positions.append(position)
+
+    positions.sort(key=lambda item: item["currentWeight"], reverse=True)
+    current_long = sum(item["currentWeight"] for item in positions if item["side"] == "Long")
+    current_short = sum(item["currentWeight"] for item in positions if item["side"] == "Short")
+    target_long = sum(item["targetWeight"] for item in positions if item["side"] == "Long")
+    target_short = sum(item["targetWeight"] for item in positions if item["side"] == "Short")
+    leverage = payload.get("leverage") if isinstance(payload.get("leverage"), dict) else {}
+    target_long = _finite_number(leverage.get("Long_Exp")) or target_long
+    target_short = _finite_number(leverage.get("Short_Exp")) or target_short
+
+    ytd_history = payload.get("ytdHistory") if isinstance(payload.get("ytdHistory"), list) else []
+    data_as_of = ytd_history[-1].get("date") if ytd_history and isinstance(ytd_history[-1], dict) else None
+    cache_age = max(0.0, time.time() - cache_timestamp) if cache_timestamp else None
+    market_data_age_days = None
+    if data_as_of:
+        try:
+            market_data_age_days = (datetime.now().astimezone().date() - datetime.strptime(data_as_of, "%Y-%m-%d").date()).days
+        except (TypeError, ValueError):
+            market_data_age_days = None
+    vitals = payload.get("vitals") if isinstance(payload.get("vitals"), dict) else {}
+    ytd_net = _finite_number(vitals.get("ytdReturn"))
+    benchmark_ytd = _finite_number(vitals.get("benchmarkYtd"))
+    top_five_weight = sum(item["currentWeight"] for item in positions[:5])
+    current_gross = current_long + current_short
+
+    momentum_ranked = sorted(
+        (item for item in positions if item["positionMomentum"]["3m"] is not None),
+        key=lambda item: item["positionMomentum"]["3m"],
+        reverse=True,
+    )
+    momentum = payload.get("momentum") if isinstance(payload.get("momentum"), dict) else {}
+
+    return {
+        "portfolio": portfolio,
+        "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "dataAsOf": data_as_of,
+        "marketDataAgeDays": market_data_age_days,
+        "cacheAgeSeconds": round(cache_age, 1) if cache_age is not None else None,
+        "fresh": bool(
+            data_as_of
+            and market_data_age_days is not None
+            and -1 <= market_data_age_days <= 4
+            and cache_age is not None
+            and cache_age <= CACHE_TTL + 5
+        ),
+        "source": "Shared dashboard risk engine using Yahoo Finance adjusted prices",
+        "benchmark": getattr(risk, "BENCHMARK", "SPY") if risk else "SPY",
+        "positionCount": len(positions),
+        "exposure": {
+            "target": {
+                "long": target_long,
+                "short": target_short,
+                "gross": target_long + target_short,
+                "net": target_long - target_short,
+            },
+            "currentDrifted": {
+                "long": current_long,
+                "short": current_short,
+                "gross": current_gross,
+                "net": current_long - current_short,
+            },
+        },
+        "performance": {
+            "ytdNet": ytd_net,
+            "ytdGrossBeforeFinancing": _finite_number(vitals.get("ytdReturnGross")),
+            "benchmarkYtd": benchmark_ytd,
+            "activeReturnYtd": ytd_net - benchmark_ytd if ytd_net is not None and benchmark_ytd is not None else None,
+            "annualizedJensenAlpha": _finite_number(vitals.get("ytdAlpha")),
+            "compoundedCapmAlphaYtd": _finite_number(vitals.get("ytdAlphaRaw")),
+            "betaYtd": _finite_number(vitals.get("ytdBeta")),
+            "volatilityYtd": _finite_number(vitals.get("ytdVol")),
+            "maxDrawdownYtd": _finite_number(vitals.get("ytdMaxDrawdown")),
+            "financingCostYtd": _finite_number(vitals.get("ytdFinancingCost")),
+        },
+        "concentration": {
+            "topFiveGrossWeight": top_five_weight,
+            "topFiveShareOfGross": top_five_weight / current_gross if current_gross else None,
+            "largestPositions": [
+                {"ticker": item["ticker"], "side": item["side"], "currentWeight": item["currentWeight"]}
+                for item in positions[:5]
+            ],
+        },
+        "momentum": {
+            "leaders3mPositionAdjusted": [
+                {"ticker": item["ticker"], "side": item["side"], "value": item["positionMomentum"]["3m"]}
+                for item in momentum_ranked[:5]
+            ],
+            "laggards3mPositionAdjusted": [
+                {"ticker": item["ticker"], "side": item["side"], "value": item["positionMomentum"]["3m"]}
+                for item in reversed(momentum_ranked[-5:])
+            ],
+            "correlationSurges": momentum.get("corr_surges") or [],
+            "methodology": momentum.get("methodology") or {
+                "source": "Yahoo Finance adjusted close via yfinance",
+                "priceMomentum": "Adjusted-price total return: P(t) / P(t-n sessions) - 1",
+            },
+        },
+        "risk": {
+            "topContributors": [
+                {
+                    "ticker": item.get("ticker"),
+                    "percentOfRisk": _finite_number(item.get("pctRisk")),
+                    "marginalContribution": _finite_number(item.get("mctr")),
+                    "weight": _finite_number(item.get("weight")),
+                }
+                for item in (payload.get("riskAttribution") or [])[:10]
+                if isinstance(item, dict)
+            ],
+            "stressTests": [
+                {
+                    "scenario": item.get("scenario"),
+                    "alphaNeutralImpact": _finite_number(item.get("impact")),
+                    "linearImpact": _finite_number(item.get("linearImpact")),
+                    "marketMove": _finite_number(item.get("marketMove")),
+                }
+                for item in (payload.get("stressTests") or [])
+                if isinstance(item, dict)
+            ],
+        },
+        "positions": positions,
+    }
+
+
+def _format_brain_portfolio_context(context: dict[str, Any]) -> str:
+    def pct(value: Any) -> str:
+        number = _finite_number(value)
+        return "n/a" if number is None else f"{number:+.1%}"
+
+    exposure = context.get("exposure", {})
+    target = exposure.get("target", {})
+    current = exposure.get("currentDrifted", {})
+    performance = context.get("performance", {})
+    concentration = context.get("concentration", {})
+    lines = [
+        f"Portfolio={context.get('portfolio', 'main')} | market data as of {context.get('dataAsOf') or 'unknown'} "
+        f"(age {context.get('marketDataAgeDays') if context.get('marketDataAgeDays') is not None else 'unknown'} days) | "
+        f"snapshot cache age={context.get('cacheAgeSeconds') if context.get('cacheAgeSeconds') is not None else 'unknown'}s | "
+        f"fresh={context.get('fresh', False)}",
+        f"Target exposure: long {pct(target.get('long'))}, short {pct(target.get('short'))}, "
+        f"gross {pct(target.get('gross'))}, net {pct(target.get('net'))}.",
+        f"Current drifted exposure: long {pct(current.get('long'))}, short {pct(current.get('short'))}, "
+        f"gross {pct(current.get('gross'))}, net {pct(current.get('net'))}.",
+        f"YTD: net {pct(performance.get('ytdNet'))}, gross before financing {pct(performance.get('ytdGrossBeforeFinancing'))}, "
+        f"benchmark {pct(performance.get('benchmarkYtd'))}, active return {pct(performance.get('activeReturnYtd'))}, "
+        f"compounded CAPM alpha {pct(performance.get('compoundedCapmAlphaYtd'))}, annualized Jensen alpha {pct(performance.get('annualizedJensenAlpha'))}, "
+        f"beta {(_finite_number(performance.get('betaYtd')) or 0):.2f}, vol {pct(performance.get('volatilityYtd'))}, "
+        f"max drawdown {pct(performance.get('maxDrawdownYtd'))}, financing {pct(performance.get('financingCostYtd'))}.",
+        f"Concentration: top five current gross weights total {pct(concentration.get('topFiveGrossWeight'))} "
+        f"({pct(concentration.get('topFiveShareOfGross'))} of gross exposure).",
+        "Position convention: underlying returns are security returns; position momentum flips the sign for shorts. "
+        "Current weight is drifted with performance and is distinct from target weight. Prices are adjusted and USD-converted for comparability.",
+    ]
+    risk_context = context.get("risk", {})
+    risk_contributors = risk_context.get("topContributors", [])
+    if risk_contributors:
+        lines.append("Top modeled risk contributors: " + ", ".join(
+            f"{item.get('ticker')} {pct(item.get('percentOfRisk'))} of modeled risk"
+            for item in risk_contributors[:5]
+        ) + ".")
+    stress_tests = risk_context.get("stressTests", [])
+    if stress_tests:
+        lines.append("Alpha-neutral stress impacts: " + ", ".join(
+            f"{item.get('scenario')} {pct(item.get('alphaNeutralImpact'))}"
+            for item in stress_tests
+        ) + ".")
+    lines.append("ACTIVE POSITIONS:")
+    for item in context.get("positions", []):
+        returns = item.get("returns", {})
+        position_momentum = item.get("positionMomentum", {})
+        lines.append(
+            f"{item.get('ticker')} {item.get('side')} | target {pct(item.get('targetWeight'))} | current {pct(item.get('currentWeight'))} | "
+            f"underlying 1d {pct(returns.get('1d'))}, 1m {pct(returns.get('1m'))}, 3m {pct(returns.get('3m'))}, "
+            f"6m {pct(returns.get('6m'))}, 12-1 {pct(returns.get('12mEx1m'))}, YTD {pct(returns.get('ytd'))} | "
+            f"position 3m {pct(position_momentum.get('3m'))} | RS1m {pct(item.get('relativeStrength1m'))} "
+            f"vs {item.get('relativeStrengthBenchmark') or 'n/a'} | 50d {pct(item.get('priceVs50d'))}, "
+            f"200d {pct(item.get('priceVs200d'))}, 52wDD {pct(item.get('drawdown52w'))} | "
+            f"YTD contribution {pct(item.get('ytdContribution'))}."
+        )
+    return "\n".join(lines)
+
+
+async def _load_brain_portfolio_context(portfolio: str = "main") -> dict[str, Any]:
+    async with _brain_portfolio_context_lock:
+        cache_key = f"{portfolio}_retail"
+        cache_entry = _cache.get(cache_key, {})
+        metrics_payload = await run_in_threadpool(
+            lambda: asyncio.run(get_metrics(force=False, costTier="retail", portfolio=portfolio))
+        )
+        cache_entry = _cache.get(cache_key, cache_entry)
+        return _build_brain_portfolio_context(
+            metrics_payload,
+            portfolio=portfolio,
+            cache_timestamp=cache_entry.get("timestamp"),
+        )
+
+
+@app.get("/api/brain/portfolio-context")
+async def get_brain_portfolio_context(portfolio: str = "main"):
+    try:
+        return await _load_brain_portfolio_context(portfolio)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Portfolio context is unavailable: {_clean_public_error(exc)[:240]}") from exc
+
+
 @app.post("/api/brain/analyze-company")
 async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     store = _brain_or_503()
@@ -2472,6 +2762,8 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         if turn.role.lower() == "user"
     )
     retrieval_query = f"{ticker} {prior_user_questions} {question}".strip()[:4000]
+    portfolio_started = time.perf_counter()
+    portfolio_context_task = asyncio.create_task(_load_brain_portfolio_context("main"))
     reference_sources_task = asyncio.create_task(_reference_sources_from_store(store))
     full_context_sources_task = asyncio.create_task(_full_context_sources_from_store(store))
     system_prompt_task = asyncio.create_task(_system_prompt_from_store(store))
@@ -2573,6 +2865,13 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     full_document_context = await full_document_context_task
     timings["deepSourceExpansionMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
+    try:
+        portfolio_context = await portfolio_context_task
+    except Exception as exc:
+        timings["portfolioContextError"] = _clean_public_error(exc)[:240]
+        portfolio_context = _build_brain_portfolio_context({}, portfolio="main")
+    timings["portfolioContextMs"] = round((time.perf_counter() - portfolio_started) * 1000, 1)
+
     prompt = f"""
 Use the provided research context to answer the investment question. Separate evidence from inference.
 Do not pretend missing information is present.
@@ -2584,6 +2883,9 @@ User question: {question}
 
 Previous conversation in this same brain thread:
 {conversation_history or "No previous turns in this thread."}
+
+Authoritative live portfolio context from the dashboard risk engine:
+{_format_brain_portfolio_context(portfolio_context)}
 
 Personal memories:
 {_format_context_block(memory_results, max_chars=900) or "No matching memories."}
@@ -2612,6 +2914,7 @@ Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per sect
 When relying on a numbered item from Retrieved source context, cite it compactly as [1], [2], and so on. Never invent citations or claim a source says more than the supplied excerpt.
 Persistent reference sources are investor-selected frameworks. Use them as an always-on lens, but do not mistake a framework for company-specific evidence. Cite them as [R1], [R2], and so on when they materially shape the reasoning, and surface any tension with current company evidence.
 Full-document sources are investor-selected primary context. They contain the full text reconstructed from the indexed file, subject to any stated extraction or context cap. Cite them as [F1], [F2], and so on when they materially support the answer. Never imply an [F] source was fully available when its label says a cap was reached.
+Use the live portfolio context whenever the question concerns holdings, sizing, momentum, concentration, exposure, contribution, portfolio risk, or potential action. Always distinguish target weight from current drifted weight. A positive underlying return helps a long but hurts a short; use position-adjusted momentum when ranking what is helping or hurting the book. Describe this data as live portfolio context as of its stated date, not as a numbered document citation. If fresh=false or the as-of date is unknown, explicitly warn that the market snapshot may be stale.
 """.strip()
 
     step_started = time.perf_counter()
@@ -2657,6 +2960,9 @@ Full-document sources are investor-selected primary context. They contain the fu
                 "referenceSemanticHits": reference_semantic_hits,
                 "fullDocuments": len(full_document_context),
                 "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
+                "portfolioPositions": portfolio_context.get("positionCount", 0),
+                "portfolioDataAsOf": portfolio_context.get("dataAsOf"),
+                "portfolioFresh": portfolio_context.get("fresh", False),
             },
             "context": {
                 "memories": memory_results,
@@ -2664,6 +2970,7 @@ Full-document sources are investor-selected primary context. They contain the fu
                 "deepSources": deep_sources,
                 "references": reference_context,
                 "fullDocuments": _public_full_document_context(full_document_context),
+                "portfolio": portfolio_context,
             },
         }
 
@@ -2687,6 +2994,9 @@ Full-document sources are investor-selected primary context. They contain the fu
             "referenceSemanticHits": reference_semantic_hits,
             "fullDocuments": len(full_document_context),
             "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
+            "portfolioPositions": portfolio_context.get("positionCount", 0),
+            "portfolioDataAsOf": portfolio_context.get("dataAsOf"),
+            "portfolioFresh": portfolio_context.get("fresh", False),
         },
         "context": {
             "memories": memory_results,
@@ -2694,6 +3004,7 @@ Full-document sources are investor-selected primary context. They contain the fu
             "deepSources": deep_sources,
             "references": reference_context,
             "fullDocuments": _public_full_document_context(full_document_context),
+            "portfolio": portfolio_context,
         },
     }
 
@@ -2878,7 +3189,15 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             response["momentum"] = {
                 "top_rs": momentum.get('top_rs', []),
                 "bot_rs": momentum.get('bot_rs', []),
-                "corr_surges": momentum.get('corr_surges', [])
+                "all_rs": momentum.get('all_rs', []),
+                "corr_surges": momentum.get('corr_surges', []),
+                "methodology": {
+                    **momentum.get('methodology', {}),
+                    "priceMomentum": "Adjusted-price total return: P(t) / P(t-n sessions) - 1",
+                    "horizonSessions": {"1W": 5, "1M": 21, "3M": 63, "6M": 126, "12M": 252},
+                    "twelveMinusOne": "P(t-21 sessions) / P(t-252 sessions) - 1",
+                    "trend": "Current USD-adjusted price relative to trailing 50-session and 200-session means",
+                },
             }
         else:
             response["momentum"] = None
@@ -3052,6 +3371,14 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             r1d = None
             r1m = None
             r7d = None
+            r3m = None
+            r6m = None
+            r12m = None
+            momentum_12_1 = None
+            price_vs_50d = None
+            price_vs_200d = None
+            drawdown_52w = None
+            trend_signal = None
             last_price = None
             volatility = None
             currency = ticker_config.get('currency', 'USD') if ticker_config else 'USD'
@@ -3081,24 +3408,46 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
 
             if usd_prices is not None and ticker in usd_prices.columns:
                 series = usd_prices[ticker].dropna()
-                
+
+                def trailing_return(sessions):
+                    if len(series) <= sessions:
+                        return None
+                    base = series.iloc[-sessions - 1]
+                    return (series.iloc[-1] - base) / base if base != 0 else None
+
                 # 1D return
-                if len(series) > 1:
-                    current = series.iloc[-1]
-                    past_1d = series.iloc[-2]
-                    r1d = (current - past_1d) / past_1d if past_1d != 0 else None
+                r1d = trailing_return(1)
 
                 # 7D return
-                if len(series) > 5:  # ~1 week of trading days
-                    current = series.iloc[-1]
-                    past_7d = series.iloc[-6]
-                    r7d = (current - past_7d) / past_7d if past_7d != 0 else None
-                
+                r7d = trailing_return(5)
+
                 # 1M return
-                if len(series) > 21:  # ~1 month of trading days
-                    current = series.iloc[-1]
-                    past = series.iloc[-22]
-                    r1m = (current - past) / past if past != 0 else None
+                r1m = trailing_return(21)
+                r3m = trailing_return(63)
+                r6m = trailing_return(126)
+                r12m = trailing_return(252)
+                if len(series) > 252:
+                    twelve_month_base = series.iloc[-253]
+                    one_month_ago = series.iloc[-22]
+                    momentum_12_1 = (one_month_ago - twelve_month_base) / twelve_month_base if twelve_month_base != 0 else None
+
+                current_usd = series.iloc[-1] if len(series) else None
+                if current_usd is not None and len(series) >= 50:
+                    sma_50 = series.iloc[-50:].mean()
+                    price_vs_50d = (current_usd - sma_50) / sma_50 if sma_50 != 0 else None
+                if current_usd is not None and len(series) >= 200:
+                    sma_200 = series.iloc[-200:].mean()
+                    price_vs_200d = (current_usd - sma_200) / sma_200 if sma_200 != 0 else None
+                if current_usd is not None and len(series) >= 2:
+                    high_52w = series.iloc[-min(252, len(series)):].max()
+                    drawdown_52w = (current_usd - high_52w) / high_52w if high_52w != 0 else None
+                if price_vs_50d is not None and price_vs_200d is not None:
+                    if price_vs_50d > 0 and price_vs_200d > 0:
+                        trend_signal = "above_50d_and_200d"
+                    elif price_vs_50d < 0 and price_vs_200d < 0:
+                        trend_signal = "below_50d_and_200d"
+                    else:
+                        trend_signal = "mixed_trend"
                 
                 # Annualized volatility (std dev of daily returns * sqrt(252))
                 if len(series) > 20:
@@ -3117,7 +3466,15 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "r1d": to_float(r1d),
                 "r7d": to_float(r7d),
                 "r1m": to_float(r1m),
-                "r1y": row['1Y'] if (row is not None and '1Y' in row and not pd.isna(row['1Y'])) else None,
+                "r3m": to_float(r3m),
+                "r6m": to_float(r6m),
+                "r12m": to_float(r12m),
+                "r12mEx1m": to_float(momentum_12_1),
+                "r1y": row['1Y'] if (row is not None and '1Y' in row and not pd.isna(row['1Y'])) else to_float(r12m),
+                "priceVs50d": to_float(price_vs_50d),
+                "priceVs200d": to_float(price_vs_200d),
+                "drawdown52w": to_float(drawdown_52w),
+                "trendSignal": trend_signal,
                 "ytdContribution": to_float(ytd_contribution),
                 "sinceRebalanceContribution": to_float(since_rebalance_contribution),
                 "sinceRebalanceContributionYtdBasis": to_float(since_rebalance_contribution_ytd_basis),
