@@ -21,6 +21,7 @@ import yfinance as yf
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote_plus
+from zoneinfo import ZoneInfo
 
 # Import risk.py (Now local)
 try:
@@ -1282,6 +1283,8 @@ async def get_brain_status():
         "editable_system_prompt",
         "live_portfolio_context",
         "yahoo_momentum_context",
+        "question_routed_market_data",
+        "completed_session_volume_screen",
     ]
     if import_url_into_brain:
         capabilities.append("agentic_url_import")
@@ -2469,6 +2472,181 @@ def _signed_position_return(value: Any, side: str) -> float | None:
     return result if side == "Long" else -result
 
 
+_MARKET_SESSION_SCHEDULES = {
+    "USA": ("America/New_York", 16, 15),
+    "CAN": ("America/Toronto", 16, 15),
+    "POL": ("Europe/Warsaw", 17, 15),
+    "BEL": ("Europe/Brussels", 17, 45),
+    "DNK": ("Europe/Copenhagen", 17, 15),
+    "FIN": ("Europe/Helsinki", 18, 45),
+    "JPN": ("Asia/Tokyo", 15, 30),
+}
+
+
+def _market_session_is_complete(timestamp: Any, country: str) -> bool:
+    """Conservatively identify whether a daily bar's volume can be treated as complete."""
+    if timestamp is None:
+        return False
+    schedule = _MARKET_SESSION_SCHEDULES.get(country)
+    if schedule is None:
+        return False
+    timezone_name, close_hour, close_minute = schedule
+    try:
+        now_local = datetime.now(ZoneInfo(timezone_name))
+        session_date = pd.Timestamp(timestamp).date()
+    except (TypeError, ValueError, KeyError):
+        return False
+    if session_date < now_local.date():
+        return True
+    if session_date > now_local.date():
+        return False
+    return (now_local.hour, now_local.minute) >= (close_hour, close_minute)
+
+
+_MARKET_DATA_INTENT_PATTERNS = {
+    "price_momentum_or_volume": r"\b(momentum|volume|technical|price action|relative strength|moving average|trend|weakness|breakout|selloff|liquidity)\b",
+    "live_performance": r"\b(ytd|return|performance|contribution|p&l|pnl|profit|loss|financing|alpha|sharpe|sortino|batting average)\b",
+    "live_risk": r"\b(beta|volatility|drawdown|var|cvar|portfolio risk|book risk|risk attribution|stress test|correlation|concentration|exposure|leverage)\b",
+    "current_book_state": r"\b(current weight|drifted weight|live weight|today(?:'s)? weight|current portfolio|current book|latest portfolio)\b",
+    "portfolio_action": r"\b(sell|reduce|trim|exit|cover|rebalance|resize|increase|decrease|add to|position sizing)\b",
+    "explicit_live_data": r"\b(live data|market data|yahoo|latest price|current price|today|right now)\b",
+}
+_NO_MARKET_DATA_PATTERN = re.compile(
+    r"\b(without (?:live |current )?market data|documents? only|research only|drive only|do not (?:fetch|use) market data)\b",
+    re.IGNORECASE,
+)
+
+
+def _brain_market_data_intent(text: str) -> dict[str, Any]:
+    cleaned = re.sub(r"\s+", " ", text or "").strip()
+    if _NO_MARKET_DATA_PATTERN.search(cleaned):
+        return {"requested": False, "reasons": [], "explicitlyDisabled": True}
+    reasons = [
+        reason
+        for reason, pattern in _MARKET_DATA_INTENT_PATTERNS.items()
+        if re.search(pattern, cleaned, flags=re.IGNORECASE)
+    ]
+    return {"requested": bool(reasons), "reasons": reasons, "explicitlyDisabled": False}
+
+
+def _build_brain_portfolio_outline(portfolio: str = "main") -> dict[str, Any]:
+    portfolio_config = risk.get_effective_portfolio_config(portfolio) if risk else {}
+    positions = []
+    target_long = 0.0
+    target_short = 0.0
+    for ticker, config in portfolio_config.items():
+        side = config.get("type", "Long")
+        target_weight = _finite_number(config.get("weight")) or 0.0
+        if side == "Long":
+            target_long += target_weight
+        else:
+            target_short += target_weight
+        positions.append({
+            "ticker": ticker,
+            "side": side,
+            "targetWeight": target_weight,
+            "currentWeight": None,
+            "sector": config.get("sector", "Unknown"),
+            "country": config.get("country", "Unknown"),
+            "currency": config.get("currency", "USD"),
+        })
+    positions.sort(key=lambda item: item["targetWeight"], reverse=True)
+    return {
+        "portfolio": portfolio,
+        "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "dataAsOf": None,
+        "fresh": None,
+        "marketDataRequested": False,
+        "marketDataAvailable": False,
+        "source": "Effective dated portfolio configuration; no market-data fetch",
+        "benchmark": getattr(risk, "BENCHMARK", "SPY") if risk else "SPY",
+        "positionCount": len(positions),
+        "exposure": {
+            "target": {
+                "long": target_long,
+                "short": target_short,
+                "gross": target_long + target_short,
+                "net": target_long - target_short,
+            },
+            "currentDrifted": None,
+        },
+        "positions": positions,
+    }
+
+
+def _position_technical_diagnostic(position: dict[str, Any]) -> dict[str, Any]:
+    side = position.get("side", "Long")
+    returns = position.get("positionMomentum", {})
+    volume = position.get("volume", {})
+    rs_position = _signed_position_return(position.get("relativeStrength1m"), side)
+    acceleration_position = _signed_position_return(position.get("momentumAcceleration1m"), side)
+    price_vs_50d = _finite_number(position.get("priceVs50d"))
+    price_vs_200d = _finite_number(position.get("priceVs200d"))
+    adverse_50d = price_vs_50d is not None and (price_vs_50d < 0 if side == "Long" else price_vs_50d > 0)
+    adverse_200d = price_vs_200d is not None and (price_vs_200d < 0 if side == "Long" else price_vs_200d > 0)
+
+    signals: list[str] = []
+    if (_finite_number(returns.get("1m")) or 0) < -0.05:
+        signals.append("adverse_1m_momentum")
+    if (_finite_number(returns.get("3m")) or 0) < -0.10:
+        signals.append("adverse_3m_momentum")
+    if (_finite_number(returns.get("12mEx1m")) or 0) < 0:
+        signals.append("adverse_12_minus_1_momentum")
+    if adverse_50d:
+        signals.append("adverse_50d_trend")
+    if adverse_200d:
+        signals.append("adverse_200d_trend")
+    if rs_position is not None and rs_position < -0.03:
+        signals.append("adverse_relative_strength")
+    if acceleration_position is not None and acceleration_position < -0.05:
+        signals.append("negative_momentum_acceleration")
+
+    adverse_volume_ratio = _finite_number(volume.get("adverseVolumeRatio20d"))
+    volume_pressure = _finite_number(volume.get("positionVolumePressure20d"))
+    volume_5d_vs_20d = _finite_number(volume.get("volume5dVs20d"))
+    volume_20d_vs_63d = _finite_number(volume.get("volume20dVs63d"))
+    volume_zscore = _finite_number(volume.get("latestCompletedVolumeZScore"))
+    adverse_days_heavier = adverse_volume_ratio is not None and adverse_volume_ratio >= 1.15
+    negative_volume_pressure = volume_pressure is not None and volume_pressure <= -0.10
+    expanding_volume = any(value is not None and value >= threshold for value, threshold in (
+        (volume_5d_vs_20d, 1.10),
+        (volume_20d_vs_63d, 1.10),
+        (volume_zscore, 1.0),
+    ))
+    volume_confirms_weakness = adverse_days_heavier and negative_volume_pressure and expanding_volume
+    signal_count = len(signals)
+    if signal_count >= 5 and volume_confirms_weakness:
+        status = "high_conviction_technical_review"
+        action = "review_reduce_or_exit" if side == "Long" else "review_reduce_or_cover"
+    elif signal_count >= 5:
+        status = "momentum_weakness_not_confirmed_by_volume"
+        action = "watch_for_volume_confirmation"
+    elif signal_count >= 3 and volume_confirms_weakness:
+        status = "technical_review"
+        action = "review_position"
+    elif signal_count >= 3:
+        status = "technical_watch"
+        action = "watch"
+    else:
+        status = "no_broad_technical_weakness"
+        action = "no_technical_action"
+
+    volume_observations = int(volume.get("observations") or 0)
+    momentum_observations_sufficient = returns.get("6m") is not None
+    evidence_quality = "high" if volume_observations >= 63 and momentum_observations_sufficient else "limited"
+    return {
+        "screeningStatus": status,
+        "technicalAction": action,
+        "weaknessSignalCount": signal_count,
+        "weaknessSignals": signals,
+        "volumeConfirmsWeakness": volume_confirms_weakness,
+        "positionRelativeStrength1m": rs_position,
+        "positionMomentumAcceleration1m": acceleration_position,
+        "evidenceQuality": evidence_quality,
+        "guardrail": "Technical screen only; require thesis, valuation, catalyst, tax, and liquidity review before trading.",
+    }
+
+
 def _build_brain_portfolio_context(
     metrics_payload: dict[str, Any] | None,
     *,
@@ -2498,6 +2676,8 @@ def _build_brain_portfolio_context(
         if current_weight is None:
             current_weight = target_weight
         rs = relative_strength.get(ticker, {})
+        raw_ytd_return = _finite_number(row.get("ytd"))
+        raw_momentum_acceleration = _finite_number(row.get("momentumAcceleration1m"))
         position = {
             "ticker": ticker,
             "side": side,
@@ -2516,14 +2696,17 @@ def _build_brain_portfolio_context(
                 "6m": _finite_number(row.get("r6m")),
                 "12m": _finite_number(row.get("r12m")),
                 "12mEx1m": _finite_number(row.get("r12mEx1m")),
-                "ytd": _finite_number(row.get("ytd")),
+                "ytd": raw_ytd_return,
             },
             "positionMomentum": {
                 "1m": _signed_position_return(row.get("r1m"), side),
                 "3m": _signed_position_return(row.get("r3m"), side),
                 "6m": _signed_position_return(row.get("r6m"), side),
                 "12mEx1m": _signed_position_return(row.get("r12mEx1m"), side),
+                "calendarYtdSecurity": _signed_position_return(raw_ytd_return, side),
             },
+            "prior1mReturn": _finite_number(row.get("prior1m")),
+            "momentumAcceleration1m": raw_momentum_acceleration,
             "relativeStrength1m": _finite_number(rs.get("rs")),
             "relativeStrengthBenchmark": rs.get("bmk"),
             "priceVs50d": _finite_number(row.get("priceVs50d")),
@@ -2532,10 +2715,28 @@ def _build_brain_portfolio_context(
             "trendSignal": row.get("trendSignal"),
             "annualizedVolatility": _finite_number(row.get("volatility")),
             "volumeVsYtdAverage": _finite_number(row.get("volumeIndicator")),
+            "volume": {
+                "dataThrough": row.get("volumeDataThrough"),
+                "latestSessionVolume": _finite_number(row.get("latestSessionVolume")),
+                "latestSessionComplete": bool(row.get("latestSessionVolumeComplete")),
+                "observations": int(row.get("volumeObservations") or 0),
+                "volume5dVs20d": _finite_number(row.get("volume5dVs20d")),
+                "volume20dVs63d": _finite_number(row.get("volume20dVs63d")),
+                "latestVolumeVs20d": _finite_number(row.get("latestVolumeVs20d")),
+                "latestCompletedVolumeZScore": _finite_number(row.get("latestCompletedVolumeZScore")),
+                "averageDollarVolume20d": _finite_number(row.get("averageDollarVolume20d")),
+                "downUpVolumeRatio20d": _finite_number(row.get("downUpVolumeRatio20d")),
+                "adverseVolumeRatio20d": _finite_number(row.get("adverseVolumeRatio20d")),
+                "obvPressure20d": _finite_number(row.get("obvPressure20d")),
+                "positionVolumePressure20d": _finite_number(row.get("positionVolumePressure20d")),
+                "priceVolumeCorrelation20d": _finite_number(row.get("priceVolumeCorrelation20d")),
+                "positionPriceVolumeCorrelation20d": _finite_number(row.get("positionPriceVolumeCorrelation20d")),
+            },
             "ytdContribution": _finite_number(row.get("ytdContribution")),
             "sinceRebalanceContribution": _finite_number(row.get("sinceRebalanceContribution")),
             "sinceRebalanceStartDate": row.get("sinceRebalanceStartDate"),
         }
+        position["technical"] = _position_technical_diagnostic(position)
         positions.append(position)
 
     positions.sort(key=lambda item: item["currentWeight"], reverse=True)
@@ -2569,6 +2770,32 @@ def _build_brain_portfolio_context(
     )
     momentum = payload.get("momentum") if isinstance(payload.get("momentum"), dict) else {}
 
+    def ranked_values(field: str, *, nested: str | None = None, descending: bool = True, limit: int = 5):
+        ranked = []
+        for item in positions:
+            container = item.get(nested, {}) if nested else item
+            value = _finite_number(container.get(field)) if isinstance(container, dict) else None
+            if value is not None:
+                ranked.append({"ticker": item["ticker"], "side": item["side"], "value": value})
+        ranked.sort(key=lambda item: item["value"], reverse=descending)
+        return ranked[:limit]
+
+    technical_ranked = sorted(
+        positions,
+        key=lambda item: (
+            item.get("technical", {}).get("weaknessSignalCount", 0),
+            bool(item.get("technical", {}).get("volumeConfirmsWeakness")),
+            -(_finite_number(item.get("positionMomentum", {}).get("3m")) or 0),
+        ),
+        reverse=True,
+    )
+    partial_volume_tickers = [
+        item["ticker"]
+        for item in positions
+        if item.get("volume", {}).get("latestSessionVolume") is not None
+        and not item.get("volume", {}).get("latestSessionComplete")
+    ]
+
     return {
         "portfolio": portfolio,
         "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -2582,6 +2809,8 @@ def _build_brain_portfolio_context(
             and cache_age is not None
             and cache_age <= CACHE_TTL + 5
         ),
+        "marketDataRequested": True,
+        "marketDataAvailable": bool(return_rows),
         "source": "Shared dashboard risk engine using Yahoo Finance adjusted prices",
         "benchmark": getattr(risk, "BENCHMARK", "SPY") if risk else "SPY",
         "positionCount": len(positions),
@@ -2611,6 +2840,22 @@ def _build_brain_portfolio_context(
             "maxDrawdownYtd": _finite_number(vitals.get("ytdMaxDrawdown")),
             "financingCostYtd": _finite_number(vitals.get("ytdFinancingCost")),
         },
+        "performanceRankings": {
+            "realizedYtdContributionLeaders": ranked_values("ytdContribution", descending=True),
+            "realizedYtdContributionLaggards": ranked_values("ytdContribution", descending=False),
+            "sinceRebalanceContributionLeaders": ranked_values("sinceRebalanceContribution", descending=True),
+            "sinceRebalanceContributionLaggards": ranked_values("sinceRebalanceContribution", descending=False),
+            "calendarYtdSecurityReturnLeaders": ranked_values("ytd", nested="returns", descending=True),
+            "calendarYtdSecurityReturnLaggards": ranked_values("ytd", nested="returns", descending=False),
+            "sideAdjustedCalendarYtdLeaders": ranked_values("calendarYtdSecurity", nested="positionMomentum", descending=True),
+            "sideAdjustedCalendarYtdLaggards": ranked_values("calendarYtdSecurity", nested="positionMomentum", descending=False),
+            "methodology": {
+                "realizedYtdContribution": "Dated-position ledger contribution actually earned during each holding period; use this for portfolio winners and detractors.",
+                "calendarYtdSecurityReturn": "Underlying security adjusted-price return since year start, regardless of when the portfolio owned it.",
+                "sideAdjustedCalendarYtd": "Calendar-YTD security return with shorts sign-flipped; hypothetical position direction, not realized contribution.",
+                "sinceRebalanceContribution": "Realized contribution since the latest dated rebalance only.",
+            },
+        },
         "concentration": {
             "topFiveAbsoluteWeight": top_five_weight,
             "topFiveShareOfGross": top_five_weight / current_gross if current_gross else None,
@@ -2632,6 +2877,24 @@ def _build_brain_portfolio_context(
             "methodology": momentum.get("methodology") or {
                 "source": "Yahoo Finance adjusted close via yfinance",
                 "priceMomentum": "Adjusted-price total return: P(t) / P(t-n sessions) - 1",
+            },
+        },
+        "volumeMomentumScreen": {
+            "reviewCandidates": [
+                {
+                    "ticker": item["ticker"],
+                    "side": item["side"],
+                    "currentWeight": item["currentWeight"],
+                    **item.get("technical", {}),
+                }
+                for item in technical_ranked[:10]
+            ],
+            "partialSessionVolumeExcludedFor": partial_volume_tickers,
+            "methodology": {
+                "price": "Yahoo Finance adjusted prices converted to USD for cross-market comparability.",
+                "momentum": "1m, 3m, 6m and 12-minus-1m total returns; shorts are sign-flipped only for position-health analysis.",
+                "volume": "Completed sessions only: 5d/20d and 20d/63d relative volume, latest completed-volume z-score, 20d adverse/favorable-day volume ratio, normalized OBV pressure, and 20d average USD dollar volume.",
+                "screen": "Seven transparent weakness flags. A trade is never recommended from the technical screen alone.",
             },
         },
         "risk": {
@@ -2665,8 +2928,41 @@ def _format_brain_portfolio_context(context: dict[str, Any]) -> str:
         number = _finite_number(value)
         return "n/a" if number is None else f"{number:+.1%}"
 
+    def ratio(value: Any) -> str:
+        number = _finite_number(value)
+        return "n/a" if number is None else f"{number:.2f}x"
+
+    def dollars(value: Any) -> str:
+        number = _finite_number(value)
+        if number is None:
+            return "n/a"
+        if abs(number) >= 1_000_000_000:
+            return f"${number / 1_000_000_000:.1f}bn"
+        if abs(number) >= 1_000_000:
+            return f"${number / 1_000_000:.1f}m"
+        return f"${number:,.0f}"
+
+    def sigma(value: Any) -> str:
+        number = _finite_number(value)
+        return "n/a" if number is None else f"{number:+.2f} sigma"
+
     exposure = context.get("exposure", {})
     target = exposure.get("target", {})
+    if not context.get("marketDataAvailable"):
+        lines = [
+            f"Portfolio={context.get('portfolio', 'main')} | configuration-only outline; live market data was not requested for this question.",
+            f"Target exposure: long {pct(target.get('long'))}, short {pct(target.get('short'))}, "
+            f"gross {pct(target.get('gross'))}, net {pct(target.get('net'))}.",
+            "No current prices, drifted weights, momentum, volume, performance, or risk metrics are present. Do not infer them.",
+            "ACTIVE TARGET POSITIONS:",
+        ]
+        for item in context.get("positions", []):
+            lines.append(
+                f"{item.get('ticker')} {item.get('side')} | target {pct(item.get('targetWeight'))} | "
+                f"{item.get('sector', 'Unknown')} | {item.get('country', 'Unknown')} | {item.get('currency', 'USD')}"
+            )
+        return "\n".join(lines)
+
     current = exposure.get("currentDrifted", {})
     performance = context.get("performance", {})
     concentration = context.get("concentration", {})
@@ -2703,6 +2999,42 @@ def _format_brain_portfolio_context(context: dict[str, Any]) -> str:
             f"{item.get('ticker')} {item.get('side')} {pct(item.get('value'))}"
             for item in laggards
         ) + ".")
+    performance_rankings = context.get("performanceRankings", {})
+    ranking_specs = (
+        ("Realized YTD contribution leaders", "realizedYtdContributionLeaders"),
+        ("Realized YTD contribution laggards", "realizedYtdContributionLaggards"),
+        ("Since-rebalance contribution leaders", "sinceRebalanceContributionLeaders"),
+        ("Since-rebalance contribution laggards", "sinceRebalanceContributionLaggards"),
+        ("Raw calendar-YTD security-return leaders", "calendarYtdSecurityReturnLeaders"),
+        ("Raw calendar-YTD security-return laggards", "calendarYtdSecurityReturnLaggards"),
+    )
+    for label, key in ranking_specs:
+        items = performance_rankings.get(key, [])
+        if items:
+            lines.append(label + ": " + ", ".join(
+                f"{item.get('ticker')} {item.get('side')} {pct(item.get('value'))}"
+                for item in items
+            ) + ".")
+    if performance_rankings:
+        lines.append(
+            "Ranking guardrail: 'YTD portfolio winner/detractor' means realized dated-ledger YTD contribution. "
+            "Raw calendar-YTD security return is a different market statistic, and since-rebalance contribution is a different holding period."
+        )
+    technical_screen = context.get("volumeMomentumScreen", {})
+    review_candidates = technical_screen.get("reviewCandidates", [])
+    if review_candidates:
+        lines.append("Pre-ranked technical weakness screen: " + ", ".join(
+            f"{item.get('ticker')} {item.get('side')} status={item.get('screeningStatus')} "
+            f"flags={item.get('weaknessSignalCount')} volume_confirmed={item.get('volumeConfirmsWeakness')}"
+            for item in review_candidates
+        ) + ".")
+    partial_volume = technical_screen.get("partialSessionVolumeExcludedFor", [])
+    if partial_volume:
+        lines.append(
+            "Incomplete current-session volume was excluded from rolling volume signals for: "
+            + ", ".join(partial_volume)
+            + "."
+        )
     risk_context = context.get("risk", {})
     risk_contributors = risk_context.get("topContributors", [])
     if risk_contributors:
@@ -2720,14 +3052,22 @@ def _format_brain_portfolio_context(context: dict[str, Any]) -> str:
     for item in context.get("positions", []):
         returns = item.get("returns", {})
         position_momentum = item.get("positionMomentum", {})
+        volume = item.get("volume", {})
+        technical = item.get("technical", {})
         lines.append(
             f"{item.get('ticker')} {item.get('side')} | target {pct(item.get('targetWeight'))} | current {pct(item.get('currentWeight'))} | "
             f"underlying 1d {pct(returns.get('1d'))}, 1m {pct(returns.get('1m'))}, 3m {pct(returns.get('3m'))}, "
-            f"6m {pct(returns.get('6m'))}, 12-1 {pct(returns.get('12mEx1m'))}, YTD {pct(returns.get('ytd'))} | "
-            f"position 3m {pct(position_momentum.get('3m'))} | RS1m {pct(item.get('relativeStrength1m'))} "
+            f"6m {pct(returns.get('6m'))}, 12-1 {pct(returns.get('12mEx1m'))}, raw security YTD {pct(returns.get('ytd'))} | "
+            f"position 3m {pct(position_momentum.get('3m'))}, position calendar-YTD {pct(position_momentum.get('calendarYtdSecurity'))} | "
+            f"RS1m {pct(item.get('relativeStrength1m'))} "
             f"vs {item.get('relativeStrengthBenchmark') or 'n/a'} | 50d {pct(item.get('priceVs50d'))}, "
             f"200d {pct(item.get('priceVs200d'))}, 52wDD {pct(item.get('drawdown52w'))} | "
-            f"YTD contribution {pct(item.get('ytdContribution'))}."
+            f"realized YTD contribution {pct(item.get('ytdContribution'))}, since rebalance {pct(item.get('sinceRebalanceContribution'))} | "
+            f"volume through {volume.get('dataThrough') or 'n/a'}: 5d/20d {ratio(volume.get('volume5dVs20d'))}, "
+            f"20d/63d {ratio(volume.get('volume20dVs63d'))}, adverse/favorable {ratio(volume.get('adverseVolumeRatio20d'))}, "
+            f"position volume pressure {pct(volume.get('positionVolumePressure20d'))}, completed-volume z {sigma(volume.get('latestCompletedVolumeZScore'))}, "
+            f"20d ADV {dollars(volume.get('averageDollarVolume20d'))} | technical {technical.get('screeningStatus')} "
+            f"flags={technical.get('weaknessSignalCount')} volume_confirmed={technical.get('volumeConfirmsWeakness')}."
         )
     return "\n".join(lines)
 
@@ -2755,6 +3095,11 @@ async def get_brain_portfolio_context(portfolio: str = "main"):
         raise HTTPException(status_code=503, detail=f"Portfolio context is unavailable: {_clean_public_error(exc)[:240]}") from exc
 
 
+@app.get("/api/brain/portfolio-outline")
+async def get_brain_portfolio_outline(portfolio: str = "main"):
+    return _build_brain_portfolio_outline(portfolio)
+
+
 @app.post("/api/brain/analyze-company")
 async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     store = _brain_or_503()
@@ -2776,8 +3121,14 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         if turn.role.lower() == "user"
     )
     retrieval_query = f"{ticker} {prior_user_questions} {question}".strip()[:4000]
+    market_data_intent = _brain_market_data_intent(retrieval_query)
     portfolio_started = time.perf_counter()
-    portfolio_context_task = asyncio.create_task(_load_brain_portfolio_context("main"))
+    portfolio_context = _build_brain_portfolio_outline("main")
+    portfolio_context_task = (
+        asyncio.create_task(_load_brain_portfolio_context("main"))
+        if market_data_intent["requested"]
+        else None
+    )
     reference_sources_task = asyncio.create_task(_reference_sources_from_store(store))
     full_context_sources_task = asyncio.create_task(_full_context_sources_from_store(store))
     system_prompt_task = asyncio.create_task(_system_prompt_from_store(store))
@@ -2879,12 +3230,24 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     full_document_context = await full_document_context_task
     timings["deepSourceExpansionMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
-    try:
-        portfolio_context = await portfolio_context_task
-    except Exception as exc:
-        timings["portfolioContextError"] = _clean_public_error(exc)[:240]
-        portfolio_context = _build_brain_portfolio_context({}, portfolio="main")
+    if portfolio_context_task is not None:
+        try:
+            portfolio_context = await portfolio_context_task
+        except Exception as exc:
+            timings["portfolioContextError"] = _clean_public_error(exc)[:240]
+            portfolio_context = _build_brain_portfolio_outline("main")
     timings["portfolioContextMs"] = round((time.perf_counter() - portfolio_started) * 1000, 1)
+
+    portfolio_context_title = (
+        "Authoritative live portfolio and market context from the dashboard risk engine"
+        if portfolio_context.get("marketDataAvailable")
+        else "Authoritative portfolio composition from the dated configuration (market data not fetched)"
+    )
+    market_data_guidance = (
+        """Use the live portfolio context whenever the question concerns holdings, sizing, momentum, volume, concentration, exposure, contribution, portfolio risk, or potential action. Always distinguish target weight from current drifted weight. A positive underlying return helps a long but hurts a short. Position-adjusted momentum is already side-corrected: higher values help the book and lower values hurt it. When ranking momentum, use the supplied pre-ranked position-adjusted lists across both sides; never classify a rising adverse short as a leader. Keep raw calendar-YTD security return, side-adjusted calendar-YTD return, realized YTD contribution, and since-rebalance contribution separate. A 'YTD portfolio winner/detractor' must be ranked by realized YTD contribution. Keep NAV weight and share of gross exposure as separate denominators. Completed-session volume only is used in rolling volume diagnostics. Treat the volume/momentum screen as a review queue, not a trade instruction: do not recommend selling or covering solely from technical signals; require thesis/valuation/catalyst evidence, or explicitly label the conclusion 'technical review candidate'. Describe market data as live portfolio context as of its stated date, not as a numbered document citation. If fresh=false or the as-of date is unknown, explicitly warn that the market snapshot may be stale."""
+        if portfolio_context.get("marketDataAvailable")
+        else "Live market data was intentionally not fetched because this question did not require it. Use target composition when relevant, but do not invent current weights, prices, momentum, volume, performance, contribution, or risk."
+    )
 
     prompt = f"""
 Use the provided research context to answer the investment question. Separate evidence from inference.
@@ -2898,7 +3261,7 @@ User question: {question}
 Previous conversation in this same brain thread:
 {conversation_history or "No previous turns in this thread."}
 
-Authoritative live portfolio context from the dashboard risk engine:
+{portfolio_context_title}:
 {_format_brain_portfolio_context(portfolio_context)}
 
 Personal memories:
@@ -2928,7 +3291,7 @@ Be concise but not shallow: maximum 5 short sections, maximum 3 bullets per sect
 When relying on a numbered item from Retrieved source context, cite it compactly as [1], [2], and so on. Never invent citations or claim a source says more than the supplied excerpt.
 Persistent reference sources are investor-selected frameworks. Use them as an always-on lens, but do not mistake a framework for company-specific evidence. Cite them as [R1], [R2], and so on when they materially shape the reasoning, and surface any tension with current company evidence.
 Full-document sources are investor-selected primary context. They contain the full text reconstructed from the indexed file, subject to any stated extraction or context cap. Cite them as [F1], [F2], and so on when they materially support the answer. Never imply an [F] source was fully available when its label says a cap was reached.
-Use the live portfolio context whenever the question concerns holdings, sizing, momentum, concentration, exposure, contribution, portfolio risk, or potential action. Always distinguish target weight from current drifted weight. A positive underlying return helps a long but hurts a short. Position-adjusted momentum is already side-corrected: higher values help the book and lower values hurt it. When ranking momentum, use the supplied pre-ranked position-adjusted lists across both sides; never classify a rising adverse short as a leader. Keep NAV weight and share of gross exposure as separate denominators. Describe this data as live portfolio context as of its stated date, not as a numbered document citation. If fresh=false or the as-of date is unknown, explicitly warn that the market snapshot may be stale.
+{market_data_guidance}
 """.strip()
 
     step_started = time.perf_counter()
@@ -2976,7 +3339,10 @@ Use the live portfolio context whenever the question concerns holdings, sizing, 
                 "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
                 "portfolioPositions": portfolio_context.get("positionCount", 0),
                 "portfolioDataAsOf": portfolio_context.get("dataAsOf"),
-                "portfolioFresh": portfolio_context.get("fresh", False),
+                "portfolioFresh": portfolio_context.get("fresh"),
+                "marketDataRequested": market_data_intent.get("requested", False),
+                "marketDataReasons": market_data_intent.get("reasons", []),
+                "marketDataAvailable": portfolio_context.get("marketDataAvailable", False),
             },
             "context": {
                 "memories": memory_results,
@@ -3010,7 +3376,10 @@ Use the live portfolio context whenever the question concerns holdings, sizing, 
             "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
             "portfolioPositions": portfolio_context.get("positionCount", 0),
             "portfolioDataAsOf": portfolio_context.get("dataAsOf"),
-            "portfolioFresh": portfolio_context.get("fresh", False),
+            "portfolioFresh": portfolio_context.get("fresh"),
+            "marketDataRequested": market_data_intent.get("requested", False),
+            "marketDataReasons": market_data_intent.get("reasons", []),
+            "marketDataAvailable": portfolio_context.get("marketDataAvailable", False),
         },
         "context": {
             "memories": memory_results,
@@ -3389,6 +3758,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             r6m = None
             r12m = None
             momentum_12_1 = None
+            prior_1m_return = None
+            momentum_acceleration_1m = None
             price_vs_50d = None
             price_vs_200d = None
             drawdown_52w = None
@@ -3397,6 +3768,7 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             volatility = None
             currency = ticker_config.get('currency', 'USD') if ticker_config else 'USD'
             sector = ticker_config.get('sector', 'Unknown') if ticker_config else 'Unknown'
+            country = ticker_config.get('country', 'Unknown') if ticker_config else 'Unknown'
             
             # Get last price from raw_prices (original currency)
             if ticker in raw_prices.columns:
@@ -3404,21 +3776,68 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 if len(raw_series) > 0:
                     last_price = float(raw_series.iloc[-1])
             
-            # Volume indicator: 7d avg vs YTD avg
+            # Volume diagnostics use completed sessions only. Intraday volume is exposed
+            # separately and never mixed into rolling comparisons.
+            completed_vol_series = None
+            latest_session_volume = None
+            latest_session_volume_complete = False
+            volume_data_through = None
             vol_7d_avg = None
+            vol_5d_avg = None
+            vol_20d_avg = None
+            vol_63d_avg = None
             vol_ytd_avg = None
             volume_indicator = None  # ratio: >1 means higher recent volume
+            volume_5d_vs_20d = None
+            volume_20d_vs_63d = None
+            latest_volume_vs_20d = None
+            latest_completed_volume_zscore = None
+            average_dollar_volume_20d = None
+            down_up_volume_ratio_20d = None
+            adverse_volume_ratio_20d = None
+            obv_pressure_20d = None
+            position_volume_pressure_20d = None
+            price_volume_correlation_20d = None
+            position_price_volume_correlation_20d = None
+            volume_observations = 0
             if volume_data is not None and ticker in volume_data.columns:
-                vol_series = volume_data[ticker].dropna()
-                if len(vol_series) > 7:
-                    vol_7d_avg = float(vol_series.iloc[-7:].mean())
+                all_volumes = volume_data[ticker].dropna()
+                if len(all_volumes) > 0:
+                    latest_session_volume = _finite_number(all_volumes.iloc[-1])
+                    latest_session_volume_complete = bool(
+                        latest_session_volume
+                        and latest_session_volume > 0
+                        and _market_session_is_complete(all_volumes.index[-1], country)
+                    )
+                    completed_vol_series = all_volumes[all_volumes > 0]
+                    if not latest_session_volume_complete and len(completed_vol_series) and completed_vol_series.index[-1] == all_volumes.index[-1]:
+                        completed_vol_series = completed_vol_series.iloc[:-1]
+
+                if completed_vol_series is not None and len(completed_vol_series) > 0:
+                    volume_observations = len(completed_vol_series)
+                    volume_data_through = completed_vol_series.index[-1].strftime('%Y-%m-%d')
+                    vol_5d_avg = float(completed_vol_series.iloc[-5:].mean()) if len(completed_vol_series) >= 5 else None
+                    vol_7d_avg = float(completed_vol_series.iloc[-7:].mean()) if len(completed_vol_series) >= 7 else None
+                    vol_20d_avg = float(completed_vol_series.iloc[-20:].mean()) if len(completed_vol_series) >= 20 else None
+                    vol_63d_avg = float(completed_vol_series.iloc[-63:].mean()) if len(completed_vol_series) >= 63 else None
                     # YTD volume average
                     ytd_start = pd.Timestamp(datetime.now().year, 1, 1)
-                    ytd_vol = vol_series[vol_series.index >= ytd_start]
+                    ytd_vol = completed_vol_series[completed_vol_series.index >= ytd_start]
                     if len(ytd_vol) > 0:
                         vol_ytd_avg = float(ytd_vol.mean())
-                        if vol_ytd_avg > 0:
+                        if vol_ytd_avg > 0 and vol_7d_avg is not None:
                             volume_indicator = vol_7d_avg / vol_ytd_avg
+                    if vol_5d_avg is not None and vol_20d_avg and vol_20d_avg > 0:
+                        volume_5d_vs_20d = vol_5d_avg / vol_20d_avg
+                    if vol_20d_avg is not None and vol_63d_avg and vol_63d_avg > 0:
+                        volume_20d_vs_63d = vol_20d_avg / vol_63d_avg
+                    if latest_session_volume_complete and vol_20d_avg and vol_20d_avg > 0:
+                        latest_volume_vs_20d = latest_session_volume / vol_20d_avg
+                    if len(completed_vol_series) >= 21:
+                        baseline = completed_vol_series.iloc[-61:-1] if len(completed_vol_series) >= 61 else completed_vol_series.iloc[:-1]
+                        baseline_std = baseline.std(ddof=1)
+                        if len(baseline) >= 20 and baseline_std and np.isfinite(baseline_std) and baseline_std > 0:
+                            latest_completed_volume_zscore = (completed_vol_series.iloc[-1] - baseline.mean()) / baseline_std
 
             if usd_prices is not None and ticker in usd_prices.columns:
                 series = usd_prices[ticker].dropna()
@@ -3440,6 +3859,11 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 r3m = trailing_return(63)
                 r6m = trailing_return(126)
                 r12m = trailing_return(252)
+                if len(series) > 42:
+                    prior_1m_base = series.iloc[-43]
+                    prior_1m_end = series.iloc[-22]
+                    prior_1m_return = (prior_1m_end - prior_1m_base) / prior_1m_base if prior_1m_base != 0 else None
+                    momentum_acceleration_1m = r1m - prior_1m_return if r1m is not None and prior_1m_return is not None else None
                 if len(series) > 252:
                     twelve_month_base = series.iloc[-253]
                     one_month_ago = series.iloc[-22]
@@ -3468,6 +3892,36 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                     daily_returns = series.pct_change().dropna()
                     if len(daily_returns) > 0:
                         volatility = float(daily_returns.std() * np.sqrt(252))
+
+                if completed_vol_series is not None and len(completed_vol_series) >= 5:
+                    aligned_volume = pd.concat(
+                        [series.pct_change().rename('return'), completed_vol_series.rename('volume')],
+                        axis=1,
+                        join='inner',
+                    ).dropna().iloc[-20:]
+                    if len(aligned_volume) >= 5:
+                        up_volume = aligned_volume.loc[aligned_volume['return'] > 0, 'volume'].mean()
+                        down_volume = aligned_volume.loc[aligned_volume['return'] < 0, 'volume'].mean()
+                        if pd.notna(up_volume) and pd.notna(down_volume) and up_volume > 0 and down_volume > 0:
+                            down_up_volume_ratio_20d = down_volume / up_volume
+                            adverse_volume_ratio_20d = down_up_volume_ratio_20d if direction == 'Long' else 1 / down_up_volume_ratio_20d
+                        total_volume = aligned_volume['volume'].sum()
+                        if total_volume > 0:
+                            obv_pressure_20d = float((np.sign(aligned_volume['return']) * aligned_volume['volume']).sum() / total_volume)
+                            position_volume_pressure_20d = obv_pressure_20d * dir_multiplier
+                        if len(aligned_volume) >= 10 and aligned_volume['volume'].nunique() > 1:
+                            price_volume_correlation_20d = aligned_volume['return'].corr(np.log1p(aligned_volume['volume']))
+                            if pd.notna(price_volume_correlation_20d):
+                                price_volume_correlation_20d = float(price_volume_correlation_20d)
+                                position_price_volume_correlation_20d = price_volume_correlation_20d * dir_multiplier
+
+                    dollar_volume = pd.concat(
+                        [series.rename('price'), completed_vol_series.rename('volume')],
+                        axis=1,
+                        join='inner',
+                    ).dropna().iloc[-20:]
+                    if len(dollar_volume) >= 5:
+                        average_dollar_volume_20d = float((dollar_volume['price'] * dollar_volume['volume']).mean())
             
             # Daily/Weekly contribution uses CURRENT (drifted) weight, not initial.
             r1d_contribution = current_weight * r1d * dir_multiplier if is_active and current_weight and r1d is not None else None
@@ -3484,6 +3938,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "r6m": to_float(r6m),
                 "r12m": to_float(r12m),
                 "r12mEx1m": to_float(momentum_12_1),
+                "prior1m": to_float(prior_1m_return),
+                "momentumAcceleration1m": to_float(momentum_acceleration_1m),
                 "r1y": row['1Y'] if (row is not None and '1Y' in row and not pd.isna(row['1Y'])) else to_float(r12m),
                 "priceVs50d": to_float(price_vs_50d),
                 "priceVs200d": to_float(price_vs_200d),
@@ -3502,8 +3958,24 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "lastPrice": last_price,
                 "entryPrice": ticker_config.get('entry_price', None) if ticker_config else None,
                 "currency": currency,
+                "country": country,
                 "volatility": volatility,
                 "volumeIndicator": to_float(volume_indicator),
+                "volumeDataThrough": volume_data_through,
+                "latestSessionVolume": to_float(latest_session_volume),
+                "latestSessionVolumeComplete": latest_session_volume_complete,
+                "volumeObservations": volume_observations,
+                "volume5dVs20d": to_float(volume_5d_vs_20d),
+                "volume20dVs63d": to_float(volume_20d_vs_63d),
+                "latestVolumeVs20d": to_float(latest_volume_vs_20d),
+                "latestCompletedVolumeZScore": to_float(latest_completed_volume_zscore),
+                "averageDollarVolume20d": to_float(average_dollar_volume_20d),
+                "downUpVolumeRatio20d": to_float(down_up_volume_ratio_20d),
+                "adverseVolumeRatio20d": to_float(adverse_volume_ratio_20d),
+                "obvPressure20d": to_float(obv_pressure_20d),
+                "positionVolumePressure20d": to_float(position_volume_pressure_20d),
+                "priceVolumeCorrelation20d": to_float(price_volume_correlation_20d),
+                "positionPriceVolumeCorrelation20d": to_float(position_price_volume_correlation_20d),
             }
             response["periodicReturns"].append(item)
 

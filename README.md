@@ -159,6 +159,17 @@ Google Drive file
 -> Gemini company analysis
 ```
 
+Portfolio-aware question routing:
+
+```text
+Question
+-> deterministic market-data intent check
+-> research/framework question: dated target-book outline only (no Yahoo refresh)
+-> momentum/volume/performance/risk/action question: shared live dashboard metrics
+-> Gemini receives clearly separated security returns, side-adjusted momentum,
+   realised contribution, completed-session volume diagnostics, and Drive evidence
+```
+
 Agent acquisition flow:
 
 ```text
@@ -188,6 +199,9 @@ Main Brain capabilities:
 - Full-text keyword search.
 - pgvector cosine semantic search.
 - Source-backed Ask Brain company analysis.
+- Question-routed portfolio context: the target book is always known, while Yahoo market data is fetched only for questions that require it.
+- Completed-session volume/momentum screen with relative volume, abnormal-volume z-score, adverse/favourable-day volume, OBV pressure, dollar liquidity, trend, acceleration, and explicit long/short handling.
+- Separate rankings for raw calendar-YTD security return, side-adjusted return, realised YTD contribution, and contribution since the latest rebalance.
 - Follow-up questions in the same Brain thread.
 - Source references when Drive metadata is available.
 
@@ -204,6 +218,8 @@ POST /api/brain/embeddings/backfill/start
 GET  /api/brain/search
 GET  /api/brain/search/semantic
 POST /api/brain/analyze-company
+GET  /api/brain/portfolio-outline
+GET  /api/brain/portfolio-context
 GET  /api/brain/references
 PUT  /api/brain/references
 GET  /api/brain/full-context

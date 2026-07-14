@@ -116,12 +116,14 @@ type BrainPortfolioContext = {
     generatedAt?: string;
     dataAsOf?: string | null;
     cacheAgeSeconds?: number | null;
-    fresh?: boolean;
+    fresh?: boolean | null;
+    marketDataRequested?: boolean;
+    marketDataAvailable?: boolean;
     positionCount?: number;
     source?: string;
     exposure?: {
         target?: PortfolioExposure;
-        currentDrifted?: PortfolioExposure;
+        currentDrifted?: PortfolioExposure | null;
     };
     performance?: {
         ytdNet?: number | null;
@@ -155,7 +157,10 @@ type RetrievalDiagnostics = {
     fullContextChars?: number;
     portfolioPositions?: number;
     portfolioDataAsOf?: string | null;
-    portfolioFresh?: boolean;
+    portfolioFresh?: boolean | null;
+    marketDataRequested?: boolean;
+    marketDataReasons?: string[];
+    marketDataAvailable?: boolean;
 };
 
 type ReferenceSetResponse = {
@@ -635,7 +640,7 @@ export const InvestmentBrainChat: React.FC = () => {
             bootstrapSnapshot.current = snapshot;
             writeBrainBootstrapSnapshot(snapshot);
             setBackendState('ready');
-            void request(api('/api/brain/portfolio-context'), {}, 65000)
+            void request(api('/api/brain/portfolio-outline'), {}, 12000)
                 .then(async response => {
                     if (response.ok) setPortfolioContext(await response.json() as BrainPortfolioContext);
                 })
@@ -656,6 +661,10 @@ export const InvestmentBrainChat: React.FC = () => {
     const embeddings = status?.embeddings ?? {};
     const allEmbedded = (embeddings.missing ?? 0) === 0 && (embeddings.total ?? counts.chunks ?? 0) > 0;
     const libraryState = !ready ? 'Offline' : !drive?.connected ? 'Drive needs access' : !allEmbedded ? 'Embedding pending' : 'Library ready';
+    const displayedExposure = portfolioContext?.marketDataAvailable
+        ? portfolioContext.exposure?.currentDrifted
+        : portfolioContext?.exposure?.target;
+    const portfolioModeLabel = portfolioContext?.marketDataAvailable ? 'Live portfolio' : 'Target portfolio';
 
     const filteredReferenceSources = useMemo(() => {
         const query = referenceFilter.trim().toLowerCase();
@@ -717,7 +726,9 @@ export const InvestmentBrainChat: React.FC = () => {
             const readCount = payload.retrieval?.expandedFiles ?? 0;
             const fullDocumentCount = payload.retrieval?.fullDocuments ?? 0;
             const liveBook = payload.retrieval?.portfolioPositions
-                ? ` with the ${payload.retrieval.portfolioPositions}-position live book as of ${payload.retrieval.portfolioDataAsOf ?? 'the latest market close'}`
+                ? payload.retrieval.marketDataAvailable
+                    ? ` with the ${payload.retrieval.portfolioPositions}-position live book as of ${payload.retrieval.portfolioDataAsOf ?? 'the latest market close'}`
+                    : ` with the ${payload.retrieval.portfolioPositions}-position target book; no market refresh was needed`
                 : '';
             setNotice(`${payload.model} answered in ${formatSeconds(payload.timings?.totalMs)}${liveBook}${fullDocumentCount ? ` and ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context` : readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.`);
         } catch (error) {
@@ -1101,12 +1112,12 @@ export const InvestmentBrainChat: React.FC = () => {
                     <div className="flex items-center gap-2">
                         {portfolioContext && (
                             <span
-                                title={`Current drifted book as of ${portfolioContext.dataAsOf ?? 'unknown'}: ${formatPercent(portfolioContext.exposure?.currentDrifted?.long)} long / ${formatPercent(portfolioContext.exposure?.currentDrifted?.short)} short`}
-                                className={cn('inline-flex min-h-8 items-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.08em]', portfolioContext.fresh ? 'border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-200' : 'border-amber-500/25 bg-amber-500/[0.08] text-amber-200')}
+                                title={`${portfolioModeLabel}${portfolioContext.marketDataAvailable ? ` as of ${portfolioContext.dataAsOf ?? 'unknown'}` : ''}: ${formatPercent(displayedExposure?.long)} long / ${formatPercent(displayedExposure?.short)} short`}
+                                className={cn('inline-flex min-h-8 items-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.08em]', portfolioContext.marketDataAvailable ? portfolioContext.fresh ? 'border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-200' : 'border-amber-500/25 bg-amber-500/[0.08] text-amber-200' : 'border-violet-500/25 bg-violet-500/[0.08] text-violet-200')}
                             >
                                 <BriefcaseBusiness className="h-3.5 w-3.5" />
                                 <span>{portfolioContext.positionCount ?? 0} positions</span>
-                                <span className="hidden border-l border-current/20 pl-2 sm:inline">{formatPercent(portfolioContext.exposure?.currentDrifted?.gross)} gross</span>
+                                <span className="hidden border-l border-current/20 pl-2 sm:inline">{formatPercent(displayedExposure?.gross)} {portfolioContext.marketDataAvailable ? 'gross' : 'target gross'}</span>
                             </span>
                         )}
                         <span className={cn('inline-flex min-h-8 items-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em]', ready ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300')}>
@@ -1185,7 +1196,7 @@ export const InvestmentBrainChat: React.FC = () => {
                                                     {` + ${message.retrieval.keywordHits ?? 0} exact`}
                                                     {message.retrieval.referenceSources ? ` / ${message.retrieval.referenceSources} framework${message.retrieval.referenceSources === 1 ? '' : 's'}` : ''}
                                                     {message.retrieval.fullDocuments ? ` / ${message.retrieval.fullDocuments} full file${message.retrieval.fullDocuments === 1 ? '' : 's'}` : ''}
-                                                    {message.retrieval.portfolioPositions ? ` / ${message.retrieval.portfolioPositions} live positions` : ''}
+                                                    {message.retrieval.portfolioPositions ? ` / ${message.retrieval.portfolioPositions} ${message.retrieval.marketDataAvailable ? 'live positions' : 'portfolio targets'}` : ''}
                                                     {message.retrieval.expandedFiles ? ` · ${message.retrieval.expandedFiles} file read${message.retrieval.expandedFiles === 1 ? '' : 's'}` : ''}
                                                 </span>
                                             )}
@@ -1202,7 +1213,7 @@ export const InvestmentBrainChat: React.FC = () => {
 
                             {isAsking && (
                                 <article className="max-w-3xl rounded-lg border border-white/[0.08] bg-white/[0.025] px-4 py-4 sm:px-5">
-                                    <div className="flex items-center gap-2 text-sm text-slate-400"><LoaderCircle className="h-4 w-4 animate-spin text-emerald-300" /> Refreshing the live book, calculating momentum, and retrieving evidence.</div>
+                                    <div className="flex items-center gap-2 text-sm text-slate-400"><LoaderCircle className="h-4 w-4 animate-spin text-emerald-300" /> Retrieving the portfolio, market, and research data this question needs.</div>
                                 </article>
                             )}
                         </div>
@@ -1243,14 +1254,14 @@ export const InvestmentBrainChat: React.FC = () => {
                             {portfolioContext && (
                                 <div className="mt-4 border-t border-white/[0.07] pt-3">
                                     <div className="flex items-center justify-between gap-3">
-                                        <div className="flex items-center gap-2"><BriefcaseBusiness className="h-3.5 w-3.5 text-cyan-300" /><span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">Live portfolio</span></div>
-                                        <span className={cn('text-[9px] font-bold uppercase tracking-[0.08em]', portfolioContext.fresh ? 'text-emerald-300' : 'text-amber-300')}>As of {portfolioContext.dataAsOf ?? 'unknown'}</span>
+                                        <div className="flex items-center gap-2"><BriefcaseBusiness className="h-3.5 w-3.5 text-cyan-300" /><span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">{portfolioModeLabel}</span></div>
+                                        <span className={cn('text-[9px] font-bold uppercase tracking-[0.08em]', portfolioContext.marketDataAvailable ? portfolioContext.fresh ? 'text-emerald-300' : 'text-amber-300' : 'text-violet-300')}>{portfolioContext.marketDataAvailable ? `As of ${portfolioContext.dataAsOf ?? 'unknown'}` : 'No market fetch'}</span>
                                     </div>
                                     <dl className="mt-2 grid grid-cols-4 gap-2 text-[10px]">
-                                        <div><dt className="text-slate-600">Long</dt><dd className="mt-0.5 font-semibold text-emerald-300">{formatPercent(portfolioContext.exposure?.currentDrifted?.long)}</dd></div>
-                                        <div><dt className="text-slate-600">Short</dt><dd className="mt-0.5 font-semibold text-rose-300">{formatPercent(portfolioContext.exposure?.currentDrifted?.short)}</dd></div>
-                                        <div><dt className="text-slate-600">Gross</dt><dd className="mt-0.5 font-semibold text-white">{formatPercent(portfolioContext.exposure?.currentDrifted?.gross)}</dd></div>
-                                        <div><dt className="text-slate-600">Net</dt><dd className="mt-0.5 font-semibold text-cyan-200">{formatPercent(portfolioContext.exposure?.currentDrifted?.net)}</dd></div>
+                                        <div><dt className="text-slate-600">Long</dt><dd className="mt-0.5 font-semibold text-emerald-300">{formatPercent(displayedExposure?.long)}</dd></div>
+                                        <div><dt className="text-slate-600">Short</dt><dd className="mt-0.5 font-semibold text-rose-300">{formatPercent(displayedExposure?.short)}</dd></div>
+                                        <div><dt className="text-slate-600">Gross</dt><dd className="mt-0.5 font-semibold text-white">{formatPercent(displayedExposure?.gross)}</dd></div>
+                                        <div><dt className="text-slate-600">Net</dt><dd className="mt-0.5 font-semibold text-cyan-200">{formatPercent(displayedExposure?.net)}</dd></div>
                                     </dl>
                                 </div>
                             )}

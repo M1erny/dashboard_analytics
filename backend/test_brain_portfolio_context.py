@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import server
 
@@ -99,13 +99,55 @@ try:
     assert positions["SHORT"]["signedCurrentWeight"] == -0.35
     assert context["momentum"]["leaders3mPositionAdjusted"][0]["ticker"] == "LONG"
     assert context["momentum"]["laggards3mPositionAdjusted"][0]["ticker"] == "SHORT"
+    assert context["performanceRankings"]["realizedYtdContributionLeaders"][0]["ticker"] == "LONG"
+    assert context["performanceRankings"]["realizedYtdContributionLaggards"][0]["ticker"] == "SHORT"
 
     prompt_context = server._format_brain_portfolio_context(context)
     assert "Current drifted exposure" in prompt_context
     assert "underlying returns are security returns" in prompt_context
     assert "NAV/equity" in prompt_context
     assert "Pre-ranked 3m position-adjusted leaders" in prompt_context
+    assert "Ranking guardrail" in prompt_context
     assert "SHORT Short | target +40.0% | current +35.0%" in prompt_context
+
+    assert server._brain_market_data_intent("Analyze the moat in my Drive research")["requested"] is False
+    live_intent = server._brain_market_data_intent("Which holding has weak momentum and adverse volume?")
+    assert live_intent["requested"] is True
+    assert "price_momentum_or_volume" in live_intent["reasons"]
+    disabled_intent = server._brain_market_data_intent("Discuss momentum from my documents only")
+    assert disabled_intent["requested"] is False
+    assert disabled_intent["explicitlyDisabled"] is True
+
+    outline = server._build_brain_portfolio_outline("main")
+    assert outline["marketDataAvailable"] is False
+    assert outline["exposure"]["currentDrifted"] is None
+    assert "market data was not requested" in server._format_brain_portfolio_context(outline)
+
+    weak_short = {
+        "side": "Short",
+        "positionMomentum": {"1m": -0.08, "3m": -0.20, "6m": -0.25, "12mEx1m": -0.15},
+        "relativeStrength1m": 0.08,
+        "momentumAcceleration1m": 0.10,
+        "priceVs50d": 0.12,
+        "priceVs200d": 0.18,
+        "volume": {
+            "adverseVolumeRatio20d": 1.30,
+            "positionVolumePressure20d": -0.25,
+            "volume5dVs20d": 1.20,
+            "volume20dVs63d": 1.15,
+            "latestCompletedVolumeZScore": 1.5,
+            "observations": 100,
+        },
+    }
+    weak_short_diagnostic = server._position_technical_diagnostic(weak_short)
+    assert weak_short_diagnostic["screeningStatus"] == "high_conviction_technical_review"
+    assert weak_short_diagnostic["technicalAction"] == "review_reduce_or_cover"
+    assert weak_short_diagnostic["volumeConfirmsWeakness"] is True
+
+    yesterday = datetime.now() - timedelta(days=1)
+    tomorrow = datetime.now() + timedelta(days=1)
+    assert server._market_session_is_complete(yesterday, "USA") is True
+    assert server._market_session_is_complete(tomorrow, "USA") is False
 
     async def fake_get_metrics(force=False, costTier="retail", portfolio="main"):
         return metrics
