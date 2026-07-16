@@ -60,6 +60,7 @@ TEXT_EXTENSIONS = {
 DEFAULT_MAX_BYTES = 2 * 1024 * 1024
 DEFAULT_MAX_PDF_PAGES = 40
 DEFAULT_MAX_EXTRACTED_CHARS = 250_000
+CONVERSATION_TRANSCRIPT_PREFIX = "investment brain/conversations/"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -82,6 +83,11 @@ def parse_drive_folder_id(value: str | None = None) -> str | None:
         return match.group(1)
 
     return raw.split("?")[0].strip().strip("/")
+
+
+def is_brain_conversation_transcript(file: dict[str, Any]) -> bool:
+    relative_path = str(file.get("relativePath") or file.get("name") or "").replace("\\", "/").strip("/").casefold()
+    return relative_path.startswith(CONVERSATION_TRANSCRIPT_PREFIX)
 
 
 def drive_folder_url(folder_id: str | None) -> str | None:
@@ -404,6 +410,27 @@ class GoogleDriveClient:
             files = response.json().get("files", [])
         return files[0] if files else None
 
+    def find_file_by_app_property(self, parent_id: str, key: str, value: str) -> dict[str, Any] | None:
+        safe_parent = self._escape_drive_query(parent_id)
+        safe_key = self._escape_drive_query(key)
+        safe_value = self._escape_drive_query(value)
+        query = (
+            f"'{safe_parent}' in parents and trashed = false and "
+            f"appProperties has {{ key='{safe_key}' and value='{safe_value}' }}"
+        )
+        params = {
+            "q": query,
+            "pageSize": "10",
+            "fields": "files(id,name,mimeType,size,webViewLink,createdTime,modifiedTime,appProperties)",
+            "supportsAllDrives": "true",
+            "includeItemsFromAllDrives": "true",
+        }
+        with httpx.Client(timeout=60) as client:
+            response = client.get(f"{DRIVE_API_BASE}/files", headers=self._headers(), params=params)
+            response.raise_for_status()
+            files = response.json().get("files", [])
+        return files[0] if files else None
+
     def create_folder(self, parent_id: str, name: str) -> dict[str, Any]:
         payload = {
             "name": name,
@@ -438,12 +465,15 @@ class GoogleDriveClient:
         mime_type: str,
         folder_id: str | None = None,
         description: str | None = None,
+        app_properties: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         metadata: dict[str, Any] = {"name": name}
         if folder_id:
             metadata["parents"] = [folder_id]
         if description:
             metadata["description"] = description[:4000]
+        if app_properties:
+            metadata["appProperties"] = {str(key): str(value) for key, value in app_properties.items()}
 
         files = {
             "metadata": (None, json.dumps(metadata), "application/json; charset=UTF-8"),
@@ -457,6 +487,40 @@ class GoogleDriveClient:
         with httpx.Client(timeout=120) as client:
             response = client.post(
                 "https://www.googleapis.com/upload/drive/v3/files",
+                headers=self._headers(),
+                params=params,
+                files=files,
+            )
+            response.raise_for_status()
+            return response.json()
+
+    def update_file(
+        self,
+        file_id: str,
+        *,
+        name: str,
+        data: bytes,
+        mime_type: str,
+        description: str | None = None,
+        app_properties: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        metadata: dict[str, Any] = {"name": name}
+        if description:
+            metadata["description"] = description[:4000]
+        if app_properties:
+            metadata["appProperties"] = {str(key): str(value) for key, value in app_properties.items()}
+        files = {
+            "metadata": (None, json.dumps(metadata), "application/json; charset=UTF-8"),
+            "file": (name, data, mime_type),
+        }
+        params = {
+            "uploadType": "multipart",
+            "supportsAllDrives": "true",
+            "fields": "id,name,mimeType,size,webViewLink,webContentLink,createdTime,modifiedTime,appProperties",
+        }
+        with httpx.Client(timeout=120) as client:
+            response = client.patch(
+                f"https://www.googleapis.com/upload/drive/v3/files/{file_id}",
                 headers=self._headers(),
                 params=params,
                 files=files,
@@ -701,7 +765,7 @@ def index_drive_folder(
     files = client.iter_files(clean_folder_id, limit_files=limit_files)
     linked_legacy_sources = reconcile_legacy_source_drive_links(
         store,
-        files,
+        [file for file in files if not is_brain_conversation_transcript(file)],
         folder_id=clean_folder_id,
         linked_at=indexed_at,
     )
@@ -731,6 +795,17 @@ def index_drive_folder(
     for file in files:
         relative_path = file.get("relativePath") or file.get("name") or file["id"]
         try:
+            if is_brain_conversation_transcript(file):
+                results.append({
+                    "id": file["id"],
+                    "name": file.get("name"),
+                    "relativePath": relative_path,
+                    "status": "skipped",
+                    "reason": "Brain conversation transcript excluded from retrieval index",
+                    "mimeType": file.get("mimeType"),
+                })
+                emit_progress(relative_path)
+                continue
             extension = extension_for_file(file)
             if not extension or extension not in SUPPORTED_EXTENSIONS:
                 results.append({

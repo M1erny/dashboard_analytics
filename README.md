@@ -118,6 +118,7 @@ BRAIN_INDEX_TIMEOUT_SECONDS=240
 BRAIN_FULL_CONTEXT_MAX_CHARS_PER_SOURCE=250000
 BRAIN_FULL_CONTEXT_TOTAL_MAX_CHARS=800000
 BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS=45
+BRAIN_CONVERSATION_SAVE_TIMEOUT_SECONDS=25
 BRAIN_AGENT_USER_AGENT=InvestmentBrainResearchAgent/1.0; your-email@example.com
 ```
 
@@ -203,7 +204,22 @@ Main Brain capabilities:
 - Completed-session volume/momentum screen with relative volume, abnormal-volume z-score, adverse/favourable-day volume, OBV pressure, dollar liquidity, trend, acceleration, and explicit long/short handling.
 - Separate rankings for raw calendar-YTD security return, side-adjusted return, realised YTD contribution, and contribution since the latest rebalance.
 - Follow-up questions in the same Brain thread.
+- Automatic Google Drive transcript saving after every completed exchange.
 - Source references when Drive metadata is available.
+
+### Durable conversation transcripts
+
+Each browser thread receives a stable ID. After Gemini completes an exchange, the backend creates or updates one file under:
+
+```text
+GOOGLE_DRIVE_FOLDER_ID/Investment Brain/Conversations/
+```
+
+The file is Markdown with Obsidian-compatible YAML front matter. Every exchange contains the readable user/assistant transcript, direct source links, model and embedding names, the system-prompt hash and deduplicated snapshot, portfolio market date, retrieval diagnostics, and a JSON context manifest for future analytics. Retrieved passages are retained in the manifest with bounded text fields; complete books and reports stay canonical in their original Drive files and are referenced by source/file ID instead of being copied into every conversation.
+
+Conversation files are deliberately excluded from the Drive retrieval index. This prevents the Brain from treating its previous generated answers as independent research evidence and creating a self-reinforcing retrieval loop.
+
+`threadId` keeps follow-ups in one file and `exchangeId` makes retries idempotent. Autosave failures never discard the answer: the API returns an `autosave` status and the Brain UI shows either a direct Drive link or an actionable failure state. A single transcript is capped at 25 MB so a runaway thread cannot exhaust Drive or Render memory.
 
 Useful endpoints:
 

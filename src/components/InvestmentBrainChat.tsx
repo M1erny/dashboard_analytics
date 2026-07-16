@@ -195,7 +195,22 @@ type AnalysisResponse = {
     embeddingModel: string;
     context?: AnalysisContext;
     retrieval?: RetrievalDiagnostics;
-    timings?: { totalMs?: number; generationMs?: number; semanticError?: string; keywordError?: string };
+    timings?: { totalMs?: number; generationMs?: number; autosaveMs?: number; semanticError?: string; keywordError?: string };
+    autosave?: ConversationAutosave;
+};
+
+type ConversationAutosave = {
+    status: 'saved' | 'unchanged' | 'failed' | 'skipped' | 'unavailable' | 'disabled';
+    threadId?: string;
+    exchangeId?: string;
+    fileId?: string;
+    fileName?: string;
+    webViewLink?: string;
+    folderId?: string;
+    savedAt?: string;
+    exchangeCount?: number;
+    format?: string;
+    reason?: string;
 };
 
 type AgentCandidate = {
@@ -302,6 +317,9 @@ const formatPercent = (value?: number) => `${Math.round((value ?? 0) * 100)}%`;
 const formatSeconds = (value?: number) => typeof value === 'number' ? `${(value / 1000).toFixed(1)}s` : '';
 const excerpt = (value: string, length = 190) => value.replace(/\s+/g, ' ').trim().slice(0, length) + (value.length > length ? '...' : '');
 const messageId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+const conversationId = () => typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2, 14)}`;
 
 const sourceName = (source?: SourceReference | null, fallback = 'Untitled source') =>
     source?.title ?? source?.fileName ?? source?.relativePath ?? fallback;
@@ -571,6 +589,8 @@ export const InvestmentBrainChat: React.FC = () => {
     const [isSystemPromptSaving, setIsSystemPromptSaving] = useState(false);
     const [draft, setDraft] = useState('What does my research say about the moat, risks, valuation lens, and what would change my mind?');
     const [thread, setThread] = useState<ChatMessage[]>([]);
+    const [threadId, setThreadId] = useState(() => conversationId());
+    const [conversationAutosave, setConversationAutosave] = useState<ConversationAutosave | null>(null);
     const [portfolioContext, setPortfolioContext] = useState<BrainPortfolioContext | null>(null);
     const [isAsking, setIsAsking] = useState(false);
     const [notice, setNotice] = useState('');
@@ -692,6 +712,7 @@ export const InvestmentBrainChat: React.FC = () => {
         if (!ready || !question || isAsking) return;
 
         const userMessage: ChatMessage = { id: messageId(), role: 'user', content: question };
+        const exchangeId = conversationId();
         const priorConversation = thread.map(message => ({ role: message.role, content: message.content }));
         setThread(current => [...current, userMessage]);
         setDraft('');
@@ -708,12 +729,17 @@ export const InvestmentBrainChat: React.FC = () => {
                     question,
                     limit: 6,
                     useSemantic: true,
-                    conversation: priorConversation.slice(-10),
+                    conversation: priorConversation.slice(-100),
+                    threadId,
+                    exchangeId,
+                    threadTitle: priorConversation.find(message => message.role === 'user')?.content ?? question,
+                    autoSave: true,
                 }),
-            }, fullContextSources.length ? 120000 : 65000);
+            }, fullContextSources.length ? 150000 : 90000);
             if (!response.ok) throw new Error(await errorText(response, 'The Brain could not complete this question.'));
             const payload = await response.json() as AnalysisResponse;
             if (payload.context?.portfolio) setPortfolioContext(payload.context.portfolio);
+            if (payload.autosave) setConversationAutosave(payload.autosave);
             setThread(current => [...current, {
                 id: messageId(),
                 role: 'assistant',
@@ -730,7 +756,12 @@ export const InvestmentBrainChat: React.FC = () => {
                     ? ` with the ${payload.retrieval.portfolioPositions}-position live book as of ${payload.retrieval.portfolioDataAsOf ?? 'the latest market close'}`
                     : ` with the ${payload.retrieval.portfolioPositions}-position target book; no market refresh was needed`
                 : '';
-            setNotice(`${payload.model} answered in ${formatSeconds(payload.timings?.totalMs)}${liveBook}${fullDocumentCount ? ` and ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context` : readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.`);
+            const saveNote = payload.autosave?.status === 'saved' || payload.autosave?.status === 'unchanged'
+                ? ' Saved to Drive.'
+                : payload.autosave?.status === 'failed' || payload.autosave?.status === 'unavailable'
+                    ? ' Answer completed, but Drive autosave needs attention.'
+                    : '';
+            setNotice(`${payload.model} answered in ${formatSeconds(payload.timings?.totalMs)}${liveBook}${fullDocumentCount ? ` and ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context` : readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.${saveNote}`);
         } catch (error) {
             const text = error instanceof DOMException && error.name === 'AbortError'
                 ? 'This request took too long. The backend may be waking up; try the question again.'
@@ -1086,6 +1117,8 @@ export const InvestmentBrainChat: React.FC = () => {
 
     const resetThread = () => {
         setThread([]);
+        setThreadId(conversationId());
+        setConversationAutosave(null);
         setDraft('What does my research say about the moat, risks, valuation lens, and what would change my mind?');
         setNotice('New research thread.');
     };
@@ -1110,6 +1143,30 @@ export const InvestmentBrainChat: React.FC = () => {
                         </div>
                     </div>
                     <div className="flex items-center gap-2">
+                        {conversationAutosave?.webViewLink ? (
+                            <a
+                                href={conversationAutosave.webViewLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                title={conversationAutosave.fileName ?? 'Open the saved Markdown transcript in Google Drive'}
+                                className="inline-flex min-h-8 items-center gap-2 rounded-md border border-cyan-500/25 bg-cyan-500/[0.08] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-cyan-200 transition-colors hover:bg-cyan-500/[0.14]"
+                            >
+                                <Cloud className="h-3.5 w-3.5" />
+                                <span className="hidden sm:inline">Saved to Drive</span>
+                                <ExternalLink className="h-3 w-3" />
+                            </a>
+                        ) : conversationAutosave?.status === 'failed' || conversationAutosave?.status === 'unavailable' ? (
+                            <span
+                                title={conversationAutosave.reason ?? 'Drive autosave failed'}
+                                className="inline-flex min-h-8 items-center gap-2 rounded-md border border-amber-500/25 bg-amber-500/[0.08] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-amber-200"
+                            >
+                                <Cloud className="h-3.5 w-3.5" /> Save failed
+                            </span>
+                        ) : drive?.connected ? (
+                            <span className="hidden min-h-8 items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.025] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500 sm:inline-flex">
+                                <Cloud className="h-3.5 w-3.5" /> Autosave on
+                            </span>
+                        ) : null}
                         {portfolioContext && (
                             <span
                                 title={`${portfolioModeLabel}${portfolioContext.marketDataAvailable ? ` as of ${portfolioContext.dataAsOf ?? 'unknown'}` : ''}: ${formatPercent(displayedExposure?.long)} long / ${formatPercent(displayedExposure?.short)} short`}

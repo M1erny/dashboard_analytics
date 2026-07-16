@@ -36,6 +36,7 @@ try:
         find_official_source_candidates,
         import_url_into_brain,
     )
+    from brain_conversations import autosave_brain_conversation
     from brain_store import create_brain_store
     from brain_ingestion import chunk_text, normalize_text, stable_hash
     from brain_indexer import index_local_library, indexer_status
@@ -53,6 +54,7 @@ except ImportError as e:
     DEFAULT_AGENT_MAX_BYTES = 15 * 1024 * 1024
     find_official_source_candidates = None
     import_url_into_brain = None
+    autosave_brain_conversation = None
     create_brain_store = None
     index_local_library = None
     indexer_status = None
@@ -124,6 +126,7 @@ FULL_CONTEXT_TOTAL_MAX_CHARS = max(100_000, min(_env_int("BRAIN_FULL_CONTEXT_TOT
 FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS = max(15.0, min(_env_float("BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS", 45.0), 120.0))
 FULL_DOCUMENT_CACHE_MAX_ENTRIES = max(2, min(_env_int("BRAIN_FULL_DOCUMENT_CACHE_MAX_ENTRIES", 12), 32))
 BRAIN_STATUS_CACHE_SECONDS = max(2.0, min(_env_float("BRAIN_STATUS_CACHE_SECONDS", 15.0), 60.0))
+BRAIN_CONVERSATION_SAVE_TIMEOUT_SECONDS = max(5.0, min(_env_float("BRAIN_CONVERSATION_SAVE_TIMEOUT_SECONDS", 25.0), 60.0))
 SYSTEM_PROMPT_SETTING = "brain.system_prompt.v1"
 MAX_SYSTEM_PROMPT_CHARS = 6000
 DEFAULT_BRAIN_SYSTEM_PROMPT = """You are Investment Brain, a rigorous private investing research assistant.
@@ -1045,7 +1048,7 @@ class BrainSystemPromptRequest(BaseModel):
 
 class BrainConversationTurn(BaseModel):
     role: str = Field(..., min_length=1, max_length=20)
-    content: str = Field(..., min_length=1, max_length=5000)
+    content: str = Field(..., min_length=1, max_length=16000)
 
 
 class BrainCompanyAnalysisRequest(BaseModel):
@@ -1053,7 +1056,11 @@ class BrainCompanyAnalysisRequest(BaseModel):
     question: str | None = Field(default=None, max_length=4000)
     limit: int = Field(default=8, ge=1, le=20)
     useSemantic: bool = True
-    conversation: list[BrainConversationTurn] = Field(default_factory=list, max_length=12)
+    conversation: list[BrainConversationTurn] = Field(default_factory=list, max_length=100)
+    threadId: str | None = Field(default=None, min_length=8, max_length=100)
+    exchangeId: str | None = Field(default=None, min_length=8, max_length=100)
+    threadTitle: str | None = Field(default=None, max_length=160)
+    autoSave: bool = True
 
 
 def _safe_backend_error(message: str | None) -> str:
@@ -1285,6 +1292,7 @@ async def get_brain_status():
         "yahoo_momentum_context",
         "question_routed_market_data",
         "completed_session_volume_screen",
+        "drive_conversation_autosave",
     ]
     if import_url_into_brain:
         capabilities.append("agentic_url_import")
@@ -3143,6 +3151,9 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         if ticker
         else "Analyze the strongest relevant evidence in my investment brain. Focus on evidence, contradictions, risks, and what would change my mind."
     )
+    for identifier, label in ((payload.threadId, "threadId"), (payload.exchangeId, "exchangeId")):
+        if identifier and not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", identifier):
+            raise HTTPException(status_code=422, detail=f"{label} contains unsupported characters")
     conversation_history = _format_conversation_history(payload.conversation)
     prior_user_questions = " ".join(
         re.sub(r"\s+", " ", turn.content).strip()[:280]
@@ -3384,6 +3395,81 @@ Full-document sources are investor-selected primary context. They contain the fu
         }
 
     timings["generationMs"] = round((time.perf_counter() - step_started) * 1000, 1)
+    retrieval_payload = {
+        "semanticHits": len(semantic_results),
+        "keywordHits": len(keyword_results),
+        "mergedHits": len(context_items),
+        "expandedFiles": len(deep_sources),
+        "semanticAvailable": semantic_available,
+        "referenceSources": len(reference_context),
+        "referenceSemanticHits": reference_semantic_hits,
+        "fullDocuments": len(full_document_context),
+        "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
+        "portfolioPositions": portfolio_context.get("positionCount", 0),
+        "portfolioDataAsOf": portfolio_context.get("dataAsOf"),
+        "portfolioFresh": portfolio_context.get("fresh"),
+        "marketDataRequested": market_data_intent.get("requested", False),
+        "marketDataReasons": market_data_intent.get("reasons", []),
+        "marketDataAvailable": portfolio_context.get("marketDataAvailable", False),
+    }
+    context_payload = {
+        "memories": memory_results,
+        "retrieved": context_items,
+        "deepSources": deep_sources,
+        "references": reference_context,
+        "fullDocuments": _public_full_document_context(full_document_context),
+        "portfolio": portfolio_context,
+    }
+    autosave_payload: dict[str, Any] = {"status": "disabled"}
+    if payload.autoSave:
+        if not payload.threadId or not payload.exchangeId:
+            autosave_payload = {
+                "status": "skipped",
+                "reason": "The client did not provide a stable threadId and exchangeId.",
+            }
+        elif not autosave_brain_conversation or not parse_drive_folder_id:
+            autosave_payload = {"status": "unavailable", "reason": "Drive transcript support is unavailable."}
+        else:
+            autosave_started = time.perf_counter()
+            try:
+                root_folder_id = parse_drive_folder_id()
+                if not root_folder_id:
+                    raise RuntimeError("GOOGLE_DRIVE_FOLDER_ID is not configured")
+                drive_client = _drive_or_503()
+                first_question = next(
+                    (
+                        turn.content.strip()
+                        for turn in payload.conversation
+                        if turn.role.lower() == "user" and turn.content.strip()
+                    ),
+                    question,
+                )
+                autosave_payload = await asyncio.wait_for(
+                    run_in_threadpool(
+                        autosave_brain_conversation,
+                        drive_client,
+                        root_folder_id=root_folder_id,
+                        thread_id=payload.threadId,
+                        exchange_id=payload.exchangeId,
+                        title=(payload.threadTitle or first_question)[:160],
+                        question=question,
+                        answer=answer,
+                        model=client.generation_model,
+                        embedding_model=client.embedding_model,
+                        system_prompt=system_prompt,
+                        retrieval=retrieval_payload,
+                        context=context_payload,
+                        timings=timings,
+                    ),
+                    timeout=BRAIN_CONVERSATION_SAVE_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                autosave_payload = {
+                    "status": "failed",
+                    "reason": _clean_public_error(exc)[:300],
+                }
+            timings["autosaveMs"] = round((time.perf_counter() - autosave_started) * 1000, 1)
+
     timings["totalMs"] = round((time.perf_counter() - started_at) * 1000, 1)
 
     return {
@@ -3393,31 +3479,9 @@ Full-document sources are investor-selected primary context. They contain the fu
         "embeddingModel": client.embedding_model,
         "answer": answer,
         "timings": timings,
-        "retrieval": {
-            "semanticHits": len(semantic_results),
-            "keywordHits": len(keyword_results),
-            "mergedHits": len(context_items),
-            "expandedFiles": len(deep_sources),
-            "semanticAvailable": semantic_available,
-            "referenceSources": len(reference_context),
-            "referenceSemanticHits": reference_semantic_hits,
-            "fullDocuments": len(full_document_context),
-            "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
-            "portfolioPositions": portfolio_context.get("positionCount", 0),
-            "portfolioDataAsOf": portfolio_context.get("dataAsOf"),
-            "portfolioFresh": portfolio_context.get("fresh"),
-            "marketDataRequested": market_data_intent.get("requested", False),
-            "marketDataReasons": market_data_intent.get("reasons", []),
-            "marketDataAvailable": portfolio_context.get("marketDataAvailable", False),
-        },
-        "context": {
-            "memories": memory_results,
-            "retrieved": context_items,
-            "deepSources": deep_sources,
-            "references": reference_context,
-            "fullDocuments": _public_full_document_context(full_document_context),
-            "portfolio": portfolio_context,
-        },
+        "retrieval": retrieval_payload,
+        "context": context_payload,
+        "autosave": autosave_payload,
     }
 
 @app.get("/api/metrics")
