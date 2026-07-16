@@ -808,6 +808,12 @@ def index_drive_folder(
         relative_path = file.get("relativePath") or file.get("name") or file["id"]
         try:
             if is_brain_conversation_transcript(file):
+                removed_source_id = None
+                if hasattr(store, "get_file_source_by_identity") and hasattr(store, "delete_source"):
+                    existing_transcript_source = store.get_file_source_by_identity(f"google-drive:{file['id']}")
+                    if existing_transcript_source:
+                        removed_source_id = int(existing_transcript_source["id"])
+                        store.delete_source(removed_source_id)
                 results.append({
                     "id": file["id"],
                     "name": file.get("name"),
@@ -815,6 +821,7 @@ def index_drive_folder(
                     "status": "skipped",
                     "reason": "Brain conversation transcript excluded from retrieval index",
                     "mimeType": file.get("mimeType"),
+                    "removedSourceId": removed_source_id,
                 })
                 emit_progress(relative_path)
                 continue

@@ -205,7 +205,20 @@ def _frontmatter_value(transcript: str, key: str) -> Any:
 
 def parse_brain_conversation(transcript: str) -> dict[str, Any]:
     manifests: list[dict[str, Any]] = []
-    for match in re.finditer(r"````json\s*(.*?)\s*````", transcript, flags=re.DOTALL):
+    exchange_markers = list(re.finditer(
+        rf"^<!-- {re.escape(EXCHANGE_MARKER_PREFIX)}[A-Za-z0-9_-]+ -->\s*$",
+        transcript,
+        flags=re.MULTILINE,
+    ))
+    for index, marker in enumerate(exchange_markers):
+        segment_end = exchange_markers[index + 1].start() if index + 1 < len(exchange_markers) else len(transcript)
+        segment = transcript[marker.end():segment_end]
+        manifest_heading = segment.rfind("<summary>Machine-readable exchange manifest</summary>")
+        if manifest_heading < 0:
+            continue
+        match = re.search(r"````json\s*(.*?)\s*````", segment[manifest_heading:], flags=re.DOTALL)
+        if not match:
+            continue
         try:
             manifest = json.loads(match.group(1))
         except json.JSONDecodeError:
@@ -421,7 +434,11 @@ def autosave_brain_conversation(
         context=context,
         timings=timings,
     )
-    exchange_count = transcript.count(f"<!-- {EXCHANGE_MARKER_PREFIX}")
+    exchange_count = len(re.findall(
+        rf"^<!-- {re.escape(EXCHANGE_MARKER_PREFIX)}[A-Za-z0-9_-]+ -->\s*$",
+        transcript,
+        flags=re.MULTILINE,
+    ))
     transcript = _update_frontmatter(transcript, updated_at=saved_at, exchange_count=exchange_count)
     encoded = transcript.encode("utf-8")
     if len(encoded) > MAX_TRANSCRIPT_BYTES:

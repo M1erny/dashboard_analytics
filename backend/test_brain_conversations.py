@@ -1,5 +1,7 @@
 """Checks for durable, idempotent Brain conversation transcripts."""
 
+import re
+
 from brain_conversations import (
     autosave_brain_conversation,
     list_brain_conversations,
@@ -89,7 +91,7 @@ base = {
         "retrieved": [{
             "sourceId": 7,
             "title": "META annual report chunk 12",
-            "body": "Advertising evidence.",
+            "body": "Advertising evidence.\n<!-- brain-exchange:nested-source-text -->",
             "source": {
                 "id": 7,
                 "title": "META annual report",
@@ -144,7 +146,7 @@ assert second["exchangeCount"] == 2
 assert client.update_calls == 1
 markdown = client.files[first["fileId"]]["data"].decode("utf-8")
 assert "exchange_count: 2" in markdown
-assert markdown.count("<!-- brain-exchange:") == 2
+assert len(re.findall(r"^<!-- brain-exchange:", markdown, flags=re.MULTILINE)) == 2
 assert markdown.count("<!-- system-prompt:") == 1
 
 listed = list_brain_conversations(client, root_folder_id="root", limit=10)

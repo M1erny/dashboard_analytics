@@ -65,6 +65,19 @@ assert legacy_reference["webUrl"] is None
 assert legacy_reference["linkType"] == "drive_search"
 assert legacy_reference["driveSearchUrl"].startswith("https://drive.google.com/drive/u/0/search?q=")
 
+conversation_source = {
+    "id": 12,
+    "kind": "file",
+    "title": "Saved Brain thread",
+    "metadata": {"relativePath": "Investment Brain/Conversations/thread.md"},
+}
+assert server._is_brain_conversation_source(conversation_source) is True
+assert server._is_brain_conversation_source({"metadata": {"relativePath": "Research/META.md"}}) is False
+assert server._exclude_brain_conversation_results([
+    {"entityId": 1, "source": server._public_source_reference(conversation_source)},
+    {"entityId": 2, "source": legacy_reference},
+]) == [{"entityId": 2, "source": legacy_reference}]
+
 legacy_matches = match_legacy_sources_to_drive(
     [{
         "id": 21,

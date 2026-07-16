@@ -318,6 +318,34 @@ def _public_source_reference(source: dict[str, Any] | None) -> dict[str, Any] | 
     }
 
 
+def _is_brain_conversation_source(source: dict[str, Any] | None) -> bool:
+    if not source:
+        return False
+    metadata = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+    if metadata.get("sourceType") == "brain_conversation":
+        return True
+    paths = (
+        source.get("relativePath"),
+        source.get("fileName"),
+        metadata.get("relativePath"),
+        metadata.get("driveRelativePath"),
+        metadata.get("fileName"),
+    )
+    for value in paths:
+        path = str(value or "").replace("\\", "/").strip("/").casefold()
+        if path.startswith("investment brain/conversations/"):
+            return True
+    return False
+
+
+def _exclude_brain_conversation_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in results
+        if not _is_brain_conversation_source(item.get("source"))
+    ]
+
+
 async def _attach_source_references(store: Any, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     source_ids: set[int] = set()
     for item in results:
@@ -408,6 +436,8 @@ async def _load_reference_sources(store: Any, source_ids: list[int]) -> list[dic
             continue
         source = dict(result)
         source["id"] = int(source.get("id") or source_id)
+        if _is_brain_conversation_source(source):
+            continue
         sources.append(source)
     return sources
 
@@ -1810,6 +1840,7 @@ async def list_brain_sources(
         kind=kind,
         limit=limit,
     )
+    sources = [source for source in sources if not _is_brain_conversation_source(source)]
     return {"sources": sources}
 
 
@@ -2053,6 +2084,7 @@ async def search_brain(
         entity_type=entity_type,
     )
     results = await _attach_source_references(store, results)
+    results = _exclude_brain_conversation_results(results)
     counts = await _run_brain_step("Brain counts", store.counts)
     return {
         "query": query,
@@ -2199,6 +2231,7 @@ async def semantic_brain_search(
         }
         for chunk in chunks
     ])
+    results = _exclude_brain_conversation_results(results)
     return {
         "query": query,
         "model": client.embedding_model,
@@ -3238,7 +3271,7 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     _, selected_full_context_sources = await full_context_sources_task
     system_prompt = await system_prompt_task
 
-    candidate_limit = min(payload.limit * 2, 20)
+    candidate_limit = min(payload.limit * 4, 40)
     retrieval_started = time.perf_counter()
     keyword_task = asyncio.create_task(
         _run_brain_step(
@@ -3303,6 +3336,12 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         memory_results = []
     timings["memorySearchMs"] = round((time.perf_counter() - retrieval_started) * 1000, 1)
 
+    semantic_results = _exclude_brain_conversation_results(
+        await _attach_source_references(store, semantic_results)
+    )
+    keyword_results = _exclude_brain_conversation_results(
+        await _attach_source_references(store, keyword_results)
+    )
     context_items = _merge_retrieval_results(
         semantic_results,
         keyword_results,
