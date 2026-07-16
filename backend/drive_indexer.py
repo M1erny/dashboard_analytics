@@ -411,6 +411,17 @@ class GoogleDriveClient:
         return files[0] if files else None
 
     def find_file_by_app_property(self, parent_id: str, key: str, value: str) -> dict[str, Any] | None:
+        files = self.list_files_by_app_property(parent_id, key, value, limit=1)
+        return files[0] if files else None
+
+    def list_files_by_app_property(
+        self,
+        parent_id: str,
+        key: str,
+        value: str,
+        *,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
         safe_parent = self._escape_drive_query(parent_id)
         safe_key = self._escape_drive_query(key)
         safe_value = self._escape_drive_query(value)
@@ -420,7 +431,8 @@ class GoogleDriveClient:
         )
         params = {
             "q": query,
-            "pageSize": "10",
+            "pageSize": str(max(1, min(int(limit), 100))),
+            "orderBy": "modifiedTime desc",
             "fields": "files(id,name,mimeType,size,webViewLink,createdTime,modifiedTime,appProperties)",
             "supportsAllDrives": "true",
             "includeItemsFromAllDrives": "true",
@@ -429,7 +441,7 @@ class GoogleDriveClient:
             response = client.get(f"{DRIVE_API_BASE}/files", headers=self._headers(), params=params)
             response.raise_for_status()
             files = response.json().get("files", [])
-        return files[0] if files else None
+        return files
 
     def create_folder(self, parent_id: str, name: str) -> dict[str, Any]:
         payload = {

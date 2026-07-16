@@ -36,7 +36,11 @@ try:
         find_official_source_candidates,
         import_url_into_brain,
     )
-    from brain_conversations import autosave_brain_conversation
+    from brain_conversations import (
+        autosave_brain_conversation,
+        list_brain_conversations,
+        load_brain_conversation,
+    )
     from brain_store import create_brain_store
     from brain_ingestion import chunk_text, normalize_text, stable_hash
     from brain_indexer import index_local_library, indexer_status
@@ -55,6 +59,8 @@ except ImportError as e:
     find_official_source_candidates = None
     import_url_into_brain = None
     autosave_brain_conversation = None
+    list_brain_conversations = None
+    load_brain_conversation = None
     create_brain_store = None
     index_local_library = None
     indexer_status = None
@@ -1063,6 +1069,13 @@ class BrainCompanyAnalysisRequest(BaseModel):
     autoSave: bool = True
 
 
+def _validate_brain_identifier(value: str, label: str) -> str:
+    clean = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", clean):
+        raise HTTPException(status_code=422, detail=f"{label} contains unsupported characters")
+    return clean
+
+
 def _safe_backend_error(message: str | None) -> str:
     if not message:
         return "not initialized"
@@ -1293,6 +1306,7 @@ async def get_brain_status():
         "question_routed_market_data",
         "completed_session_volume_screen",
         "drive_conversation_autosave",
+        "drive_conversation_resume",
     ]
     if import_url_into_brain:
         capabilities.append("agentic_url_import")
@@ -3137,6 +3151,54 @@ async def get_brain_portfolio_outline(portfolio: str = "main"):
     return _build_brain_portfolio_outline(portfolio)
 
 
+@app.get("/api/brain/conversations")
+async def get_brain_conversations(limit: int = Query(default=30, ge=1, le=100)):
+    if not list_brain_conversations or not parse_drive_folder_id:
+        raise HTTPException(status_code=503, detail="Drive conversation history is unavailable")
+    root_folder_id = parse_drive_folder_id()
+    if not root_folder_id:
+        raise HTTPException(status_code=400, detail="GOOGLE_DRIVE_FOLDER_ID is not configured")
+    try:
+        return await _run_brain_step(
+            "Drive conversation listing",
+            list_brain_conversations,
+            _drive_or_503(),
+            root_folder_id=root_folder_id,
+            limit=limit,
+            timeout=45,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Drive conversation listing failed: {_clean_public_error(exc)}")
+
+
+@app.get("/api/brain/conversations/{thread_id}")
+async def get_brain_conversation(thread_id: str):
+    if not load_brain_conversation or not parse_drive_folder_id:
+        raise HTTPException(status_code=503, detail="Drive conversation history is unavailable")
+    clean_thread_id = _validate_brain_identifier(thread_id, "threadId")
+    root_folder_id = parse_drive_folder_id()
+    if not root_folder_id:
+        raise HTTPException(status_code=400, detail="GOOGLE_DRIVE_FOLDER_ID is not configured")
+    try:
+        conversation = await _run_brain_step(
+            "Drive conversation load",
+            load_brain_conversation,
+            _drive_or_503(),
+            root_folder_id=root_folder_id,
+            thread_id=clean_thread_id,
+            timeout=45,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Drive conversation load failed: {_clean_public_error(exc)}")
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Saved Brain thread was not found")
+    return conversation
+
+
 @app.post("/api/brain/analyze-company")
 async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     store = _brain_or_503()
@@ -3152,8 +3214,8 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         else "Analyze the strongest relevant evidence in my investment brain. Focus on evidence, contradictions, risks, and what would change my mind."
     )
     for identifier, label in ((payload.threadId, "threadId"), (payload.exchangeId, "exchangeId")):
-        if identifier and not re.fullmatch(r"[A-Za-z0-9_-]{8,100}", identifier):
-            raise HTTPException(status_code=422, detail=f"{label} contains unsupported characters")
+        if identifier:
+            _validate_brain_identifier(identifier, label)
     conversation_history = _format_conversation_history(payload.conversation)
     prior_user_questions = " ".join(
         re.sub(r"\s+", " ", turn.content).strip()[:280]

@@ -187,6 +187,107 @@ def _new_transcript(*, thread_id: str, title: str, created_at: str) -> str:
     )
 
 
+def _conversation_folder(client: Any, root_folder_id: str) -> dict[str, Any]:
+    brain_folder = client.ensure_folder(root_folder_id, "Investment Brain")
+    return client.ensure_folder(brain_folder["id"], "Conversations")
+
+
+def _frontmatter_value(transcript: str, key: str) -> Any:
+    match = re.search(rf"^{re.escape(key)}:\s*(.+)$", transcript, flags=re.MULTILINE)
+    if not match:
+        return None
+    raw = match.group(1).strip()
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+
+
+def parse_brain_conversation(transcript: str) -> dict[str, Any]:
+    manifests: list[dict[str, Any]] = []
+    for match in re.finditer(r"````json\s*(.*?)\s*````", transcript, flags=re.DOTALL):
+        try:
+            manifest = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            continue
+        if manifest.get("schema") == "investment-brain-exchange/v1":
+            manifests.append(manifest)
+
+    messages: list[dict[str, Any]] = []
+    for manifest in manifests:
+        exchange_id = str(manifest.get("exchangeId") or len(messages) // 2)
+        exchange_messages = manifest.get("messages") if isinstance(manifest.get("messages"), dict) else {}
+        question = str(exchange_messages.get("user") or "").strip()
+        answer = str(exchange_messages.get("assistant") or "").strip()
+        if question:
+            messages.append({"id": f"{exchange_id}-user", "role": "user", "content": question})
+        if answer:
+            messages.append({
+                "id": f"{exchange_id}-assistant",
+                "role": "assistant",
+                "content": answer,
+                "context": manifest.get("context"),
+                "retrieval": manifest.get("retrieval"),
+                "timingMs": (manifest.get("timingsMs") or {}).get("totalMs"),
+            })
+    return {
+        "schema": _frontmatter_value(transcript, "schema"),
+        "threadId": _frontmatter_value(transcript, "thread_id"),
+        "title": _frontmatter_value(transcript, "title"),
+        "createdAt": _frontmatter_value(transcript, "created_at"),
+        "updatedAt": _frontmatter_value(transcript, "updated_at"),
+        "exchangeCount": _frontmatter_value(transcript, "exchange_count") or len(manifests),
+        "messages": messages,
+    }
+
+
+def list_brain_conversations(client: Any, *, root_folder_id: str, limit: int = 50) -> dict[str, Any]:
+    folder = _conversation_folder(client, root_folder_id)
+    files = client.list_files_by_app_property(
+        folder["id"],
+        "brainTranscriptSchema",
+        TRANSCRIPT_SCHEMA,
+        limit=limit,
+    )
+    items = []
+    for file in files:
+        properties = file.get("appProperties") if isinstance(file.get("appProperties"), dict) else {}
+        thread_id = properties.get(THREAD_PROPERTY_KEY)
+        if not thread_id:
+            continue
+        items.append({
+            "threadId": thread_id,
+            "title": properties.get("brainThreadTitle") or file.get("name"),
+            "exchangeCount": int(properties.get("brainExchangeCount") or 0),
+            "fileId": file.get("id"),
+            "fileName": file.get("name"),
+            "webViewLink": file.get("webViewLink"),
+            "createdAt": file.get("createdTime"),
+            "updatedAt": file.get("modifiedTime"),
+            "size": int(file.get("size") or 0),
+        })
+    return {
+        "folderId": folder.get("id"),
+        "threads": items,
+    }
+
+
+def load_brain_conversation(client: Any, *, root_folder_id: str, thread_id: str) -> dict[str, Any] | None:
+    folder = _conversation_folder(client, root_folder_id)
+    file = client.find_file_by_app_property(folder["id"], THREAD_PROPERTY_KEY, thread_id)
+    if not file:
+        return None
+    content, _, _ = client.download_file(file, max_bytes=MAX_TRANSCRIPT_BYTES)
+    parsed = parse_brain_conversation(content.decode("utf-8", errors="replace"))
+    parsed.update({
+        "fileId": file.get("id"),
+        "fileName": file.get("name"),
+        "webViewLink": file.get("webViewLink"),
+        "modifiedTime": file.get("modifiedTime"),
+    })
+    return parsed
+
+
 def _update_frontmatter(text: str, *, updated_at: str, exchange_count: int) -> str:
     text = re.sub(r'^updated_at:.*$', f"updated_at: {json.dumps(updated_at)}", text, count=1, flags=re.MULTILINE)
     return re.sub(r'^exchange_count:.*$', f"exchange_count: {exchange_count}", text, count=1, flags=re.MULTILINE)
@@ -281,8 +382,7 @@ def autosave_brain_conversation(
     timings: dict[str, Any],
 ) -> dict[str, Any]:
     saved_at = _utc_now()
-    brain_folder = client.ensure_folder(root_folder_id, "Investment Brain")
-    conversations_folder = client.ensure_folder(brain_folder["id"], "Conversations")
+    conversations_folder = _conversation_folder(client, root_folder_id)
     existing = client.find_file_by_app_property(conversations_folder["id"], THREAD_PROPERTY_KEY, thread_id)
     clean_title = re.sub(r"\s+", " ", title).strip()[:160] or "Investment Brain research thread"
     prompt_hash = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
@@ -327,7 +427,12 @@ def autosave_brain_conversation(
     if len(encoded) > MAX_TRANSCRIPT_BYTES:
         raise RuntimeError("Conversation transcript reached the 25 MB safety limit; start a new Brain thread.")
 
-    properties = {THREAD_PROPERTY_KEY: thread_id, "brainTranscriptSchema": TRANSCRIPT_SCHEMA}
+    properties = {
+        THREAD_PROPERTY_KEY: thread_id,
+        "brainTranscriptSchema": TRANSCRIPT_SCHEMA,
+        "brainThreadTitle": clean_title[:100],
+        "brainExchangeCount": str(exchange_count),
+    }
     description = f"Investment Brain transcript {thread_id}. Obsidian-compatible Markdown with structured exchange manifests."
     if existing:
         file = client.update_file(

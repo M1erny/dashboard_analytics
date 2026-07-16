@@ -10,6 +10,7 @@ import {
     ExternalLink,
     FileSearch,
     FolderSync,
+    History,
     Library,
     LoaderCircle,
     MessageSquare,
@@ -256,6 +257,27 @@ type ChatMessage = {
     retrieval?: RetrievalDiagnostics;
     timingMs?: number;
     status?: string;
+};
+
+type SavedThreadSummary = {
+    threadId: string;
+    title?: string;
+    exchangeCount?: number;
+    fileId?: string;
+    fileName?: string;
+    webViewLink?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    size?: number;
+};
+
+type SavedThreadListResponse = {
+    folderId?: string;
+    threads?: SavedThreadSummary[];
+};
+
+type LoadedThreadResponse = SavedThreadSummary & {
+    messages?: ChatMessage[];
 };
 
 type LibrarySearch = {
@@ -591,6 +613,9 @@ export const InvestmentBrainChat: React.FC = () => {
     const [thread, setThread] = useState<ChatMessage[]>([]);
     const [threadId, setThreadId] = useState(() => conversationId());
     const [conversationAutosave, setConversationAutosave] = useState<ConversationAutosave | null>(null);
+    const [savedThreads, setSavedThreads] = useState<SavedThreadSummary[]>([]);
+    const [savedThreadsLoaded, setSavedThreadsLoaded] = useState(false);
+    const [isSavedThreadsLoading, setIsSavedThreadsLoading] = useState(false);
     const [portfolioContext, setPortfolioContext] = useState<BrainPortfolioContext | null>(null);
     const [isAsking, setIsAsking] = useState(false);
     const [notice, setNotice] = useState('');
@@ -1115,6 +1140,51 @@ export const InvestmentBrainChat: React.FC = () => {
         }
     };
 
+    const loadSavedThreads = async () => {
+        if (!ready || isSavedThreadsLoading) return;
+        setIsSavedThreadsLoading(true);
+        try {
+            const response = await request(api('/api/brain/conversations?limit=30'), {}, 50000);
+            if (!response.ok) throw new Error(await errorText(response, 'Saved Brain threads could not be loaded.'));
+            const payload = await response.json() as SavedThreadListResponse;
+            setSavedThreads(payload.threads ?? []);
+            setSavedThreadsLoaded(true);
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'Saved Brain threads could not be loaded.');
+        } finally {
+            setIsSavedThreadsLoading(false);
+        }
+    };
+
+    const resumeSavedThread = async (savedThread: SavedThreadSummary) => {
+        if (!ready || isAsking || isSavedThreadsLoading) return;
+        setIsSavedThreadsLoading(true);
+        try {
+            const response = await request(api(`/api/brain/conversations/${encodeURIComponent(savedThread.threadId)}`), {}, 50000);
+            if (!response.ok) throw new Error(await errorText(response, 'This Brain thread could not be resumed.'));
+            const payload = await response.json() as LoadedThreadResponse;
+            const messages = (payload.messages ?? []).map(message => ({ ...message, id: message.id || messageId() }));
+            setThreadId(payload.threadId ?? savedThread.threadId);
+            setThread(messages);
+            setConversationAutosave({
+                status: 'saved',
+                threadId: payload.threadId ?? savedThread.threadId,
+                fileId: payload.fileId ?? savedThread.fileId,
+                fileName: payload.fileName ?? savedThread.fileName,
+                webViewLink: payload.webViewLink ?? savedThread.webViewLink,
+                exchangeCount: payload.exchangeCount ?? savedThread.exchangeCount,
+                format: 'markdown+yaml+json',
+            });
+            const latestPortfolio = [...messages].reverse().find(message => message.context?.portfolio)?.context?.portfolio;
+            if (latestPortfolio) setPortfolioContext(latestPortfolio);
+            setNotice(`Resumed ${payload.exchangeCount ?? savedThread.exchangeCount ?? 0} saved exchange${(payload.exchangeCount ?? savedThread.exchangeCount) === 1 ? '' : 's'} from Drive. New questions will retrieve current source evidence again.`);
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'This Brain thread could not be resumed.');
+        } finally {
+            setIsSavedThreadsLoading(false);
+        }
+    };
+
     const resetThread = () => {
         setThread([]);
         setThreadId(conversationId());
@@ -1297,6 +1367,30 @@ export const InvestmentBrainChat: React.FC = () => {
                     </section>
 
                     <aside className="space-y-3">
+                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
+                            <div className="flex items-center justify-between gap-3">
+                                <div className="flex items-center gap-2"><History className="h-4 w-4 text-emerald-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Saved threads</h2></div>
+                                <Button type="button" onClick={() => void loadSavedThreads()} disabled={!ready || isSavedThreadsLoading} className="min-h-7 px-2" aria-label="Refresh saved Brain threads">{isSavedThreadsLoading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}</Button>
+                            </div>
+                            {!savedThreadsLoaded ? (
+                                <button type="button" onClick={() => void loadSavedThreads()} disabled={!ready || isSavedThreadsLoading} className="mt-3 w-full rounded-md border border-white/[0.08] bg-white/[0.025] px-3 py-2.5 text-left text-xs text-slate-400 transition-colors hover:border-emerald-500/25 hover:text-slate-200 disabled:cursor-not-allowed disabled:text-slate-600">Load conversation history from Drive</button>
+                            ) : savedThreads.length ? (
+                                <div className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pr-1">
+                                    {savedThreads.map(savedThread => (
+                                        <div key={savedThread.threadId} className={cn('flex items-center gap-2 rounded-md border px-2.5 py-2', savedThread.threadId === threadId ? 'border-emerald-500/25 bg-emerald-500/[0.06]' : 'border-white/[0.06] bg-black/15')}>
+                                            <button type="button" onClick={() => void resumeSavedThread(savedThread)} disabled={isAsking || isSavedThreadsLoading} className="min-w-0 flex-1 text-left disabled:cursor-not-allowed">
+                                                <p className="truncate text-xs font-semibold text-slate-200">{savedThread.title ?? savedThread.fileName ?? 'Saved research thread'}</p>
+                                                <p className="mt-0.5 text-[10px] text-slate-600">{savedThread.exchangeCount ?? 0} exchange{savedThread.exchangeCount === 1 ? '' : 's'}{savedThread.updatedAt ? ` / ${new Date(savedThread.updatedAt).toLocaleDateString()}` : ''}</p>
+                                            </button>
+                                            {savedThread.webViewLink && <a href={savedThread.webViewLink} target="_blank" rel="noreferrer" className="shrink-0 text-slate-600 transition-colors hover:text-emerald-300" aria-label="Open saved thread in Drive"><ExternalLink className="h-3.5 w-3.5" /></a>}
+                                        </div>
+                                    ))}
+                                </div>
+                            ) : (
+                                <p className="mt-3 text-xs leading-5 text-slate-500">No saved conversations yet. The first completed answer creates one.</p>
+                            )}
+                        </section>
+
                         <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
                             <div className="flex items-center justify-between gap-3">
                                 <div className="flex items-center gap-2"><Library className="h-4 w-4 text-cyan-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Library</h2></div>

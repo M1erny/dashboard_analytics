@@ -221,6 +221,8 @@ Conversation files are deliberately excluded from the Drive retrieval index. Thi
 
 `threadId` keeps follow-ups in one file and `exchangeId` makes retries idempotent. Autosave failures never discard the answer: the API returns an `autosave` status and the Brain UI shows either a direct Drive link or an actionable failure state. A single transcript is capped at 25 MB so a runaway thread cannot exhaust Drive or Render memory.
 
+The **Saved threads** panel lists these Drive transcripts and can reconstruct a thread from its exchange manifests. Resuming restores the prior user/assistant messages as conversational context; new questions rerun retrieval against the current indexed research instead of treating old AI output as source evidence.
+
 Useful endpoints:
 
 ```text
@@ -242,6 +244,8 @@ GET  /api/brain/full-context
 PUT  /api/brain/full-context
 GET  /api/brain/system-prompt
 PUT  /api/brain/system-prompt
+GET  /api/brain/conversations
+GET  /api/brain/conversations/{thread_id}
 POST /api/brain/agent/import-url
 POST /api/brain/agent/find-official-sources
 POST /api/brain/agent/run

@@ -1,6 +1,10 @@
 """Checks for durable, idempotent Brain conversation transcripts."""
 
-from brain_conversations import autosave_brain_conversation
+from brain_conversations import (
+    autosave_brain_conversation,
+    list_brain_conversations,
+    load_brain_conversation,
+)
 from drive_indexer import is_brain_conversation_transcript
 
 
@@ -18,6 +22,13 @@ class FakeDriveClient:
         file_id = self.thread_files.get(value)
         return self.files.get(file_id)
 
+    def list_files_by_app_property(self, _parent_id, key, value, *, limit):
+        return [
+            file
+            for file in self.files.values()
+            if file.get("appProperties", {}).get(key) == value
+        ][:limit]
+
     def upload_file(self, *, name, data, mime_type, folder_id, description, app_properties):
         file_id = f"file-{self.next_id}"
         self.next_id += 1
@@ -30,6 +41,9 @@ class FakeDriveClient:
             "folderId": folder_id,
             "description": description,
             "appProperties": app_properties,
+            "createdTime": "2026-07-16T12:00:00Z",
+            "modifiedTime": "2026-07-16T12:00:00Z",
+            "size": str(len(data)),
         }
         self.files[file_id] = item
         self.thread_files[app_properties["brainThreadId"]] = file_id
@@ -44,6 +58,8 @@ class FakeDriveClient:
             "mimeType": mime_type,
             "description": description,
             "appProperties": app_properties,
+            "modifiedTime": "2026-07-16T12:05:00Z",
+            "size": str(len(data)),
         })
         return item
 
@@ -130,6 +146,21 @@ markdown = client.files[first["fileId"]]["data"].decode("utf-8")
 assert "exchange_count: 2" in markdown
 assert markdown.count("<!-- brain-exchange:") == 2
 assert markdown.count("<!-- system-prompt:") == 1
+
+listed = list_brain_conversations(client, root_folder_id="root", limit=10)
+assert len(listed["threads"]) == 1
+assert listed["threads"][0]["threadId"] == "thread-12345678"
+assert listed["threads"][0]["title"] == "Should I own META?"
+assert listed["threads"][0]["exchangeCount"] == 2
+
+loaded = load_brain_conversation(client, root_folder_id="root", thread_id="thread-12345678")
+assert loaded is not None
+assert loaded["threadId"] == "thread-12345678"
+assert loaded["exchangeCount"] == 2
+assert len(loaded["messages"]) == 4
+assert loaded["messages"][0]["role"] == "user"
+assert loaded["messages"][1]["role"] == "assistant"
+assert loaded["messages"][1]["context"]["portfolio"]["dataAsOf"] == "2026-07-15"
 
 duplicate = autosave_brain_conversation(
     **base,
