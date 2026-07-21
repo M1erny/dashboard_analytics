@@ -6,9 +6,11 @@ from typing import Any
 import httpx
 
 
-DEFAULT_GENERATION_MODEL = "gemini-3.5-flash"
+DEFAULT_GENERATION_MODEL = "gemini-3.5-flash-lite"
 DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
 DEFAULT_THINKING_BUDGET = 0
+DEFAULT_THINKING_LEVEL = "minimal"
+VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high"}
 DEFAULT_REQUEST_TIMEOUT = 45.0
 DEFAULT_EMBEDDING_TIMEOUT = 15.0
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
@@ -85,6 +87,12 @@ class GeminiClient:
             or DEFAULT_EMBEDDING_MODEL
         )
         self.thinking_budget = _env_int("BRAIN_LLM_THINKING_BUDGET", DEFAULT_THINKING_BUDGET)
+        configured_thinking_level = os.environ.get("BRAIN_LLM_THINKING_LEVEL", "").strip().lower()
+        self.thinking_level = (
+            configured_thinking_level
+            if configured_thinking_level in VALID_THINKING_LEVELS
+            else DEFAULT_THINKING_LEVEL
+        )
         self.request_timeout = _env_float("BRAIN_LLM_TIMEOUT_SECONDS", DEFAULT_REQUEST_TIMEOUT)
         self.embedding_timeout = _env_float("BRAIN_EMBEDDING_TIMEOUT_SECONDS", DEFAULT_EMBEDDING_TIMEOUT)
 
@@ -99,6 +107,7 @@ class GeminiClient:
             "generationModel": self.generation_model,
             "embeddingModel": self.embedding_model,
             "thinkingBudget": self.thinking_budget,
+            "thinkingLevel": self.thinking_level if self.generation_model.startswith("gemini-3.5") else None,
             "requestTimeoutSeconds": self.request_timeout,
             "embeddingTimeoutSeconds": self.embedding_timeout,
             "apiKeyEnv": "GOOGLE_AI_API_KEY or GEMINI_API_KEY",
@@ -202,7 +211,9 @@ class GeminiClient:
             "temperature": temperature,
             "maxOutputTokens": max_output_tokens,
         }
-        if self.thinking_budget is not None:
+        if self.generation_model.startswith("gemini-3.5"):
+            generation_config["thinkingConfig"] = {"thinkingLevel": self.thinking_level}
+        elif self.thinking_budget is not None:
             generation_config["thinkingConfig"] = {"thinkingBudget": self.thinking_budget}
 
         payload = {
@@ -227,11 +238,7 @@ class GeminiClient:
             except httpx.TimeoutException as exc:
                 raise RuntimeError(f"Gemini request timed out after {request_timeout:.0f}s") from exc
 
-            if (
-                response.status_code == 400
-                and "thinking" in response.text.lower()
-                and "thinkingConfig" in generation_config
-            ):
+            if response.status_code == 400 and "thinkingConfig" in generation_config:
                 generation_config.pop("thinkingConfig", None)
                 response = client.post(url, params={"key": api_key}, json=payload)
 

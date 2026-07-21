@@ -108,7 +108,8 @@ GOOGLE_OAUTH_REDIRECT_URI=https://dashboard-eo6k.onrender.com/api/brain/drive/oa
 Optional Brain variables:
 
 ```text
-BRAIN_LLM_MODEL=gemini-3.5-flash
+BRAIN_LLM_MODEL=gemini-3.5-flash-lite
+BRAIN_LLM_THINKING_LEVEL=minimal
 BRAIN_EMBEDDING_MODEL=gemini-embedding-001
 GOOGLE_DRIVE_REFRESH_TOKEN=...
 BRAIN_SEARCH_TIMEOUT_SECONDS=18
