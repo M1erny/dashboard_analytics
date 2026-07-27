@@ -152,6 +152,7 @@ type RetrievalDiagnostics = {
     mergedHits?: number;
     expandedFiles?: number;
     semanticAvailable?: boolean;
+    weakSemanticFallback?: number;
     referenceSources?: number;
     referenceSemanticHits?: number;
     fullDocuments?: number;
@@ -772,7 +773,11 @@ export const InvestmentBrainChat: React.FC = () => {
                 context: payload.context,
                 retrieval: payload.retrieval,
                 timingMs: payload.timings?.totalMs,
-                status: payload.timings?.semanticError ? 'Vector retrieval was unavailable; exact search still contributed.' : undefined,
+                status: payload.timings?.semanticError
+                    ? 'Vector retrieval was unavailable; exact search still contributed.'
+                    : payload.retrieval?.weakSemanticFallback
+                        ? `Nothing in the brain cleared the relevance floor. This answer leans on ${payload.retrieval.weakSemanticFallback} weak match${payload.retrieval.weakSemanticFallback === 1 ? '' : 'es'} — read it as an evidence gap, not a finding.`
+                        : undefined,
             }]);
             const readCount = payload.retrieval?.expandedFiles ?? 0;
             const fullDocumentCount = payload.retrieval?.fullDocuments ?? 0;

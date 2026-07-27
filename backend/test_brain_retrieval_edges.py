@@ -150,5 +150,30 @@ with tempfile.TemporaryDirectory() as directory:
     assert chunk_result["pageStart"] == 42
     assert chunk_result["pageEnd"] == 43
 
+expanded_three = server._expand_semantic_hits_into_sources(
+    ExpansionStore(),
+    [{"sourceId": 1, "ordinal": 1}, {"sourceId": 2, "ordinal": 2}],
+    max_sources=server.BRAIN_DEEP_SOURCE_FILES,
+    window=0,
+)
+assert server.BRAIN_DEEP_SOURCE_FILES >= 2
+assert len(expanded_three) == 2
+
+# Below-floor passages are kept only as labelled weak material, never silently
+# promoted to evidence, and the label has to reach the prompt the model reads.
+weak = server._weak_semantic_fallback_items(
+    [{"id": 1, "score": 0.61}, {"id": 2, "score": 0.60}, {"id": 3, "score": 0.59}, {"id": 4, "score": 0.58}],
+)
+assert [item["id"] for item in weak] == [1, 2, 3]
+assert all(item["weakMatch"] is True for item in weak)
+assert server._weak_semantic_fallback_items([]) == []
+weak_block = server._format_context_block([{"title": "Marginal passage", "body": "text", "weakMatch": True}])
+assert "WEAK MATCH" in weak_block
+assert "WEAK MATCH" not in server._format_context_block([{"title": "Strong passage", "body": "text"}])
+
+# The generation window was clamped to 7s by an old hosted-backend hotfix, which made
+# the documented BRAIN_ANALYSIS_TIMEOUT_SECONDS knob dead above 7. Keep it honest.
+assert server.BRAIN_ANALYSIS_TIMEOUT_SECONDS > 7.0
+
 assert math.isfinite(threshold)
 print("Brain retrieval edge-case checks passed.")

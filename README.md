@@ -114,7 +114,8 @@ BRAIN_EMBEDDING_MODEL=gemini-embedding-001
 GOOGLE_DRIVE_REFRESH_TOKEN=...
 BRAIN_SEARCH_TIMEOUT_SECONDS=18
 BRAIN_SEMANTIC_MIN_SCORE=0.66
-BRAIN_ANALYSIS_TIMEOUT_SECONDS=8
+BRAIN_ANALYSIS_TIMEOUT_SECONDS=24
+BRAIN_DEEP_SOURCE_FILES=3
 BRAIN_INDEX_TIMEOUT_SECONDS=240
 BRAIN_FULL_CONTEXT_MAX_CHARS_PER_SOURCE=250000
 BRAIN_FULL_CONTEXT_TOTAL_MAX_CHARS=800000
@@ -132,6 +133,10 @@ VITE_BRAIN_API_URL=http://127.0.0.1:8000
 Without `VITE_BRAIN_API_URL`, the Brain frontend can default to the hosted Render backend so localhost still uses the production Drive/Supabase setup.
 
 `BRAIN_SEMANTIC_MIN_SCORE` rejects weak nearest-neighbor matches before they enter an answer. Keep the default unless retrieval diagnostics show a consistent false-negative or false-positive pattern; exact keyword search remains active either way.
+
+If the floor rejects everything *and* exact search also finds nothing, the Brain does not answer from an empty context. It keeps the closest few passages, labels them in the prompt as below the confidence floor, and instructs the model to state the evidence gap before interpreting anything. The count appears as `retrieval.weakSemanticFallback`.
+
+`BRAIN_ANALYSIS_TIMEOUT_SECONDS` is a ceiling on Gemini's writing window, not an added delay — a fast answer still returns immediately. It is bounded to 5-60s and only applies when no full-document sources are pinned; `BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS` governs that path. `BRAIN_DEEP_SOURCE_FILES` (1-5) sets how many distinct files are read around the strongest semantic hits; each extra file costs one serialized Supabase round trip.
 
 ## Cache Behavior
 

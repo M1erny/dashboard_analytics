@@ -248,13 +248,19 @@ class GeminiClient:
                 raise RuntimeError(_safe_provider_error(exc)) from exc
             data = response.json()
 
-        parts = (
-            data.get("candidates", [{}])[0]
-            .get("content", {})
-            .get("parts", [])
-        )
+        candidates = data.get("candidates") or []
+        candidate = candidates[0] if isinstance(candidates, list) and candidates else {}
+        parts = (candidate.get("content") or {}).get("parts") or []
         text_parts = [part.get("text", "") for part in parts if isinstance(part, dict)]
         answer = "\n".join(part for part in text_parts if part).strip()
         if not answer:
-            raise RuntimeError("Gemini generation response did not include text")
+            # An empty answer is usually a truncation, a safety block, or thinking
+            # that consumed the whole output allowance. Say which one.
+            reasons = [f"finishReason={candidate.get('finishReason') or 'unknown'}"]
+            block_reason = (data.get("promptFeedback") or {}).get("blockReason")
+            if block_reason:
+                reasons.append(f"blockReason={block_reason}")
+            raise RuntimeError(
+                f"Gemini generation response did not include text ({', '.join(reasons)})"
+            )
         return answer

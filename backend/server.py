@@ -120,9 +120,17 @@ def _env_int(name: str, default: int) -> int:
 
 
 BRAIN_SEARCH_TIMEOUT_SECONDS = _env_float("BRAIN_SEARCH_TIMEOUT_SECONDS", 18.0)
-BRAIN_ANALYSIS_TIMEOUT_SECONDS = _env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 8.0)
+# This is a ceiling on how long Gemini may take to write, not an added delay: a fast
+# answer still returns immediately. The browser waits 90s for the whole exchange and
+# autosave needs ~25s of that, so the writing window stays well inside the budget.
+BRAIN_ANALYSIS_TIMEOUT_SECONDS = max(5.0, min(_env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 24.0), 60.0))
 BRAIN_INDEX_TIMEOUT_SECONDS = _env_float("BRAIN_INDEX_TIMEOUT_SECONDS", 240.0)
 SEMANTIC_MIN_SCORE = max(0.0, min(_env_float("BRAIN_SEMANTIC_MIN_SCORE", 0.66), 1.0))
+# How many distinct files the backend reads around the strongest semantic hits.
+BRAIN_DEEP_SOURCE_FILES = max(1, min(_env_int("BRAIN_DEEP_SOURCE_FILES", 3), 5))
+# When nothing clears the confidence floor, how many closest passages to keep as
+# explicitly-labelled weak material instead of answering from an empty context.
+WEAK_SEMANTIC_FALLBACK_LIMIT = 3
 REFERENCE_SOURCE_IDS_SETTING = "brain.reference_source_ids.v1"
 MAX_REFERENCE_SOURCES = 6
 FULL_CONTEXT_SOURCE_IDS_SETTING = "brain.full_context_source_ids.v1"
@@ -2254,7 +2262,8 @@ def _format_context_block(items: list[dict], *, max_chars: int = 1000) -> str:
         body = str(item.get("body", "")).strip()[:max_chars]
         score = item.get("score")
         score_text = f" | score={score:.3f}" if isinstance(score, (int, float)) else ""
-        blocks.append(f"[{index}] {kind}: {title}{score_text}\n{body}")
+        weak_text = " | WEAK MATCH, below the confidence floor" if item.get("weakMatch") else ""
+        blocks.append(f"[{index}] {kind}: {title}{score_text}{weak_text}\n{body}")
     return "\n\n".join(blocks)
 
 
@@ -2329,6 +2338,26 @@ def _filter_semantic_results(results: list[dict[str, Any]]) -> list[dict[str, An
         if math.isfinite(score) and score >= SEMANTIC_MIN_SCORE:
             accepted.append(item)
     return accepted
+
+
+def _weak_semantic_fallback_items(
+    results: list[dict[str, Any]],
+    *,
+    limit: int = WEAK_SEMANTIC_FALLBACK_LIMIT,
+) -> list[dict[str, Any]]:
+    """Label the closest passages as weak evidence rather than discarding them.
+
+    Only reached when the confidence floor rejected every semantic hit and exact
+    search found nothing, so the alternative is answering with no context at all.
+    The label travels into the prompt, so the model reports the gap instead of
+    treating a marginal passage as a finding.
+    """
+    labelled: list[dict[str, Any]] = []
+    for item in results[: max(0, limit)]:
+        clone = dict(item)
+        clone["weakMatch"] = True
+        labelled.append(clone)
+    return labelled
 
 
 def _context_excerpt(item: dict[str, Any], *, max_chars: int = 360) -> str:
@@ -3294,6 +3323,7 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
 
     keyword_results: list[dict[str, Any]] = []
     semantic_results: list[dict[str, Any]] = []
+    raw_semantic_results: list[dict[str, Any]] = []
     query_embedding: list[float] | None = None
     semantic_available = False
     if payload.useSemantic:
@@ -3349,12 +3379,30 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     )
     context_items = await _attach_source_references(store, context_items)
 
+    # Nearest-neighbour search always returns something, so a below-floor result is
+    # normally noise and is dropped. But when the floor rejected everything and exact
+    # search also found nothing, answering "no evidence" throws away the only material
+    # there is. Keep the closest few, clearly labelled, and let the model judge them.
+    # Only a small slice is enriched: each distinct source costs one serialized lookup.
+    weak_semantic_fallback = 0
+    if not context_items and raw_semantic_results:
+        context_items = _weak_semantic_fallback_items(
+            _exclude_brain_conversation_results(
+                await _attach_source_references(
+                    store,
+                    [dict(item) for item in raw_semantic_results[: WEAK_SEMANTIC_FALLBACK_LIMIT * 2]],
+                )
+            )
+        )
+        weak_semantic_fallback = len(context_items)
+
     step_started = time.perf_counter()
     deep_sources_task = asyncio.create_task(_run_brain_step(
         "Deep source expansion",
         _expand_semantic_hits_into_sources,
         store,
         context_items,
+        max_sources=BRAIN_DEEP_SOURCE_FILES,
         timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
     ))
     reference_context_task = asyncio.create_task(_build_reference_context(
@@ -3389,6 +3437,13 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         if portfolio_context.get("marketDataAvailable")
         else "Live market data was intentionally not fetched because this question did not require it. Use target composition when relevant, but do not invent current weights, prices, momentum, volume, performance, contribution, or risk."
     )
+    weak_evidence_guidance = (
+        "\nEVIDENCE WARNING: nothing in the brain cleared the relevance floor for this question and exact search found nothing either. "
+        "Every numbered passage below is only the closest available material, not evidence. Open the answer by saying plainly that the brain "
+        "has no strong source on this, name what kind of document would answer it, and keep any interpretation explicitly provisional.\n"
+        if weak_semantic_fallback
+        else ""
+    )
 
     prompt = f"""
 Use the provided research context to answer the investment question. Separate evidence from inference.
@@ -3414,7 +3469,7 @@ Persistent reference layer injected into this model context:
 Full-document context injected into this model context:
 {_format_full_document_context(full_document_context) or "No full-document sources are selected."}
 
-Retrieved source context:
+Retrieved source context:{weak_evidence_guidance}
 {_format_context_block(context_items, max_chars=1200) or "No retrieved source context."}
 
 Deep source expansion:
@@ -3435,11 +3490,32 @@ Full-document sources are investor-selected primary context. They contain the fu
 {market_data_guidance}
 """.strip()
 
+    # Retrieval is finished, so both the answered and the timed-out response describe
+    # the same evidence. Build the diagnostics once so the two paths cannot drift.
+    retrieval_payload = {
+        "semanticHits": len(semantic_results),
+        "keywordHits": len(keyword_results),
+        "mergedHits": len(context_items),
+        "expandedFiles": len(deep_sources),
+        "semanticAvailable": semantic_available,
+        "weakSemanticFallback": weak_semantic_fallback,
+        "referenceSources": len(reference_context),
+        "referenceSemanticHits": reference_semantic_hits,
+        "fullDocuments": len(full_document_context),
+        "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
+        "portfolioPositions": portfolio_context.get("positionCount", 0),
+        "portfolioDataAsOf": portfolio_context.get("dataAsOf"),
+        "portfolioFresh": portfolio_context.get("fresh"),
+        "marketDataRequested": market_data_intent.get("requested", False),
+        "marketDataReasons": market_data_intent.get("reasons", []),
+        "marketDataAvailable": portfolio_context.get("marketDataAvailable", False),
+    }
+
     step_started = time.perf_counter()
     generation_timeout = (
         FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS
         if full_document_context
-        else min(BRAIN_ANALYSIS_TIMEOUT_SECONDS, 7.0)
+        else BRAIN_ANALYSIS_TIMEOUT_SECONDS
     )
     try:
         answer = await _run_brain_step(
@@ -3448,7 +3524,7 @@ Full-document sources are investor-selected primary context. They contain the fu
             prompt,
             system_instruction=system_prompt,
             temperature=0.2,
-            max_output_tokens=1100,
+            max_output_tokens=1600,
             timeout_seconds=generation_timeout,
             timeout=generation_timeout + 1.0,
         )
@@ -3468,23 +3544,7 @@ Full-document sources are investor-selected primary context. They contain the fu
                 deep_sources=deep_sources,
             ),
             "timings": timings,
-            "retrieval": {
-                "semanticHits": len(semantic_results),
-                "keywordHits": len(keyword_results),
-                "mergedHits": len(context_items),
-                "expandedFiles": len(deep_sources),
-                "semanticAvailable": semantic_available,
-                "referenceSources": len(reference_context),
-                "referenceSemanticHits": reference_semantic_hits,
-                "fullDocuments": len(full_document_context),
-                "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
-                "portfolioPositions": portfolio_context.get("positionCount", 0),
-                "portfolioDataAsOf": portfolio_context.get("dataAsOf"),
-                "portfolioFresh": portfolio_context.get("fresh"),
-                "marketDataRequested": market_data_intent.get("requested", False),
-                "marketDataReasons": market_data_intent.get("reasons", []),
-                "marketDataAvailable": portfolio_context.get("marketDataAvailable", False),
-            },
+            "retrieval": retrieval_payload,
             "context": {
                 "memories": memory_results,
                 "retrieved": context_items,
@@ -3496,23 +3556,6 @@ Full-document sources are investor-selected primary context. They contain the fu
         }
 
     timings["generationMs"] = round((time.perf_counter() - step_started) * 1000, 1)
-    retrieval_payload = {
-        "semanticHits": len(semantic_results),
-        "keywordHits": len(keyword_results),
-        "mergedHits": len(context_items),
-        "expandedFiles": len(deep_sources),
-        "semanticAvailable": semantic_available,
-        "referenceSources": len(reference_context),
-        "referenceSemanticHits": reference_semantic_hits,
-        "fullDocuments": len(full_document_context),
-        "fullContextChars": sum(item["charsIncluded"] for item in full_document_context),
-        "portfolioPositions": portfolio_context.get("positionCount", 0),
-        "portfolioDataAsOf": portfolio_context.get("dataAsOf"),
-        "portfolioFresh": portfolio_context.get("fresh"),
-        "marketDataRequested": market_data_intent.get("requested", False),
-        "marketDataReasons": market_data_intent.get("reasons", []),
-        "marketDataAvailable": portfolio_context.get("marketDataAvailable", False),
-    }
     context_payload = {
         "memories": memory_results,
         "retrieved": context_items,
