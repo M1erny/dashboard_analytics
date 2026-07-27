@@ -121,6 +121,15 @@ const RebalanceHistoryModal = ({ rebalance, open, onClose }: {
     open: boolean;
     onClose: () => void;
 }) => {
+    // Must sit above the early return: this component has no other hooks, so registering
+    // it conditionally would change hook order every time the modal opens or closes.
+    useEffect(() => {
+        if (!open) return;
+        const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [open, onClose]);
+
     if (!open) return null;
 
     const history = rebalance?.history ?? [];
@@ -129,8 +138,17 @@ const RebalanceHistoryModal = ({ rebalance, open, onClose }: {
     const activeLabel = activeCount === 1 ? 'active book' : 'active books';
 
     return (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 px-3 py-5 backdrop-blur-md sm:px-5 md:py-8">
-            <div className="flex max-h-[calc(100vh-40px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-slate-950 shadow-2xl shadow-black/60">
+        <div
+            className="fixed inset-0 z-50 flex items-start justify-center bg-black/70 px-3 py-5 backdrop-blur-md sm:px-5 md:py-8"
+            onClick={onClose}
+        >
+            <div
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="rebalance-history-title"
+                onClick={event => event.stopPropagation()}
+                className="flex max-h-[calc(100vh-40px)] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-white/[0.1] bg-slate-950 shadow-2xl shadow-black/60"
+            >
                 <div className="flex flex-col gap-4 border-b border-white/[0.08] bg-white/[0.035] px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
                     <div className="min-w-0">
                         <div className="flex items-center gap-2">
@@ -138,7 +156,7 @@ const RebalanceHistoryModal = ({ rebalance, open, onClose }: {
                                 <GitBranch className="h-4 w-4 text-sky-300" />
                             </span>
                             <div>
-                                <h2 className="text-base font-black tracking-tight text-white">Dated Book History</h2>
+                                <h2 id="rebalance-history-title" className="text-base font-black tracking-tight text-white">Dated Book History</h2>
                                 <p className="text-[11px] uppercase tracking-[0.12em] text-gray-500">
                                     {activeCount} {activeLabel} / {plannedCount} planned
                                 </p>
@@ -282,6 +300,9 @@ export const Dashboard: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [isSwitchingTier, setIsSwitchingTier] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    // Kept separate from `error`: a failed manual refresh must not trip the full-screen
+    // error card and throw away a dashboard that is still perfectly readable.
+    const [refreshError, setRefreshError] = useState<string | null>(null);
     const [costTier, setCostTier] = useState<CostTier>('none');
     const [lastUpdated, setLastUpdated] = useState(() => new Date());
     const [showRebalanceHistory, setShowRebalanceHistory] = useState(false);
@@ -316,6 +337,16 @@ export const Dashboard: React.FC = () => {
 
     const [quoteIdx, setQuoteIdx] = useState(() => Math.floor(Math.random() * QUOTES.length));
     const [quoteVisible, setQuoteVisible] = useState(true);
+    // A cold /api/metrics can legitimately take ~20s, and finance.ts retries it up to five
+    // times. Without a clock there is no way to tell a slow load from a dead one.
+    const [loadElapsed, setLoadElapsed] = useState(0);
+
+    useEffect(() => {
+        if (!loading) return;
+        const startedAt = Date.now();
+        const interval = setInterval(() => setLoadElapsed(Math.round((Date.now() - startedAt) / 1000)), 1000);
+        return () => { clearInterval(interval); setLoadElapsed(0); };
+    }, [loading]);
 
     // Cycle quotes every 15 seconds while loading
     useEffect(() => {
@@ -349,7 +380,12 @@ export const Dashboard: React.FC = () => {
                         </div>
                         <div className="text-center">
                             <p className="text-white font-black text-lg tracking-tight">Portfolio Intelligence</p>
-                            <p className="text-gray-500 text-xs tracking-[0.15em] uppercase mt-0.5">Loading analytics engine...</p>
+                            <p className="text-gray-500 text-xs tracking-[0.15em] uppercase mt-0.5">
+                                Loading analytics engine... <span className="tabular-nums text-gray-400">{loadElapsed}s</span>
+                            </p>
+                            {loadElapsed >= 30 && (
+                                <p className="mt-1.5 text-[11px] text-amber-200/60">Taking longer than usual — still retrying.</p>
+                            )}
                         </div>
                     </div>
 
@@ -494,7 +530,18 @@ export const Dashboard: React.FC = () => {
             <div className="animated-top-bar h-[2px] w-full" />
 
             <div className="px-4 py-5 sm:px-5 md:p-8">
-            <div className="mx-auto max-w-[1600px] space-y-6 md:space-y-8">
+            {/* While a tier refetch is in flight the figures below still belong to the previous
+                tier, but the tier badge already reads the new one. Dim them so the mismatch
+                cannot be mistaken for a recomputed book. */}
+            <div
+                aria-busy={isSwitchingTier}
+                className={cn(
+                    "mx-auto max-w-[1600px] space-y-6 md:space-y-8",
+                    // Everything except the header (the first child) is stale during a refetch.
+                    // The header keeps full opacity so the tier controls and status stay legible.
+                    isSwitchingTier && "[&>*:not(:first-child)]:opacity-40 [&>*:not(:first-child)]:transition-opacity [&>*:not(:first-child)]:duration-200"
+                )}
+            >
 
                 {/* Responsive Header */}
                 <div className="flex flex-col xl:flex-row xl:items-start justify-between gap-5 md:gap-6">
@@ -512,6 +559,12 @@ export const Dashboard: React.FC = () => {
                                         <Clock className="h-3 w-3" />
                                         Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                     </span>
+                                    {isSwitchingTier && (
+                                        <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-amber-500/20 bg-amber-500/[0.06] px-1.5 py-0.5 text-amber-300/90">
+                                            <RefreshCw className="h-3 w-3 animate-spin" />
+                                            Recomputing {COST_TIER_OPTIONS.find(option => option.value === costTier)?.label ?? costTier}
+                                        </span>
+                                    )}
                                     {rebalanceActive && (
                                         <button
                                             type="button"
@@ -640,12 +693,18 @@ export const Dashboard: React.FC = () => {
                             {/* Refresh Button */}
                             <button
                                 onClick={() => {
+                                    const staleSince = lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                                     setIsSwitchingTier(true);
+                                    setRefreshError(null);
                                     fetchDashboardData(5, 1000, true, costTier, portfolioName).then(res => { // force=true
-                                        if (res) {
+                                        if (res && !res.error) {
                                             setData(res);
-                                            setError(res.error || null);
-                                            if (!res.error) setLastUpdated(new Date());
+                                            setLastUpdated(new Date());
+                                        } else {
+                                            // fetchDashboardData returns null once its retry loop is exhausted.
+                                            setRefreshError(
+                                                `${res?.error ?? 'Force refresh failed after 5 attempts.'} Still showing data from ${staleSince}.`
+                                            );
                                         }
                                     }).finally(() => setIsSwitchingTier(false));
                                 }}
@@ -665,6 +724,21 @@ export const Dashboard: React.FC = () => {
                         </div>
                     </div>
                 </div>
+
+                {refreshError && (
+                    <div className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3">
+                        <RefreshCw className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                        <p className="flex-1 text-xs leading-5 text-amber-200/90">{refreshError}</p>
+                        <button
+                            type="button"
+                            onClick={() => setRefreshError(null)}
+                            className="shrink-0 rounded-md p-1 text-amber-300/70 transition-colors hover:bg-white/[0.06] hover:text-amber-200"
+                            aria-label="Dismiss refresh warning"
+                        >
+                            <X className="h-3.5 w-3.5" />
+                        </button>
+                    </div>
+                )}
 
                 {/* NEW: ExecutiveSummary (YTD Returns, Alpha, Benchmarks, Financing, Stress Tests) */}
                 <ExecutiveSummary vitals={vitals} costTier={costTier} ytdHistory={ytdHistory} stressTests={stressTests} momentum={data.momentum} convexity={convexity} />

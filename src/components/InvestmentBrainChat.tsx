@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ArrowLeft,
     ArrowUpRight,
@@ -258,6 +258,9 @@ type ChatMessage = {
     retrieval?: RetrievalDiagnostics;
     timingMs?: number;
     status?: string;
+    // A failed exchange stays visible but is never replayed to the model as if the
+    // Brain had said it. The backend renders every non-user turn as "Assistant: ...".
+    failed?: boolean;
 };
 
 type SavedThreadSummary = {
@@ -327,6 +330,10 @@ const request = async (url: string, options: RequestInit = {}, timeoutMs = 65000
         window.clearTimeout(timeout);
     }
 };
+
+// Single source of truth for how long an ask may run. Used by both the fetch and the
+// waiting indicator so the countdown can never disagree with the real abort deadline.
+const askTimeoutMs = (fullDocumentCount: number) => (fullDocumentCount ? 150000 : 90000);
 
 const errorText = async (response: Response, fallback: string) => {
     const payload = await response.json().catch(() => null) as { detail?: string | { message?: string; reason?: string } } | null;
@@ -619,6 +626,7 @@ export const InvestmentBrainChat: React.FC = () => {
     const [isSavedThreadsLoading, setIsSavedThreadsLoading] = useState(false);
     const [portfolioContext, setPortfolioContext] = useState<BrainPortfolioContext | null>(null);
     const [isAsking, setIsAsking] = useState(false);
+    const [askElapsed, setAskElapsed] = useState(0);
     const [notice, setNotice] = useState('');
     const [libraryQuery, setLibraryQuery] = useState('');
     const [librarySearch, setLibrarySearch] = useState<LibrarySearch | null>(null);
@@ -629,6 +637,7 @@ export const InvestmentBrainChat: React.FC = () => {
     const [agentSearch, setAgentSearch] = useState<AgentSearchResponse | null>(null);
     const [isAgentWorking, setIsAgentWorking] = useState(false);
     const outputRef = useRef<HTMLDivElement | null>(null);
+    const composerRef = useRef<HTMLDivElement | null>(null);
 
     const refresh = async () => {
         try {
@@ -699,8 +708,17 @@ export const InvestmentBrainChat: React.FC = () => {
     useEffect(() => { void refresh(); }, []);
 
     useEffect(() => {
-        if (thread.length || isAsking) outputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        if (thread.length || isAsking) composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }, [thread.length, isAsking]);
+
+    // A question can legitimately run for a minute. Without a clock the owner cannot
+    // tell a slow answer from a hung one.
+    useEffect(() => {
+        if (!isAsking) return;
+        const startedAt = Date.now();
+        const interval = window.setInterval(() => setAskElapsed(Math.round((Date.now() - startedAt) / 1000)), 1000);
+        return () => { window.clearInterval(interval); setAskElapsed(0); };
+    }, [isAsking]);
 
     const ready = backendState === 'ready';
     const counts = status?.counts ?? {};
@@ -739,7 +757,9 @@ export const InvestmentBrainChat: React.FC = () => {
 
         const userMessage: ChatMessage = { id: messageId(), role: 'user', content: question };
         const exchangeId = conversationId();
-        const priorConversation = thread.map(message => ({ role: message.role, content: message.content }));
+        const priorConversation = thread
+            .filter(message => !message.failed)
+            .map(message => ({ role: message.role, content: message.content }));
         setThread(current => [...current, userMessage]);
         setDraft('');
         setIsAsking(true);
@@ -761,7 +781,7 @@ export const InvestmentBrainChat: React.FC = () => {
                     threadTitle: priorConversation.find(message => message.role === 'user')?.content ?? question,
                     autoSave: true,
                 }),
-            }, fullContextSources.length ? 150000 : 90000);
+            }, askTimeoutMs(fullContextSources.length));
             if (!response.ok) throw new Error(await errorText(response, 'The Brain could not complete this question.'));
             const payload = await response.json() as AnalysisResponse;
             if (payload.context?.portfolio) setPortfolioContext(payload.context.portfolio);
@@ -796,7 +816,10 @@ export const InvestmentBrainChat: React.FC = () => {
             const text = error instanceof DOMException && error.name === 'AbortError'
                 ? 'This request took too long. The backend may be waking up; try the question again.'
                 : error instanceof Error ? error.message : 'The Brain could not complete this question.';
-            setThread(current => [...current, { id: messageId(), role: 'assistant', content: text, status: 'No new conclusion was generated.' }]);
+            setThread(current => [...current, { id: messageId(), role: 'assistant', content: text, status: 'No new conclusion was generated.', failed: true }]);
+            // Give the question back so it can be retried without retyping. Only when the
+            // composer is still empty: the textarea stays editable during the wait.
+            setDraft(current => current.trim() ? current : question);
             setNotice(text);
         } finally {
             setIsAsking(false);
@@ -889,10 +912,10 @@ export const InvestmentBrainChat: React.FC = () => {
         }
     };
 
-    const closeReferencePicker = () => {
+    const closeReferencePicker = useCallback(() => {
         setReferenceSelection(referenceSources.flatMap(source => typeof source.id === 'number' ? [source.id] : []));
         setIsReferencePickerOpen(false);
-    };
+    }, [referenceSources]);
 
     const toggleReferenceSource = (sourceId: number) => {
         setReferenceSelection(current => {
@@ -947,10 +970,23 @@ export const InvestmentBrainChat: React.FC = () => {
         }
     };
 
-    const closeFullContextPicker = () => {
+    const closeFullContextPicker = useCallback(() => {
         setFullContextSelection(fullContextSources.flatMap(source => typeof source.id === 'number' ? [source.id] : []));
         setIsFullContextPickerOpen(false);
-    };
+    }, [fullContextSources]);
+
+    // Escape closes the two source pickers. Deliberately not bound for the system-prompt
+    // editor: closing it reverts to the saved prompt, so a stray key would discard edits.
+    useEffect(() => {
+        if (!isReferencePickerOpen && !isFullContextPickerOpen) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            if (isReferencePickerOpen) closeReferencePicker();
+            else closeFullContextPicker();
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [isReferencePickerOpen, isFullContextPickerOpen, closeReferencePicker, closeFullContextPicker]);
 
     const toggleFullContextSource = (sourceId: number) => {
         setFullContextSelection(current => {
@@ -1290,7 +1326,8 @@ export const InvestmentBrainChat: React.FC = () => {
                                     <FileSearch className="h-3.5 w-3.5" />
                                     <span className="hidden sm:inline">Full files </span>{fullContextSources.length || 'set'}
                                 </button>
-                                {notice && <span className="hidden max-w-[48%] truncate text-right text-[10px] font-medium text-slate-500 sm:inline">{notice}</span>}
+                                {/* Every failure in this file reports here, so it must stay readable on any width. */}
+                                {notice && <span className="max-w-[48%] text-right text-[10px] font-medium leading-4 text-slate-500 line-clamp-2">{notice}</span>}
                             </div>
                         </div>
 
@@ -1333,10 +1370,13 @@ export const InvestmentBrainChat: React.FC = () => {
                                                 </span>
                                             )}
                                         </div>
+                                        {/* Caveats change how the answer should be read, so they go above it. */}
+                                        {message.status && (
+                                            <p className="mb-3 rounded-md border border-amber-400/20 bg-amber-400/[0.05] px-3 py-2 text-xs leading-5 text-amber-200/80">{message.status}</p>
+                                        )}
                                         {message.role === 'assistant'
                                             ? <MarkdownAnswer content={message.content} />
                                             : <p className="whitespace-pre-wrap text-sm leading-6 text-slate-100">{message.content}</p>}
-                                        {message.status && <p className="mt-3 text-xs leading-5 text-amber-200/80">{message.status}</p>}
                                         {message.role === 'assistant' && <EvidenceList context={message.context} />}
                                     </div>
                                     {message.role === 'assistant' && message.timingMs && <p className="mt-1.5 px-1 text-[10px] text-slate-600">Completed in {formatSeconds(message.timingMs)}</p>}
@@ -1345,12 +1385,22 @@ export const InvestmentBrainChat: React.FC = () => {
 
                             {isAsking && (
                                 <article className="max-w-3xl rounded-lg border border-white/[0.08] bg-white/[0.025] px-4 py-4 sm:px-5">
-                                    <div className="flex items-center gap-2 text-sm text-slate-400"><LoaderCircle className="h-4 w-4 animate-spin text-emerald-300" /> Retrieving the portfolio, market, and research data this question needs.</div>
+                                    <div className="flex items-center gap-2 text-sm text-slate-400">
+                                        <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-emerald-300" />
+                                        <span>Retrieving the portfolio, market, and research data this question needs.</span>
+                                        <span className="ml-auto shrink-0 tabular-nums text-xs text-slate-500">{askElapsed}s</span>
+                                    </div>
+                                    {notice && <p className="mt-2 text-xs leading-5 text-slate-500">{notice}</p>}
+                                    {askElapsed >= 60 && (
+                                        <p className="mt-2 text-xs leading-5 text-amber-200/70">
+                                            Still working. This request stops at {Math.round(askTimeoutMs(fullContextSources.length) / 1000)}s, and your question is kept so you can retry.
+                                        </p>
+                                    )}
                                 </article>
                             )}
                         </div>
 
-                        <div className="border-t border-white/[0.07] bg-[#080d15] p-3 sm:p-4">
+                        <div ref={composerRef} className="border-t border-white/[0.07] bg-[#080d15] p-3 sm:p-4">
                             <div className="rounded-lg border border-white/[0.1] bg-white/[0.025] p-2 focus-within:border-emerald-500/35">
                                 <div className="flex gap-2">
                                     <textarea

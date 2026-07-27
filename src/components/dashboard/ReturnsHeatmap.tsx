@@ -540,7 +540,9 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
 
     const renderCell = (row: PeriodicReturn, col: ColumnDef, isFirstInGroup: boolean, isFirstColumn: boolean) => {
         const isHovered = hoveredRow === row.ticker;
-        const groupBorder = isFirstInGroup && col.group !== 'position' ? "border-l border-white/[0.05]" : "";
+        // Contribution and Returns both contain a "1D" and a "7D" column, rendered side by
+        // side. The group divider is the only thing distinguishing them, so it has to be seen.
+        const groupBorder = isFirstInGroup && col.group !== 'position' ? "border-l border-white/[0.12]" : "";
         const isStickyTicker = col.key === 'ticker' && isFirstColumn;
 
         switch (col.key) {
@@ -868,7 +870,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                                     colSpan={segment.colSpan}
                                     className={cn(
                                         "px-4 py-2 text-[10px] uppercase tracking-[0.14em] font-semibold",
-                                        groupIdx > 0 && "border-l border-white/[0.06]",
+                                        groupIdx > 0 && "border-l border-white/[0.12]",
                                         segment.group === 'position' && "text-left"
                                     )}
                                 >
@@ -902,7 +904,17 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                                     <th
                                         key={col.key}
                                         data-column-key={col.key}
+                                        tabIndex={0}
+                                        aria-sort={sortKey === col.key ? (sortDir === 'asc' ? 'ascending' : 'descending') : 'none'}
                                         onClick={() => handleSort(col.key)}
+                                        // Enter only. Space would hijack page-down scrolling once a
+                                        // header has focus, and this page is very long.
+                                        onKeyDown={(event) => {
+                                            if (event.key === 'Enter') {
+                                                event.preventDefault();
+                                                handleSort(col.key);
+                                            }
+                                        }}
                                         onPointerDown={(event) => handleColumnPointerDown(col.key, event)}
                                         onPointerMove={(event) => handleColumnPointerMove(col.key, event)}
                                         onPointerEnter={() => handleColumnPointerEnter(col.key)}
@@ -912,9 +924,10 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                                         className={cn(
                                             "group px-4 py-2.5 font-medium cursor-grab select-none whitespace-nowrap transition-all duration-150 active:cursor-grabbing",
                                             "hover:bg-white/[0.04] active:bg-white/[0.08]",
+                                            "outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-blue-400/70",
                                             col.key === 'ticker' && isFirstColumn ? "text-left text-gray-300 sticky left-0 z-[15] bg-slate-950/95" : col.key === 'ticker' ? "text-left text-gray-300" : "text-center text-gray-400",
                                             sortKey === col.key && "text-blue-400 bg-blue-500/[0.06]",
-                                            isFirstInGroup && col.group !== 'position' && "border-l border-white/[0.06]",
+                                            isFirstInGroup && col.group !== 'position' && "border-l border-white/[0.12]",
                                             isDragging && "opacity-50",
                                             isDropTarget && "bg-blue-500/[0.12] shadow-[inset_2px_0_0_rgba(96,165,250,0.75)]",
                                             "text-[12px]"
