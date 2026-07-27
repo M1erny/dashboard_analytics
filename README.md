@@ -116,6 +116,7 @@ BRAIN_SEARCH_TIMEOUT_SECONDS=18
 BRAIN_SEMANTIC_MIN_SCORE=0.66
 BRAIN_ANALYSIS_TIMEOUT_SECONDS=24
 BRAIN_DEEP_SOURCE_FILES=3
+BRAIN_EMBEDDING_TIMEOUT_SECONDS=15
 BRAIN_INDEX_TIMEOUT_SECONDS=240
 BRAIN_FULL_CONTEXT_MAX_CHARS_PER_SOURCE=250000
 BRAIN_FULL_CONTEXT_TOTAL_MAX_CHARS=800000
@@ -132,11 +133,29 @@ VITE_BRAIN_API_URL=http://127.0.0.1:8000
 
 Without `VITE_BRAIN_API_URL`, the Brain frontend can default to the hosted Render backend so localhost still uses the production Drive/Supabase setup.
 
+### Model Selection
+
+The Brain generates with **Gemini 3.5 Flash-Lite** and embeds with **gemini-embedding-001**.
+
+Flash-Lite is the deliberate default rather than a cost compromise. Retrieval does the heavy lifting before the model is called: hybrid search, deep source expansion, the pinned reference layer, and the live portfolio context all arrive pre-assembled and pre-ranked. What is left is disciplined writing over supplied evidence, and a fast model keeps the ask/answer loop short enough to iterate on.
+
+- `BRAIN_LLM_MODEL` selects the generation model. `gemini-3.5-flash` is the drop-in upgrade for questions that need more reasoning than speed.
+- `BRAIN_LLM_THINKING_LEVEL` accepts `minimal`, `low`, `medium`, or `high`, and applies only to `gemini-3.5*` models. An unrecognized value falls back to `minimal`. Higher levels reason longer and draw on the output allowance, so raise `BRAIN_ANALYSIS_TIMEOUT_SECONDS` alongside them.
+- `BRAIN_LLM_THINKING_BUDGET` is the older numeric-budget form, used only for non-3.5 models. It is inert while a `gemini-3.5*` model is selected.
+- If Google rejects the thinking configuration, the request is retried once without it. An unsupported model or level degrades to a plain call instead of failing the answer.
+- `BRAIN_EMBEDDING_MODEL` should be treated as fixed. Vectors from different embedding models are not comparable, so changing it invalidates the library and requires a full backfill with `force=true`.
+
+Generation timeouts do not come from the Gemini client. `BRAIN_ANALYSIS_TIMEOUT_SECONDS` governs normal answers and `BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS` governs answers with pinned full documents.
+
+### Retrieval And Answer Tuning
+
 `BRAIN_SEMANTIC_MIN_SCORE` rejects weak nearest-neighbor matches before they enter an answer. Keep the default unless retrieval diagnostics show a consistent false-negative or false-positive pattern; exact keyword search remains active either way.
 
-If the floor rejects everything *and* exact search also finds nothing, the Brain does not answer from an empty context. It keeps the closest few passages, labels them in the prompt as below the confidence floor, and instructs the model to state the evidence gap before interpreting anything. The count appears as `retrieval.weakSemanticFallback`.
+If the floor rejects everything *and* exact search also finds nothing, the Brain does not answer from an empty context. It keeps the closest few passages, labels them in the prompt as below the confidence floor, and instructs the model to state the evidence gap before interpreting anything. The count is reported as `retrieval.weakSemanticFallback`, and the chat flags the answer as an evidence gap rather than a finding.
 
-`BRAIN_ANALYSIS_TIMEOUT_SECONDS` is a ceiling on Gemini's writing window, not an added delay — a fast answer still returns immediately. It is bounded to 5-60s and only applies when no full-document sources are pinned; `BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS` governs that path. `BRAIN_DEEP_SOURCE_FILES` (1-5) sets how many distinct files are read around the strongest semantic hits; each extra file costs one serialized Supabase round trip.
+`BRAIN_ANALYSIS_TIMEOUT_SECONDS` is a ceiling on the model's writing window, not an added delay — a fast answer still returns immediately. It is bounded to 5-60s and applies only when no full-document sources are pinned.
+
+`BRAIN_DEEP_SOURCE_FILES` (1-5) sets how many distinct files are read around the strongest semantic hits. Each extra file costs one serialized Supabase round trip.
 
 ## Cache Behavior
 
@@ -194,6 +213,7 @@ Main Brain capabilities:
 - Chat-first research threads with follow-up context and attached source evidence.
 - Hybrid company retrieval: pgvector semantic search plus full-text exact search, fused before analysis.
 - Deep source expansion around the strongest matched passages before Gemini answers.
+- Explicit weak-evidence handling: when nothing clears the relevance floor, the answer reports the gap instead of manufacturing confidence.
 - Persistent reference layer: select up to six indexed Drive sources that supply a relevant framework passage to every answer.
 - Full-document context: select up to four indexed files whose entire extracted text is included in every answer, with explicit per-file and total context caps.
 - Editable system prompt stored with the Brain and sent to Gemini as a native system instruction.
@@ -363,11 +383,31 @@ Backend syntax check:
 $env:PYTHONDONTWRITEBYTECODE='1'; python -m py_compile backend\server.py backend\drive_indexer.py backend\brain_agent.py backend\brain_store.py backend\brain_store_postgres.py backend\gemini_client.py
 ```
 
+Backend tests. These are plain assertion scripts, not pytest files, so each one is run directly and prints its own pass line:
+
+```powershell
+cd backend
+$env:PYTHONIOENCODING='utf-8'
+python test_brain_retrieval_edges.py
+python test_brain_conversations.py
+python test_brain_portfolio_context.py
+python test_brain_agent_search.py
+python test_brain_agent_markdown.py
+python test_calculations.py
+python test_rebalancing.py
+python test_historical_diagnostics.py
+python test_portfolio_history_guard.py
+```
+
+`PYTHONIOENCODING` matters: without it `test_calculations.py` exits non-zero on a `UnicodeEncodeError` while printing its results to a non-UTF-8 Windows console, which looks like a failing assertion but is not one.
+
 Frontend build:
 
 ```powershell
 npm run build
 ```
+
+`npm run lint` reports pre-existing errors inside `dexter-agent/`, a separate sub-project. Only new entries under `src/` are regressions.
 
 Brain health:
 
