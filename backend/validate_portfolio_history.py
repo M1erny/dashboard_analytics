@@ -1,3 +1,4 @@
+import hashlib
 import json
 import sys
 from datetime import datetime
@@ -10,6 +11,41 @@ DEFAULT_PORTFOLIO = "main"
 VALID_DIRECTIONS = {"Long", "Short"}
 VALID_TIMINGS = {"effective_open", "post_session"}
 REQUIRED_POSITION_FIELDS = {"weight", "type", "currency", "country", "sector"}
+
+
+def snapshot_fingerprint(snapshot: Any) -> str:
+    """Stable hash of one frozen snapshot: its date and every position field.
+
+    AGENTS.md forbids rewriting a past snapshot, but the field-level checks in this
+    file cannot see an edit that keeps the shape valid. A snapshot's sector was in
+    fact silently changed on four tickers once, and this guard existed to catch it.
+    """
+    payload = {
+        "date": snapshot.get("date"),
+        "positions": snapshot.get("positions") or {},
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def frozen_lock_path(portfolio: str) -> Path:
+    return PORTFOLIO_DIR / f"{portfolio}.frozen.lock.json"
+
+
+def build_frozen_lock(snapshots: list[Any]) -> dict[str, Any]:
+    return {
+        "version": 1,
+        "description": (
+            "sha256 of each frozen snapshot's date and positions. Regenerate ONLY with "
+            "'python backend/validate_portfolio_history.py <portfolio> --write-lock' and only "
+            "when a snapshot change is intentional and explained in the commit message."
+        ),
+        "snapshots": {
+            str(snapshot.get("date")): snapshot_fingerprint(snapshot)
+            for snapshot in snapshots
+            if isinstance(snapshot, dict)
+        },
+    }
 
 
 def load_json(path: Path) -> Any:
@@ -168,6 +204,37 @@ def validate_portfolio_history(portfolio: str = DEFAULT_PORTFOLIO) -> tuple[list
     if active_date is not None and snapshot_dates and snapshot_dates[0].year > active_date.year:
         warnings.append("First frozen snapshot starts after the active year; YTD continuity may be incomplete")
 
+    lock_path = frozen_lock_path(portfolio)
+    if lock_path.exists():
+        try:
+            lock = load_json(lock_path)
+        except json.JSONDecodeError as exc:
+            lock = None
+            errors.append(f"{lock_path.name} is invalid JSON: {exc}")
+        if isinstance(lock, dict):
+            expected = lock.get("snapshots") or {}
+            actual = build_frozen_lock(snapshots)["snapshots"]
+            for date, digest in sorted(expected.items()):
+                if date not in actual:
+                    errors.append(
+                        f"Frozen snapshot {date} is in {lock_path.name} but missing from the ledger; "
+                        "a preserved book must not be deleted"
+                    )
+                elif actual[date] != digest:
+                    errors.append(
+                        f"Frozen snapshot {date} was modified (fingerprint {actual[date][:12]} != "
+                        f"locked {digest[:12]}). AGENTS.md requires a new dated entry instead of "
+                        f"rewriting history. If the change is deliberate, rerun with --write-lock "
+                        f"and say why in the commit message."
+                    )
+            for date in sorted(set(actual).difference(expected)):
+                warnings.append(f"Frozen snapshot {date} is not yet locked; rerun with --write-lock")
+    elif snapshots:
+        warnings.append(
+            f"No {lock_path.name} present, so silent edits to frozen snapshots cannot be detected. "
+            "Create it with --write-lock"
+        )
+
     exited_tickers = sorted(frozen_tickers.difference(active_positions.keys()))
     if not exited_tickers:
         warnings.append("No exited tickers appear in the ledger; verify old books are really preserved")
@@ -181,8 +248,37 @@ def validate_portfolio_history(portfolio: str = DEFAULT_PORTFOLIO) -> tuple[list
     return errors, warnings
 
 
+def write_frozen_lock(portfolio: str) -> int:
+    ledger_path = PORTFOLIO_DIR / f"{portfolio}.rebalances.json"
+    if not ledger_path.exists():
+        print(f"Missing rebalance ledger file: {ledger_path}")
+        return 1
+    ledger = load_json(ledger_path)
+    snapshots = ledger.get("snapshots") if isinstance(ledger, dict) else None
+    if not isinstance(snapshots, list) or not snapshots:
+        print(f"{ledger_path.name}.snapshots must be a non-empty array")
+        return 1
+
+    lock = build_frozen_lock(snapshots)
+    lock_path = frozen_lock_path(portfolio)
+    with lock_path.open("w", encoding="utf-8") as handle:
+        json.dump(lock, handle, indent=2, ensure_ascii=False)
+        handle.write("\n")
+    print(f"Wrote {lock_path.name} with {len(lock['snapshots'])} frozen snapshot fingerprint(s):")
+    for date, digest in sorted(lock["snapshots"].items()):
+        print(f"  {date}  {digest}")
+    return 0
+
+
 def main() -> int:
-    portfolio = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_PORTFOLIO
+    args = [arg for arg in sys.argv[1:]]
+    write_lock = "--write-lock" in args
+    positional = [arg for arg in args if not arg.startswith("--")]
+    portfolio = positional[0] if positional else DEFAULT_PORTFOLIO
+
+    if write_lock:
+        return write_frozen_lock(portfolio)
+
     errors, warnings = validate_portfolio_history(portfolio)
 
     if errors:

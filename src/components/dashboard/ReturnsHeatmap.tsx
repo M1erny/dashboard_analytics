@@ -94,6 +94,19 @@ const getSinceRebalanceDisplayContribution = (row: PeriodicReturn): number | nul
     return row.sinceRebalanceContributionYtdBasis ?? row.sinceRebalanceContribution ?? null;
 };
 
+// This column measures from the latest dated rebalance, which under post_session
+// execution is the rebalance CLOSE — so the window can include the tail of the prior
+// calendar period. It must never be captioned as a calendar half-year: the backend
+// ships the real start date on every row, so the header is derived from it.
+const SINCE_REBALANCE_LABEL_TOKEN = '__SINCE_REBALANCE__';
+
+const formatSinceRebalanceLabel = (isoDate?: string | null): string => {
+    if (!isoDate) return 'Since rebalance';
+    const parsed = new Date(`${isoDate}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return 'Since rebalance';
+    return `Since ${parsed.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`;
+};
+
 // ─── Contribution Bar (visual magnitude indicator) ───────────
 const ContribBar = ({ value, maxAbsValue }: { value: number | null; maxAbsValue: number }) => {
     if (value === null || value === undefined || maxAbsValue === 0) return null;
@@ -238,7 +251,7 @@ const columns: ColumnDef[] = [
     { key: 'lastPrice',        label: 'Price',      group: 'position', tooltip: 'Last fetched price' },
     { key: 'currentWeight',    label: 'Weight',     group: 'position', tooltip: 'Cost-aware drifted weight as a share of estimated net NAV' },
     { key: 'ytdContribution',  label: 'YTD Gross',  group: 'contribution', tooltip: 'Gross security contribution before financing, including prior books and exited/rebalanced exposure' },
-    { key: 'sinceRebalanceContribution', label: '2H 2026', group: 'contribution', tooltip: 'Second-half 2026 contribution on the same YTD basis as YTD Total' },
+    { key: 'sinceRebalanceContribution', label: SINCE_REBALANCE_LABEL_TOKEN, group: 'contribution', tooltip: 'Contribution since the latest dated rebalance, on the same YTD basis as YTD Total' },
     { key: 'r7dContribution',  label: '7D',         group: 'contribution', tooltip: '7-day portfolio contribution' },
     { key: 'r1dContribution',  label: '1D',         group: 'contribution', tooltip: '1-day portfolio contribution' },
     { key: 'r1d',              label: '1D',         group: 'returns', tooltip: '1-day return' },
@@ -425,6 +438,11 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
         }
     }, [riskMap]);
 
+    const sinceRebalanceLabel = useMemo(
+        () => formatSinceRebalanceLabel(periodicReturns.find(row => row.sinceRebalanceStartDate)?.sinceRebalanceStartDate),
+        [periodicReturns]
+    );
+
     const sortedData = useMemo(() => {
         return [...periodicReturns].sort((a, b) => {
             if (sortKey === 'ticker') {
@@ -592,7 +610,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                             col.key === 'r7dContribution' ? row.r7dContribution : row.r1dContribution;
                 const normalizedVal = val ?? null;
                 const title = col.key === 'sinceRebalanceContribution' && row.sinceRebalanceStartDate
-                    ? `2H 2026 contribution from ${row.sinceRebalanceStartDate}; same YTD basis as YTD Total`
+                    ? `Contribution since the ${row.sinceRebalanceStartDate} rebalance close; same YTD basis as YTD Total`
                     : col.tooltip;
                 return (
                     <td key={col.key} className={cn(
@@ -714,7 +732,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             <div className="grid grid-cols-2 lg:grid-cols-4 border-b border-white/[0.06]">
                 {[
                     { label: `${periodLabel} Security Gross`, value: summary.ytdC, icon: <TrendingUp className="h-4 w-4" />, gradient: 'from-blue-500/10 to-transparent' },
-                    { label: '2H 2026', value: summary.sinceRebalanceC, icon: <Target className="h-4 w-4" />, gradient: 'from-sky-500/10 to-transparent' },
+                    { label: sinceRebalanceLabel, value: summary.sinceRebalanceC, icon: <Target className="h-4 w-4" />, gradient: 'from-sky-500/10 to-transparent' },
                     { label: '7D Impact', value: summary.r7dC, icon: <Zap className="h-4 w-4" />, gradient: 'from-violet-500/10 to-transparent' },
                     { label: '1D Impact', value: summary.r1dC, icon: <Flame className="h-4 w-4" />, gradient: 'from-orange-500/10 to-transparent' },
                 ].map((item, index) => (
@@ -941,7 +959,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                                                 "h-3 w-3 shrink-0 text-gray-600 transition-colors",
                                                 isDragging ? "text-blue-300" : "group-hover:text-gray-400"
                                             )} />
-                                            <span>{col.label === 'YTD' ? periodLabel : col.label}</span>
+                                            <span>{col.label === 'YTD' ? periodLabel : col.label === SINCE_REBALANCE_LABEL_TOKEN ? sinceRebalanceLabel : col.label}</span>
                                             <SortIndicator columnKey={col.key} />
                                         </div>
                                     </th>

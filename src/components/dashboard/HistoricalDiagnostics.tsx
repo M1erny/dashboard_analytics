@@ -339,7 +339,10 @@ export const HistoricalDiagnostics: React.FC<HistoricalDiagnosticsProps> = React
                         Icon={Activity}
                     />
                     <MetricPanel
-                        title="Variance"
+                        // The headline, the plotted series and the formatter are all
+                        // annualised volatility. Daily variance is ~1000x smaller and is
+                        // reported in the subtitle, so the title has to say volatility.
+                        title="Volatility (ann.)"
                         subtitle={`daily var x10k: ${formatVariance(latest.variance)}`}
                         value={formatPercent(latest.volatility)}
                         accent="text-amber-300"

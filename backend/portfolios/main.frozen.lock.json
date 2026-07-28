@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "description": "sha256 of each frozen snapshot's date and positions. Regenerate ONLY with 'python backend/validate_portfolio_history.py <portfolio> --write-lock' and only when a snapshot change is intentional and explained in the commit message.",
+  "snapshots": {
+    "2026-01-01": "8850ba6345a4248a2fac357658d5c66f52c8ba523d4d774a5173b1284c141755"
+  }
+}

@@ -645,13 +645,21 @@ def calculate_compounded_capm_alpha(portfolio_returns, benchmark_returns, beta, 
 
 
 def calculate_batting_stats(contribution_row):
-    """Ticker-level batting stats from cumulative contribution at a date."""
+    """Ticker-level batting stats from cumulative contribution at a date.
+
+    Only names that have actually produced a return day count. A position added by a
+    post_session rebalance already has a contribution cell on the rebalance date, but
+    its first return day is the next session, so its contribution is exactly 0.0.
+    Leaving those in the denominator counts them as losses they have not had yet and
+    prints a one-day collapse in hit rate at every dated rebalance.
+    """
     clean = contribution_row.dropna()
-    positions_count = int(len(clean))
-    winners_count = int((clean > 0).sum())
-    losers_count = int((clean < 0).sum())
-    total_gains = float(clean[clean > 0].sum()) if positions_count else 0.0
-    total_losses = float(abs(clean[clean < 0].sum())) if positions_count else 0.0
+    traded = clean[clean != 0.0]
+    positions_count = int(len(traded))
+    winners_count = int((traded > 0).sum())
+    losers_count = int((traded < 0).sum())
+    total_gains = float(traded[traded > 0].sum()) if positions_count else 0.0
+    total_losses = float(abs(traded[traded < 0].sum())) if positions_count else 0.0
 
     if positions_count == 0:
         batting_average = np.nan
@@ -878,8 +886,24 @@ def calculate_segmented_ytd(
             contribution_history.loc[segment_index, ticker] = prior_contribution + gross_start_value * position_curve
 
         previous_segment_value = segment_gross_curve.shift(1).replace(0, np.nan)
-        long_daily_ret.loc[segment_index] = (segment_long_curve.diff() / previous_segment_value).fillna(0.0)
-        short_daily_ret.loc[segment_index] = (segment_short_curve.diff() / previous_segment_value).fillna(0.0)
+        # Assign only the rows where diff() is defined. A segment's first row has no
+        # prior row inside the segment, and under post_session execution that row IS
+        # the seam day already written by the previous segment. Filling it with 0.0
+        # erased a real trading day from the long/short split, which is why
+        # longOnlyBeta + shortOnlyBeta no longer summed to the portfolio beta.
+        # The series are initialised to 0.0, so the very first date stays 0.0.
+        segment_return_index = segment_index[1:]
+        if len(segment_return_index):
+            long_daily_ret.loc[segment_return_index] = (
+                (segment_long_curve.diff() / previous_segment_value)
+                .reindex(segment_return_index)
+                .fillna(0.0)
+            )
+            short_daily_ret.loc[segment_return_index] = (
+                (segment_short_curve.diff() / previous_segment_value)
+                .reindex(segment_return_index)
+                .fillna(0.0)
+            )
 
         exposure = opening_exposure
         rebalance_events.append({
