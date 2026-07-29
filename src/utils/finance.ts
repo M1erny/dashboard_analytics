@@ -242,6 +242,10 @@ export interface AnalyticsHistoryPoint {
     variance: number | null;
     volatility: number | null;
     beta: number | null;
+    // Cumulative long-book and short-book contribution on the same YTD basis as
+    // ytdLongsContrib / ytdShortsContrib. They sum to the gross YTD path.
+    longContribution: number | null;
+    shortContribution: number | null;
     battingAverage: number | null;
     winnersCount: number;
     losersCount: number;

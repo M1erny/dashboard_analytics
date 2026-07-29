@@ -343,6 +343,84 @@ class RebalanceAccountingTests(unittest.TestCase):
         self.assertAlmostEqual(short_ret.iloc[0], 0.0, places=12)
 
 
+    def test_book_contribution_series_reconcile_to_the_gross_path(self):
+        """Long-book + short-book contribution must equal the gross YTD path.
+
+        The two series are drawn on the same YTD basis as ytd_longs_contrib /
+        ytd_shorts_contrib, so they have to add up to the gross curve at EVERY date
+        and finish exactly on the reported totals - including across a rebalance.
+        """
+        dates = pd.to_datetime(["2025-12-31", "2026-01-02", "2026-01-05", "2026-01-06"])
+        prices = pd.DataFrame(
+            {
+                "LONG": [100.0, 110.0, 121.0, 121.0],
+                # Rising short: a LOSS for the book. This is the sign convention a naive
+                # implementation gets backwards, so the fixture exercises that direction.
+                "SHORT": [100.0, 105.0, 110.0, 110.0],
+                "NEW_LONG": [100.0, 100.0, 100.0, 105.0],
+            },
+            index=dates,
+        )
+
+        old_get_snapshots = risk.get_rebalance_snapshots
+        try:
+            risk.get_rebalance_snapshots = lambda _name, _active: [
+                {
+                    "date": "2026-01-01",
+                    "label": "Opening book",
+                    "source": "test",
+                    "executionTiming": "effective_open",
+                    "positions": {
+                        "LONG": {"weight": 1.0, "type": "Long", "currency": "USD"},
+                        "SHORT": {"weight": 0.5, "type": "Short", "currency": "USD"},
+                    },
+                },
+                {
+                    "date": "2026-01-05",
+                    "label": "Post-session rebalance",
+                    "source": "test",
+                    "executionTiming": "post_session",
+                    "positions": {
+                        "NEW_LONG": {"weight": 1.0, "type": "Long", "currency": "USD"}
+                    },
+                },
+            ]
+
+            result = risk.calculate_segmented_ytd(
+                prices,
+                "main",
+                {"NEW_LONG": {"weight": 1.0, "type": "Long", "currency": "USD"}},
+                "2026-01-05",
+                0.0,
+                0.0,
+            )
+        finally:
+            risk.get_rebalance_snapshots = old_get_snapshots
+
+        self.assertIsNotNone(result)
+        longs = result["long_contribution_history"]
+        shorts = result["short_contribution_history"]
+        gross = result["portfolio_val_series_gross"]
+
+        # Additive at every date, not just at the end.
+        for date in gross.index:
+            self.assertAlmostEqual(
+                longs.loc[date] + shorts.loc[date],
+                gross.loc[date] - 1.0,
+                places=10,
+                msg=f"long + short must equal the gross path on {date.date()}",
+            )
+
+        # And they land on the same totals the cards report.
+        self.assertAlmostEqual(longs.iloc[-1], result["ytd_longs_contrib"], places=10)
+        self.assertAlmostEqual(shorts.iloc[-1], result["ytd_shorts_contrib"], places=10)
+
+        # The short leg rose, which costs the book, so its contribution must be negative
+        # even though the underlying return is positive.
+        self.assertLess(shorts.iloc[-1], 0.0)
+        self.assertGreater(longs.iloc[-1], 0.0)
+
+
 class BattingStatsTests(unittest.TestCase):
     def test_untraded_names_are_excluded_from_the_denominator(self):
         """Names added at a post_session rebalance have no return day yet.

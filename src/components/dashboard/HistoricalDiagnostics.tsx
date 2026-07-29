@@ -269,6 +269,161 @@ const GrossPerformanceChart = ({ data, periodLabel }: { data: GrossPerformancePo
     );
 };
 
+interface BookContributionPoint {
+    date: string;
+    longContribution: number;
+    shortContribution: number;
+    total: number;
+}
+
+const BookContributionTooltip = ({ active, payload, label }: {
+    active?: boolean;
+    payload?: Array<{ payload?: BookContributionPoint }>;
+    label?: string;
+}) => {
+    const point = payload?.[0]?.payload;
+    if (!active || !point) return null;
+
+    return (
+        <div className="min-w-[220px] rounded-lg border border-white/10 bg-slate-950/95 p-3 shadow-2xl">
+            <div className="mb-3 font-mono text-[11px] font-semibold text-gray-400">
+                {formatDate(label ?? point.date)}
+            </div>
+            <div className="space-y-2 font-mono text-xs tabular-nums">
+                <div className="flex items-center justify-between gap-5">
+                    <span className="flex items-center gap-2 text-gray-400">
+                        <span className="h-2 w-2 rounded-full bg-emerald-400" /> Long book
+                    </span>
+                    <span className="font-bold text-emerald-300">{formatSignedPercent(point.longContribution, 2)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-5">
+                    <span className="flex items-center gap-2 text-gray-400">
+                        <span className="h-2 w-2 rounded-full bg-rose-400" /> Short book
+                    </span>
+                    <span className="font-bold text-rose-300">{formatSignedPercent(point.shortContribution, 2)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-5 border-t border-white/[0.08] pt-2">
+                    <span className="flex items-center gap-2 text-gray-400">
+                        <span className="h-0 w-3 border-t-2 border-dashed border-slate-300" /> Combined gross
+                    </span>
+                    <span className="font-bold text-slate-200">{formatSignedPercent(point.total, 2)}</span>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const BookContributionChart = ({ data, periodLabel }: { data: BookContributionPoint[]; periodLabel: string }) => {
+    if (!data.length) {
+        return (
+            <div className="rounded-lg border border-white/[0.07] bg-slate-950/70 p-5 text-sm text-gray-500">
+                Long/short book contribution needs the dated rebalance engine; it will appear once segmented history is available.
+            </div>
+        );
+    }
+
+    const latest = data[data.length - 1];
+
+    return (
+        <div className="rounded-lg border border-white/[0.07] bg-slate-950/70 p-4 shadow-lg shadow-black/20 sm:p-5">
+            <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                        <ChartNoAxesCombined className="h-4 w-4 shrink-0 text-emerald-300" />
+                        <h3 className="text-[11px] font-bold uppercase tracking-[0.16em] text-gray-300">
+                            Long Book vs Short Book Contribution
+                        </h3>
+                    </div>
+                    <p className="mt-1 text-[11px] text-gray-500">
+                        Cumulative gross contribution of each side to {periodLabel} return. Sides are side-adjusted, so a
+                        rising short reads as a loss; the two add up to combined gross.
+                    </p>
+                </div>
+                <div className="grid grid-cols-3 gap-x-5 gap-y-2 font-mono text-[11px] tabular-nums sm:flex sm:flex-wrap sm:justify-end">
+                    <div>
+                        <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-[0.12em] text-gray-500">
+                            <span className="h-2 w-2 rounded-full bg-emerald-400" /> Long book
+                        </div>
+                        <div className="font-bold text-emerald-300">{formatSignedPercent(latest.longContribution)}</div>
+                    </div>
+                    <div>
+                        <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-[0.12em] text-gray-500">
+                            <span className="h-2 w-2 rounded-full bg-rose-400" /> Short book
+                        </div>
+                        <div className="font-bold text-rose-300">{formatSignedPercent(latest.shortContribution)}</div>
+                    </div>
+                    <div>
+                        <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-[0.12em] text-gray-500">
+                            <span className="h-0 w-3 border-t-2 border-dashed border-slate-300" /> Combined
+                        </div>
+                        <div className="font-bold text-slate-200">{formatSignedPercent(latest.total)}</div>
+                    </div>
+                </div>
+            </div>
+
+            <div className="h-[270px] w-full sm:h-[320px]">
+                <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+                        <CartesianGrid vertical={false} stroke="rgba(148, 163, 184, 0.10)" />
+                        <XAxis
+                            dataKey="date"
+                            axisLine={false}
+                            tickLine={false}
+                            minTickGap={42}
+                            tick={{ fill: '#64748b', fontSize: 10, fontFamily: 'monospace' }}
+                            tickFormatter={(value: string) => formatDate(value, false)}
+                        />
+                        <YAxis
+                            axisLine={false}
+                            tickLine={false}
+                            width={48}
+                            tick={{ fill: '#64748b', fontSize: 10, fontFamily: 'monospace' }}
+                            tickFormatter={(value: number) => `${(value * 100).toFixed(0)}%`}
+                            domain={['auto', 'auto']}
+                        />
+                        <ReferenceLine y={0} stroke="rgba(148, 163, 184, 0.32)" />
+                        <Tooltip
+                            content={<BookContributionTooltip />}
+                            cursor={{ stroke: '#64748b', strokeWidth: 1, strokeDasharray: '4 4' }}
+                        />
+                        <Line
+                            type="linear"
+                            dataKey="longContribution"
+                            name="Long book"
+                            stroke="#34d399"
+                            strokeWidth={2.5}
+                            dot={false}
+                            activeDot={{ r: 4, fill: '#34d399', stroke: '#020617', strokeWidth: 2 }}
+                            isAnimationActive={false}
+                        />
+                        <Line
+                            type="linear"
+                            dataKey="shortContribution"
+                            name="Short book"
+                            stroke="#fb7185"
+                            strokeWidth={2.5}
+                            dot={false}
+                            activeDot={{ r: 4, fill: '#fb7185', stroke: '#020617', strokeWidth: 2 }}
+                            isAnimationActive={false}
+                        />
+                        <Line
+                            type="linear"
+                            dataKey="total"
+                            name="Combined gross"
+                            stroke="#cbd5e1"
+                            strokeWidth={1.75}
+                            strokeDasharray="6 5"
+                            dot={false}
+                            activeDot={{ r: 4, fill: '#cbd5e1', stroke: '#020617', strokeWidth: 2 }}
+                            isAnimationActive={false}
+                        />
+                    </LineChart>
+                </ResponsiveContainer>
+            </div>
+        </div>
+    );
+};
+
 interface HistoricalDiagnosticsProps {
     data: AnalyticsHistoryPoint[];
     performance: HistoryPoint[];
@@ -301,6 +456,21 @@ export const HistoricalDiagnostics: React.FC<HistoricalDiagnosticsProps> = React
             portfolioGross: portfolioReturn,
             benchmark: benchmarkReturn,
             spread: portfolioReturn - benchmarkReturn,
+        }];
+    });
+
+    // The backend only emits these two series from the segmented (dated-rebalance)
+    // engine, so a missing value means "not computed", not "zero". Drop those dates
+    // rather than drawing a flat line the accounting never produced.
+    const bookContributionPoints = data.flatMap((point): BookContributionPoint[] => {
+        const longContribution = clean(point.longContribution);
+        const shortContribution = clean(point.shortContribution);
+        if (longContribution === null || shortContribution === null) return [];
+        return [{
+            date: point.date,
+            longContribution,
+            shortContribution,
+            total: longContribution + shortContribution,
         }];
     });
 
@@ -365,6 +535,10 @@ export const HistoricalDiagnostics: React.FC<HistoricalDiagnosticsProps> = React
             )}
 
             <GrossPerformanceChart data={performancePoints} periodLabel={periodLabel} />
+
+            {bookContributionPoints.length > 0 && (
+                <BookContributionChart data={bookContributionPoints} periodLabel={periodLabel} />
+            )}
         </section>
     );
 });

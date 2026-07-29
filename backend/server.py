@@ -4290,6 +4290,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "variance": to_float(row.get("variance")),
                 "volatility": to_float(row.get("volatility")),
                 "beta": to_float(row.get("beta")),
+                "longContribution": to_float(row.get("longContribution")),
+                "shortContribution": to_float(row.get("shortContribution")),
                 "battingAverage": to_float(row.get("battingAverage")),
                 "winnersCount": row.get("winnersCount", 0),
                 "losersCount": row.get("losersCount", 0),

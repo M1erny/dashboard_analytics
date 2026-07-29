@@ -682,7 +682,14 @@ def calculate_batting_stats(contribution_row):
     }
 
 
-def build_historical_diagnostics(portfolio_value_series, benchmark_returns, contribution_history=None, min_beta_periods=14):
+def build_historical_diagnostics(
+    portfolio_value_series,
+    benchmark_returns,
+    contribution_history=None,
+    min_beta_periods=14,
+    long_contribution_history=None,
+    short_contribution_history=None,
+):
     """Build per-date YTD diagnostics from the same value stream used for reported metrics."""
     if portfolio_value_series is None or portfolio_value_series.empty:
         return []
@@ -721,6 +728,12 @@ def build_historical_diagnostics(portfolio_value_series, benchmark_returns, cont
         if contribution_history is not None and not contribution_history.empty and date in contribution_history.index:
             batting = calculate_batting_stats(contribution_history.loc[date])
 
+        def book_contribution(series):
+            if series is None or len(series) == 0 or date not in series.index:
+                return None
+            value = float(series.loc[date])
+            return value if np.isfinite(value) else None
+
         rows.append({
             "date": date.strftime("%Y-%m-%d"),
             "portfolio": float(values.loc[date]),
@@ -728,6 +741,8 @@ def build_historical_diagnostics(portfolio_value_series, benchmark_returns, cont
             "variance": variance,
             "volatility": volatility,
             "beta": beta,
+            "longContribution": book_contribution(long_contribution_history),
+            "shortContribution": book_contribution(short_contribution_history),
             **batting,
         })
 
@@ -787,6 +802,13 @@ def calculate_segmented_ytd(
     portfolio_val_series_net = pd.Series(index=price_index, dtype=float)
     long_daily_ret = pd.Series(0.0, index=price_index)
     short_daily_ret = pd.Series(0.0, index=price_index)
+    # Cumulative long-book and short-book contribution on the SAME YTD basis as
+    # ytd_longs_contrib / ytd_shorts_contrib, so the two series add up to the gross
+    # YTD path at every date and end exactly on the reported totals.
+    long_contribution_history = pd.Series(np.nan, index=price_index, dtype=float)
+    short_contribution_history = pd.Series(np.nan, index=price_index, dtype=float)
+    cumulative_long_contribution = 0.0
+    cumulative_short_contribution = 0.0
 
     gross_start_value = 1.0
     net_start_value = 1.0
@@ -885,6 +907,13 @@ def calculate_segmented_ytd(
             prior_contribution = cumulative_position_contributions.get(ticker, 0.0)
             contribution_history.loc[segment_index, ticker] = prior_contribution + gross_start_value * position_curve
 
+        long_contribution_history.loc[segment_index] = (
+            cumulative_long_contribution + gross_start_value * segment_long_curve
+        )
+        short_contribution_history.loc[segment_index] = (
+            cumulative_short_contribution + gross_start_value * segment_short_curve
+        )
+
         previous_segment_value = segment_gross_curve.shift(1).replace(0, np.nan)
         # Assign only the rows where diff() is defined. A segment's first row has no
         # prior row inside the segment, and under post_session execution that row IS
@@ -944,6 +973,11 @@ def calculate_segmented_ytd(
                 latest_segment_position_contributions[ticker] = float(position_curve.iloc[-1])
                 latest_segment_position_contributions_ytd_basis[ticker] = float(gross_start_value * position_curve.iloc[-1])
 
+        # Roll the book-level accumulators forward while gross_start_value still refers
+        # to THIS segment's opening value, matching how ytd_longs/shorts_contrib is built.
+        cumulative_long_contribution += float(gross_start_value * segment_long_curve.iloc[-1])
+        cumulative_short_contribution += float(gross_start_value * segment_short_curve.iloc[-1])
+
         gross_start_value = float(segment_gross_values.iloc[-1])
         net_start_value = float(segment_net_values.iloc[-1])
         for ticker in contribution_history.columns:
@@ -977,6 +1011,8 @@ def calculate_segmented_ytd(
         "rebalance_events": rebalance_events,
         "long_daily_ret": long_daily_ret.reindex(portfolio_val_series_net.index).fillna(0.0),
         "short_daily_ret": short_daily_ret.reindex(portfolio_val_series_net.index).fillna(0.0),
+        "long_contribution_history": long_contribution_history.reindex(portfolio_val_series_net.index).ffill().fillna(0.0),
+        "short_contribution_history": short_contribution_history.reindex(portfolio_val_series_net.index).ffill().fillna(0.0),
     }
 
 # ==========================================
@@ -1290,6 +1326,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             ytd_shorts_contrib = segmented_ytd["ytd_shorts_contrib"]
             ytd_position_contributions = segmented_ytd["position_contributions"]
             ytd_position_contribution_history = segmented_ytd["position_contribution_history"]
+            ytd_long_contribution_history = segmented_ytd["long_contribution_history"]
+            ytd_short_contribution_history = segmented_ytd["short_contribution_history"]
             since_rebalance_position_contributions = segmented_ytd["latest_segment_position_contributions"]
             since_rebalance_position_contributions_ytd_basis = segmented_ytd["latest_segment_position_contributions_ytd_basis"]
             latest_rebalance_start_date = segmented_ytd["latest_segment_start_date"]
@@ -1300,6 +1338,10 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             portfolio_val_series = pd.Series(0.0, index=ytd_rel_prices.index)
             ytd_position_contributions = {}
             ytd_position_contribution_history = pd.DataFrame(np.nan, index=ytd_rel_prices.index, columns=active_tickers)
+            # Book-level split is only produced by the segmented engine. Leave it absent
+            # rather than inventing a series the single-book path never computed.
+            ytd_long_contribution_history = None
+            ytd_short_contribution_history = None
             since_rebalance_position_contributions = {}
             since_rebalance_position_contributions_ytd_basis = {}
             latest_rebalance_start_date = ytd_rel_prices.index[0].strftime('%Y-%m-%d') if len(ytd_rel_prices.index) else None
@@ -1585,6 +1627,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             portfolio_val_series,
             ytd_benchmark,
             ytd_position_contribution_history,
+            long_contribution_history=ytd_long_contribution_history,
+            short_contribution_history=ytd_short_contribution_history,
         )
         ytd_period_info = {
             'Start_Date': portfolio_val_series.index[0].strftime('%Y-%m-%d'),
