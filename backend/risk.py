@@ -119,6 +119,10 @@ WATCHLIST_FX = ['USDPLN=X', 'EURPLN=X', 'EURUSD=X', 'DKKEUR=X', 'JPYUSD=X'] # Pa
 BASE_CURRENCY = 'USD'
 LOOKBACK_YEARS = 5.2
 ANNUAL_FACTOR = 252
+# How many recently settled sessions to check for bars the bulk download dropped.
+# Kept short so a genuine exchange holiday costs at most a few wasted single-ticker
+# retries, which return no bar and therefore change nothing.
+SETTLED_GAP_LOOKBACK = 5
 
 # Cost of Carry Assumptions (Retail Broker Estimate)
 MARGIN_RATE = 0.12  # 12.0% typical retail margin rate (e.g., Schwab/Fidelity)
@@ -248,6 +252,52 @@ def select_latest_patch_price(last_price, previous_close, regular_previous_close
 # ==========================================
 # 2. DATA ENGINE: Fetch & Normalize
 # ==========================================
+def _ticker_close_column(df, ticker):
+    """The ticker's raw Close column WITHOUT dropna, so gaps stay visible."""
+    if df is None or df.empty:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        for price_col in ['Close', 'Adj Close']:
+            if (price_col, ticker) in df.columns:
+                return df[(price_col, ticker)]
+        return None
+    return df[ticker] if ticker in df.columns else None
+
+
+def _detect_incomplete_tickers(stock_raw, tickers, lookback=SETTLED_GAP_LOOKBACK):
+    """Tickers to re-download: no data at all, or a recently SETTLED bar missing.
+
+    The threaded bulk download intermittently omits individual sessions that Yahoo
+    actually has - a single-ticker request for the same window returns them. Before
+    this check, only a completely empty series triggered the retry, so a ticker that
+    lost one recent bar was left alone, the hole was forward-filled downstream, and
+    the PREVIOUS session's move was then reported as today's 1-day return.
+
+    The final row is deliberately excluded: before a venue opens it is legitimately
+    pending, and the fast_info patch in fetch_data already covers that case.
+
+    A genuine exchange holiday is handled safely by construction - it gets flagged,
+    the re-download finds no bar either, and nothing changes.
+    """
+    failed = []
+    empty_frame = stock_raw is None or stock_raw.empty
+    settled_rows = (
+        stock_raw.index[-(lookback + 1):-1]
+        if not empty_frame and len(stock_raw.index) > 1
+        else []
+    )
+
+    for ticker in tickers:
+        column = None if empty_frame else _ticker_close_column(stock_raw, ticker)
+        if column is None or column.dropna().empty:
+            failed.append(ticker)
+            continue
+        if len(settled_rows) and bool(column.reindex(settled_rows).isna().any()):
+            print(f"  {ticker}: bulk download is missing a recently settled bar; retrying individually")
+            failed.append(ticker)
+    return failed
+
+
 def fetch_data(portfolio_name="main"):
     PORTFOLIO_CONFIG = get_all_position_configs(portfolio_name)
     print("--- 1. Initializing Data Download ---")
@@ -291,11 +341,7 @@ def fetch_data(portfolio_name="main"):
                 return df[t].dropna()
         return pd.Series()
 
-    failed_tickers = []
-    for t in tickers:
-        series = get_ticker_series(stock_raw, t)
-        if series.empty:
-            failed_tickers.append(t)
+    failed_tickers = _detect_incomplete_tickers(stock_raw, tickers)
 
     if failed_tickers:
         print(f"Failed to fetch {len(failed_tickers)} tickers in bulk: {failed_tickers}. Retrying individually...")
