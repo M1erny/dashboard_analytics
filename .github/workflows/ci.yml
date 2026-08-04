@@ -1,0 +1,60 @@
+name: CI
+
+# The self-build agent opens pull requests that no human wrote. This workflow is
+# the gate that decides whether such a proposal is even reviewable.
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend types, lint, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - name: TypeScript
+        run: npx tsc -b
+      - name: ESLint
+        run: npm run lint
+      - name: Vite build
+        run: npx vite build
+
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r backend/requirements.txt
+      - name: Run backend test suites
+        working-directory: backend
+        run: |
+          status=0
+          for test in test_*.py; do
+            echo "::group::$test"
+            if python "$test"; then
+              echo "$test passed"
+            else
+              echo "::error file=backend/$test::$test failed"
+              status=1
+            fi
+            echo "::endgroup::"
+          done
+          exit $status
+      - name: Portfolio history guard
+        run: python backend/validate_portfolio_history.py

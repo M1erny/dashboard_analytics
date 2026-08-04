@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from pathlib import Path
@@ -201,18 +202,89 @@ class GeminiClient:
         max_output_tokens: int = 900,
         timeout_seconds: float | None = None,
     ) -> str:
+        return self._generate(
+            prompt,
+            system_instruction=system_instruction,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def generate_json(
+        self,
+        prompt: str,
+        *,
+        response_schema: dict[str, Any],
+        system_instruction: str | None = None,
+        temperature: float = 0.15,
+        max_output_tokens: int = 8000,
+        timeout_seconds: float | None = None,
+        model: str | None = None,
+        thinking_level: str | None = None,
+    ) -> Any:
+        """Generate a JSON document that conforms to response_schema.
+
+        Gemini honours responseSchema, but a schema-constrained answer can still
+        arrive fenced or truncated, so the caller gets a decoded object or a
+        RuntimeError that says which of the two happened.
+        """
+        raw = self._generate(
+            prompt,
+            system_instruction=system_instruction,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            timeout_seconds=timeout_seconds,
+            model=model,
+            thinking_level=thinking_level,
+            response_mime_type="application/json",
+            response_schema=response_schema,
+        )
+        text = raw.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```[a-zA-Z]*\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "Gemini returned a response that is not valid JSON "
+                f"({exc.msg} at character {exc.pos}). The answer was most likely "
+                "truncated by the output token limit."
+            ) from exc
+
+    def _generate(
+        self,
+        prompt: str,
+        *,
+        system_instruction: str | None = None,
+        temperature: float = 0.25,
+        max_output_tokens: int = 900,
+        timeout_seconds: float | None = None,
+        model: str | None = None,
+        thinking_level: str | None = None,
+        response_mime_type: str | None = None,
+        response_schema: dict[str, Any] | None = None,
+    ) -> str:
         api_key = self._require_key()
         clean_prompt = (prompt or "").strip()
         if not clean_prompt:
             raise ValueError("Cannot generate from empty prompt")
 
-        url = f"{GEMINI_API_BASE}/models/{self.generation_model}:generateContent"
+        generation_model = (model or self.generation_model).strip()
+        url = f"{GEMINI_API_BASE}/models/{generation_model}:generateContent"
         generation_config: dict[str, Any] = {
             "temperature": temperature,
             "maxOutputTokens": max_output_tokens,
         }
-        if self.generation_model.startswith("gemini-3.5"):
-            generation_config["thinkingConfig"] = {"thinkingLevel": self.thinking_level}
+        if response_mime_type:
+            generation_config["responseMimeType"] = response_mime_type
+        if response_schema:
+            generation_config["responseSchema"] = response_schema
+        requested_level = (thinking_level or self.thinking_level or "").strip().lower()
+        if requested_level not in VALID_THINKING_LEVELS:
+            requested_level = self.thinking_level
+        if generation_model.startswith("gemini-3.5"):
+            generation_config["thinkingConfig"] = {"thinkingLevel": requested_level}
         elif self.thinking_budget is not None:
             generation_config["thinkingConfig"] = {"thinkingBudget": self.thinking_budget}
 
@@ -256,7 +328,7 @@ class GeminiClient:
         if not answer:
             # An empty answer is usually a truncation, a safety block, or thinking
             # that consumed the whole output allowance. Say which one.
-            reasons = [f"finishReason={candidate.get('finishReason') or 'unknown'}"]
+            reasons = [f"model={generation_model}", f"finishReason={candidate.get('finishReason') or 'unknown'}"]
             block_reason = (data.get("promptFeedback") or {}).get("blockReason")
             if block_reason:
                 reasons.append(f"blockReason={block_reason}")

@@ -53,6 +53,8 @@ try:
         parse_drive_folder_id,
     )
     from gemini_client import GeminiClient, load_backend_env
+    from github_client import GitHubClient
+    from code_agent import code_agent_settings, propose_code_change
 except ImportError as e:
     print(f"Error importing Investment Brain modules: {e}")
     DEFAULT_AGENT_MAX_BYTES = 15 * 1024 * 1024
@@ -72,6 +74,9 @@ except ImportError as e:
     parse_drive_folder_id = None
     GeminiClient = None
     load_backend_env = None
+    GitHubClient = None
+    code_agent_settings = None
+    propose_code_change = None
 
 app = FastAPI()
 
@@ -97,6 +102,7 @@ except Exception as e:
     brain_store_error = str(e)
     brain_store = None
 gemini_client = GeminiClient() if GeminiClient else None
+github_client = GitHubClient() if GitHubClient else None
 
 
 def _env_float(name: str, default: float) -> float:
@@ -1078,6 +1084,18 @@ class BrainAgentRunRequest(BaseModel):
     embedMaxChunks: int = Field(default=60, ge=1, le=500)
 
 
+class BrainCodeProposalRequest(BaseModel):
+    request: str = Field(..., min_length=8, max_length=4000)
+    notes: str | None = Field(default=None, max_length=4000)
+    openPullRequest: bool = True
+    contextFiles: int | None = Field(default=None, ge=3, le=24)
+
+
+class BrainCodeMergeRequest(BaseModel):
+    requireGreenChecks: bool = True
+    method: str = Field(default="squash", pattern="^(squash|merge|rebase)$")
+
+
 class BrainReferenceSetRequest(BaseModel):
     sourceIds: list[int] = Field(default_factory=list, max_length=MAX_REFERENCE_SOURCES)
 
@@ -1768,6 +1786,175 @@ async def run_brain_research_agent(payload: BrainAgentRunRequest):
         "embeddingQueued": embedding_queued,
         "message": "Imported the top trusted official source.",
     }
+
+
+def _github_or_503():
+    if not github_client:
+        raise HTTPException(status_code=503, detail="GitHub self-build client is not available")
+    if not github_client.configured:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "GitHub is not connected. Set BRAIN_GITHUB_TOKEN to a fine-grained token with "
+                "Contents and Pull requests write access, and BRAIN_GITHUB_REPO to owner/repo."
+            ),
+        )
+    return github_client
+
+
+@app.get("/api/brain/code/status")
+async def brain_code_status():
+    """Report whether the Brain can write code, without calling GitHub."""
+    if not code_agent_settings or not github_client:
+        return {
+            "available": False,
+            "reason": "Self-build modules failed to import on this server.",
+        }
+
+    settings = code_agent_settings()
+    github_status = github_client.status()
+    llm_configured = bool(gemini_client and gemini_client.configured)
+    return {
+        "available": bool(github_status["configured"] and llm_configured),
+        "github": github_status,
+        "llm": {
+            "configured": llm_configured,
+            "codeModel": settings["model"],
+            "thinkingLevel": settings["thinkingLevel"],
+            "maxOutputTokens": settings["maxOutputTokens"],
+        },
+        "guardrails": {
+            "writablePaths": settings["writableRoots"],
+            "protectedPaths": settings["protectedPaths"],
+            "protectedPrefixes": settings["protectedPrefixes"],
+            "maxChangedFiles": settings["maxChangedFiles"],
+            "maxOpenProposals": settings["maxOpenProposals"],
+            "allowDependencies": settings["allowDependencies"],
+            "allowSelfEdit": settings["allowSelfEdit"],
+            "allowMerge": settings["allowMerge"],
+        },
+    }
+
+
+@app.post("/api/brain/code/propose")
+async def propose_brain_code_change(payload: BrainCodeProposalRequest):
+    """Turn a plain-language request into a branch and a pull request."""
+    github = _github_or_503()
+    client = _gemini_or_503()
+    if not propose_code_change:
+        raise HTTPException(status_code=503, detail="Self-build agent is not available")
+
+    settings = code_agent_settings()
+    try:
+        return await _run_brain_step(
+            "Brain self-build agent",
+            propose_code_change,
+            github,
+            client,
+            request=payload.request,
+            notes=payload.notes,
+            open_pull_request=payload.openPullRequest,
+            context_limit=payload.contextFiles,
+            timeout=settings["planTimeoutSeconds"] + 120.0,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_clean_public_error(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=_clean_public_error(e))
+
+
+@app.get("/api/brain/code/proposals")
+async def list_brain_code_proposals(state: str = "open", limit: int = 20):
+    github = _github_or_503()
+    if state not in {"open", "closed", "all"}:
+        raise HTTPException(status_code=400, detail="state must be open, closed, or all")
+    try:
+        proposals = await _run_brain_step(
+            "GitHub proposal list",
+            github.list_pull_requests,
+            state=state,
+            limit=max(1, min(limit, 50)),
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+    return {"state": state, "proposals": proposals, "repo": github.repo}
+
+
+@app.get("/api/brain/code/proposals/{number}")
+async def get_brain_code_proposal(number: int):
+    github = _github_or_503()
+    try:
+        checks = await _run_brain_step(
+            "GitHub proposal checks",
+            github.pull_request_checks,
+            number,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+        files = await _run_brain_step(
+            "GitHub proposal files",
+            github.pull_request_files,
+            number,
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+    return {**checks, "files": files}
+
+
+@app.post("/api/brain/code/proposals/{number}/merge")
+async def merge_brain_code_proposal(number: int, payload: BrainCodeMergeRequest):
+    """Merge a self-build proposal. Off unless BRAIN_CODE_ALLOW_MERGE is set."""
+    github = _github_or_503()
+    settings = code_agent_settings()
+    if not settings["allowMerge"]:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Merging from the dashboard is disabled. Merge the pull request on GitHub, or set "
+                "BRAIN_CODE_ALLOW_MERGE=true to enable one-click merge here."
+            ),
+        )
+
+    try:
+        checks = await _run_brain_step(
+            "GitHub proposal checks",
+            github.pull_request_checks,
+            number,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+
+    pull = checks.get("pullRequest") or {}
+    head_ref = str(pull.get("headRef") or "")
+    if not head_ref.startswith("brain/self-build"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"#{number} is not a self-build proposal, so this endpoint will not merge it.",
+        )
+    if payload.requireGreenChecks and checks.get("state") != "passing":
+        raise HTTPException(
+            status_code=409,
+            detail=f"CI state for #{number} is '{checks.get('state')}'. Refusing to merge until checks pass.",
+        )
+
+    try:
+        merged = await _run_brain_step(
+            "GitHub merge",
+            github.merge_pull_request,
+            number,
+            method=payload.method,
+            commit_title=pull.get("title"),
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+    return {**merged, "number": number, "checks": checks.get("state")}
 
 
 @app.get("/api/brain/memories")

@@ -13,6 +13,17 @@ The portfolio files are not ordinary config churn. They are part of the performa
 - Run `python backend/validate_portfolio_history.py` before committing portfolio changes.
 - Use descriptive commit messages for portfolio changes, including the effective date when relevant.
 
+## The Brain Can Write Code Here
+
+`backend/code_agent.py` lets the Investment Brain propose changes to this repository
+through the GitHub API. It is bound by a write allowlist, and the rules above are part
+of that binding: `backend/portfolios/**` is not writable by the agent, and neither is
+`.github/**`, any dependency manifest, any build config, or this file.
+
+If you change those guardrails, change `backend/test_code_agent.py` in the same commit.
+The tests are the specification for what a machine-written change is allowed to do.
+See `docs/self-building-brain.md`.
+
 To inspect the historical portfolio state later:
 
 ```bash
