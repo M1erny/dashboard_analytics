@@ -22,6 +22,8 @@ import {
     X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { API_BASE, api } from '../lib/brainApi';
+import { BrainSelfBuild } from './BrainSelfBuild';
 
 type BrainCounts = {
     sources?: number;
@@ -289,14 +291,6 @@ type LibrarySearch = {
     results: SearchResult[];
 };
 
-const DEFAULT_BRAIN_API_URL = 'https://dashboard-eo6k.onrender.com';
-const API_BASE = (
-    import.meta.env.VITE_BRAIN_API_URL
-    ?? import.meta.env.VITE_API_URL
-    ?? DEFAULT_BRAIN_API_URL
-).replace(/\/$/, '');
-
-const api = (path: string) => `${API_BASE}${path}`;
 const BRAIN_BOOTSTRAP_CACHE_KEY = `investment-brain-bootstrap:${API_BASE}`;
 const BRAIN_BOOTSTRAP_CACHE_MAX_AGE_MS = 15 * 60 * 1000;
 
@@ -1580,6 +1574,8 @@ export const InvestmentBrainChat: React.FC = () => {
                                 <Button type="button" onClick={() => void importUrl(agentUrl)} disabled={!ready || !agentUrl.trim() || isAgentWorking} className="min-h-9 px-2.5" aria-label="Import public URL"><Plus className="h-3.5 w-3.5" /></Button>
                             </div>
                         </section>
+
+                        <BrainSelfBuild disabled={backendState !== 'ready'} />
                     </aside>
                 </div>
             </main>

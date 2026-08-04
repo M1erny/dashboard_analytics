@@ -12,6 +12,7 @@ The dashboard is built for one main job: show portfolio performance, risk, expos
 - Reconciles gross security contribution, estimated financing impact, and net realised return.
 - Provides portfolio exports and investor-facing PNG/report views.
 - Includes an Investment Brain for semantic search and company analysis over your own files.
+- Lets the Brain write its own code: a plain-language request becomes a reviewed pull request.
 
 ## Architecture
 
@@ -29,6 +30,11 @@ FastAPI backend on Render
                  +--> Supabase Postgres + pgvector for text chunks and embeddings
                  +--> Gemini for embeddings and analysis
                  +--> Research Agent for trusted source acquisition
+                 +--> Self-Build Agent
+                          |
+                          +--> Gemini writes the code change
+                          +--> GitHub API opens a pull request
+                          +--> GitHub Actions gates it, you merge it
 ```
 
 The browser does not read arbitrary files from your computer. Production Brain data comes from Google Drive through the Drive API, then lands in Supabase as metadata, extracted text chunks, and embeddings.
@@ -124,6 +130,25 @@ BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS=45
 BRAIN_CONVERSATION_SAVE_TIMEOUT_SECONDS=25
 BRAIN_AGENT_USER_AGENT=InvestmentBrainResearchAgent/1.0; your-email@example.com
 ```
+
+Self-build variables, required only if you want the Brain to write its own code:
+
+```text
+BRAIN_GITHUB_TOKEN=github_pat_...
+BRAIN_GITHUB_REPO=m1erny/dashboard_analytics
+BRAIN_GITHUB_BASE_BRANCH=main
+BRAIN_CODE_MODEL=gemini-3.5-flash
+BRAIN_CODE_THINKING_LEVEL=high
+BRAIN_CODE_MAX_OUTPUT_TOKENS=32000
+BRAIN_CODE_TIMEOUT_SECONDS=240
+BRAIN_CODE_CONTEXT_FILES=8
+BRAIN_CODE_MAX_OPEN_PROPOSALS=5
+BRAIN_CODE_ALLOW_DEPENDENCIES=false
+BRAIN_CODE_ALLOW_SELF_EDIT=false
+BRAIN_CODE_ALLOW_MERGE=false
+```
+
+The GitHub token must be fine-grained, scoped to this repository only, with Contents and Pull requests write access and nothing else. See [Self-Build](#self-build).
 
 Frontend override for development:
 
@@ -275,6 +300,11 @@ GET  /api/brain/conversations/{thread_id}
 POST /api/brain/agent/import-url
 POST /api/brain/agent/find-official-sources
 POST /api/brain/agent/run
+GET  /api/brain/code/status
+POST /api/brain/code/propose
+GET  /api/brain/code/proposals
+GET  /api/brain/code/proposals/{number}
+POST /api/brain/code/proposals/{number}/merge
 ```
 
 The Research Agent needs Google Drive OAuth with both read and `drive.file` write permission. If Drive was connected before agent import existed, reconnect Drive once from the Brain page so Google grants the new write scope. If uploads fail during token refresh, remove stale `GOOGLE_DRIVE_REFRESH_TOKEN` / `GOOGLE_REFRESH_TOKEN` values from Render (they override the database-managed OAuth token), then reconnect using the same Google OAuth client ID, secret, and redirect URI.
@@ -284,7 +314,41 @@ Detailed architecture notes are in:
 ```text
 docs/investment-brain-architecture.md
 docs/local-brain-worker.md
+docs/self-building-brain.md
 ```
+
+## Self-Build
+
+The Brain can change this dashboard's own source. You describe a change on the Brain page, Gemini writes it, and it arrives as a pull request on GitHub with CI attached. Merging it is what makes the change live — that step is yours.
+
+```text
+Self-build panel  ->  POST /api/brain/code/propose
+                            |
+                            +--> read the repo through the GitHub API
+                            +--> Gemini returns a schema-constrained change plan
+                            +--> validate paths, sizes, secrets, edit anchors
+                            +--> commit to brain/self-build/... and open a PR
+                            |
+                      GitHub Actions: tsc, eslint, vite build, backend tests
+                            |
+                      you review the diff and merge  ->  Vercel + Render redeploy
+```
+
+The running server never rewrites its own files. Render's disk is ephemeral, and a process that edits its own source in place leaves no audit trail and no way back. Every change goes through Git.
+
+**Setup.** Create a fine-grained GitHub PAT scoped to this repository only, with Contents write and Pull requests write. Set `BRAIN_GITHUB_TOKEN` and `BRAIN_GITHUB_REPO` on Render, then reload the Brain page.
+
+**The coding model is separate on purpose.** `BRAIN_LLM_MODEL` stays on Flash-Lite for research answers; `BRAIN_CODE_MODEL` should point at the strongest coding model your key can reach. Writing TypeScript that compiles is not the same task as writing prose over retrieved evidence.
+
+**What it will not touch.** `backend/portfolios/**` (the accounting audit trail), `.github/**`, dependency manifests, build and deploy config, `AGENTS.md`, and its own guardrail modules. Per proposal: at most 12 files, 400 KB total, 5 open proposals at a time. Writes are scanned for keys, tokens, and passworded connection strings.
+
+That allowlist stops one proposal from touching protected files. It is not a boundary against a determined model, because a merged pull request can change anything — including the allowlist. The real gate is that you merge. Read the diff.
+
+**Preview first.** `openPullRequest: false` (the **Preview diff** button) runs the model and every validator but pushes nothing, so a bad plan costs seconds instead of repository noise.
+
+**There is no auto-merge.** Everything needed for one is present, and it is deliberately not wired: `tsc` and the test suites catch broken code, not a widget that renders a plausible number computed the wrong way. On a portfolio dashboard a confidently wrong number is worse than a crash. `BRAIN_CODE_ALLOW_MERGE=true` adds a one-click merge button for green proposals, which keeps the click.
+
+Full details, failure modes, and how to write requests that work: `docs/self-building-brain.md`.
 
 ## Supabase Security
 
@@ -380,7 +444,7 @@ This separation is important: changing the book should not erase what happened e
 Backend syntax check:
 
 ```powershell
-$env:PYTHONDONTWRITEBYTECODE='1'; python -m py_compile backend\server.py backend\drive_indexer.py backend\brain_agent.py backend\brain_store.py backend\brain_store_postgres.py backend\gemini_client.py
+$env:PYTHONDONTWRITEBYTECODE='1'; python -m py_compile backend\server.py backend\drive_indexer.py backend\brain_agent.py backend\brain_store.py backend\brain_store_postgres.py backend\gemini_client.py backend\github_client.py backend\code_agent.py
 ```
 
 Backend tests. These are plain assertion scripts, not pytest files, so each one is run directly and prints its own pass line:
@@ -397,7 +461,11 @@ python test_calculations.py
 python test_rebalancing.py
 python test_historical_diagnostics.py
 python test_portfolio_history_guard.py
+python test_price_gap_recovery.py
+python test_code_agent.py
 ```
+
+`.github/workflows/ci.yml` runs all of the above on every pull request, plus `tsc -b`, ESLint, and `vite build`. That workflow is what gates a self-build proposal, so keep it green.
 
 `PYTHONIOENCODING` matters: without it `test_calculations.py` exits non-zero on a `UnicodeEncodeError` while printing its results to a non-UTF-8 Windows console, which looks like a failing assertion but is not one.
 
