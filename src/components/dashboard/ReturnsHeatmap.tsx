@@ -100,6 +100,18 @@ const getSinceRebalanceDisplayContribution = (row: PeriodicReturn): number | nul
 // ships the real start date on every row, so the header is derived from it.
 const SINCE_REBALANCE_LABEL_TOKEN = '__SINCE_REBALANCE__';
 
+// "1D" is anchored to the last session the data actually covers, not to the wall clock.
+// A venue that has not reported its close yet leaves the window wider than one day, and
+// an unlabelled "1D" then reads as today when it is really the previous session.
+const SESSION_LABEL_TOKEN = '__1D_SESSION__';
+
+const formatDayMonth = (isoDate?: string | null): string | null => {
+    if (!isoDate) return null;
+    const parsed = new Date(`${isoDate}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+};
+
 const formatSinceRebalanceLabel = (isoDate?: string | null): string => {
     if (!isoDate) return 'Since rebalance';
     const parsed = new Date(`${isoDate}T00:00:00`);
@@ -253,8 +265,8 @@ const columns: ColumnDef[] = [
     { key: 'ytdContribution',  label: 'YTD Gross',  group: 'contribution', tooltip: 'Gross security contribution before financing, including prior books and exited/rebalanced exposure' },
     { key: 'sinceRebalanceContribution', label: SINCE_REBALANCE_LABEL_TOKEN, group: 'contribution', tooltip: 'Contribution since the latest dated rebalance, on the same YTD basis as YTD Total' },
     { key: 'r7dContribution',  label: '7D',         group: 'contribution', tooltip: '7-day portfolio contribution' },
-    { key: 'r1dContribution',  label: '1D',         group: 'contribution', tooltip: '1-day portfolio contribution' },
-    { key: 'r1d',              label: '1D',         group: 'returns', tooltip: '1-day return' },
+    { key: 'r1dContribution',  label: SESSION_LABEL_TOKEN, group: 'contribution', tooltip: 'Portfolio contribution over the latest covered session' },
+    { key: 'r1d',              label: SESSION_LABEL_TOKEN, group: 'returns', tooltip: 'Security return over the latest covered session' },
     { key: 'ytd',              label: 'YTD',        group: 'returns' },
     { key: 'r7d',              label: '7D',         group: 'returns', tooltip: '7-day return' },
     { key: 'r1m',              label: '1M',         group: 'returns' },
@@ -437,6 +449,20 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             default: return null;
         }
     }, [riskMap]);
+
+    const session = useMemo(() => {
+        const windowTo = periodicReturns.map(row => row.r1dWindowTo).filter(Boolean).sort().pop() ?? null;
+        const settled = periodicReturns.map(row => row.r1dSettledThrough).filter(Boolean).sort() as string[];
+        const oldestSettled = settled.length ? settled[0] : null;
+        const day = formatDayMonth(windowTo);
+        return {
+            windowTo,
+            oldestSettled,
+            // Some venue's newest price is not a settled close yet.
+            provisional: Boolean(windowTo && oldestSettled && oldestSettled < windowTo),
+            label: day ? `1D · ${day}` : '1D',
+        };
+    }, [periodicReturns]);
 
     const sinceRebalanceLabel = useMemo(
         () => formatSinceRebalanceLabel(periodicReturns.find(row => row.sinceRebalanceStartDate)?.sinceRebalanceStartDate),
@@ -734,7 +760,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                     { label: `${periodLabel} Security Gross`, value: summary.ytdC, icon: <TrendingUp className="h-4 w-4" />, gradient: 'from-blue-500/10 to-transparent' },
                     { label: sinceRebalanceLabel, value: summary.sinceRebalanceC, icon: <Target className="h-4 w-4" />, gradient: 'from-sky-500/10 to-transparent' },
                     { label: '7D Impact', value: summary.r7dC, icon: <Zap className="h-4 w-4" />, gradient: 'from-violet-500/10 to-transparent' },
-                    { label: '1D Impact', value: summary.r1dC, icon: <Flame className="h-4 w-4" />, gradient: 'from-orange-500/10 to-transparent' },
+                    { label: session.windowTo ? `1D Impact · ${formatDayMonth(session.windowTo)}` : '1D Impact', value: summary.r1dC, icon: <Flame className="h-4 w-4" />, gradient: 'from-orange-500/10 to-transparent' },
                 ].map((item, index) => (
                     <div key={item.label} className={cn(
                         "relative flex items-center justify-center gap-3 px-5 py-3.5 overflow-hidden",
@@ -959,7 +985,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                                                 "h-3 w-3 shrink-0 text-gray-600 transition-colors",
                                                 isDragging ? "text-blue-300" : "group-hover:text-gray-400"
                                             )} />
-                                            <span>{col.label === 'YTD' ? periodLabel : col.label === SINCE_REBALANCE_LABEL_TOKEN ? sinceRebalanceLabel : col.label}</span>
+                                            <span>{col.label === 'YTD' ? periodLabel : col.label === SINCE_REBALANCE_LABEL_TOKEN ? sinceRebalanceLabel : col.label === SESSION_LABEL_TOKEN ? session.label : col.label}</span>
                                             <SortIndicator columnKey={col.key} />
                                         </div>
                                     </th>

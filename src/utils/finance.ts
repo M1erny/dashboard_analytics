@@ -121,6 +121,13 @@ export interface PeriodicReturn {
     ticker: string;
     sector?: string;
     r1d: number | null;  // 1 Day return
+    // Which sessions r1d actually spans. Close is forward-filled, so the window can be
+    // wider than one day when a venue has not reported its close yet.
+    r1dWindowFrom?: string | null;
+    r1dWindowTo?: string | null;
+    // Latest session with real volume. Below r1dWindowTo means the newest price is a
+    // live/patched quote rather than a settled close.
+    r1dSettledThrough?: string | null;
     r7d: number | null;  // 7 Day return
     r1m: number | null;  // 1 Month return
     r1y: number | null;

@@ -2567,6 +2567,22 @@ _MARKET_SESSION_SCHEDULES = {
 }
 
 
+def _settled_session_dates(volume_data: Any, ticker: str, tail: int = 6) -> list[str]:
+    """Dates this ticker actually traded, newest last, as YYYY-MM-DD.
+
+    Volume is never forward-filled, so a row with real volume is a session that really
+    happened. Close IS forward-filled, so it cannot distinguish "the venue reported"
+    from "we reused an older price".
+    """
+    if volume_data is None or ticker not in getattr(volume_data, "columns", []):
+        return []
+    volumes = volume_data[ticker]
+    traded = volumes[volumes.notna() & (volumes > 0)]
+    if traded.empty:
+        return []
+    return [stamp.strftime('%Y-%m-%d') for stamp in traded.index[-tail:]]
+
+
 def _market_session_is_complete(timestamp: Any, country: str) -> bool:
     """Conservatively identify whether a daily bar's volume can be treated as complete."""
     if timestamp is None:
@@ -3989,6 +4005,9 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             
             # Calculate Returns and Contributions
             r1d = None
+            r1d_window_from = None
+            r1d_window_to = None
+            r1d_settled_through = None
             r1m = None
             r7d = None
             r3m = None
@@ -4088,6 +4107,20 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 # 1D return
                 r1d = trailing_return(1)
 
+                # Which sessions r1d actually spans, so the UI can never imply "today".
+                # Close is forward-filled upstream, so the frame has a row for every
+                # calendar session even when a venue has not reported its close yet - and
+                # then "1D" quietly measures more than one day. Volume is never
+                # forward-filled, so it marks the sessions this ticker really traded.
+                if len(series) > 1:
+                    r1d_window_from = series.index[-2].strftime('%Y-%m-%d')
+                    r1d_window_to = series.index[-1].strftime('%Y-%m-%d')
+                    # r1dSettledThrough below r1dWindowTo means the latest price is not a
+                    # settled close - it is a live/patched quote, or an older close reused
+                    # by the forward fill. That is the signal the UI needs.
+                    settled = _settled_session_dates(volume_data, ticker)
+                    r1d_settled_through = settled[-1] if settled else None
+
                 # 7D return
                 r7d = trailing_return(5)
 
@@ -4169,6 +4202,9 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "sector": sector,
                 "ytd": ytd_ret,
                 "r1d": to_float(r1d),
+                "r1dWindowFrom": r1d_window_from,
+                "r1dWindowTo": r1d_window_to,
+                "r1dSettledThrough": r1d_settled_through,
                 "r7d": to_float(r7d),
                 "r1m": to_float(r1m),
                 "r3m": to_float(r3m),
