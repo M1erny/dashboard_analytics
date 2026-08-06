@@ -129,7 +129,13 @@ BRAIN_FULL_CONTEXT_TOTAL_MAX_CHARS=800000
 BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS=45
 BRAIN_CONVERSATION_SAVE_TIMEOUT_SECONDS=25
 BRAIN_AGENT_USER_AGENT=InvestmentBrainResearchAgent/1.0; your-email@example.com
+BRAIN_DRIVE_MAX_BYTES=67108864
+BRAIN_DRIVE_MAX_PDF_PAGES=0
+BRAIN_DRIVE_MAX_EXTRACTED_CHARS=0
+BRAIN_PDF_EXTRACTION_TIMEOUT_SECONDS=600
 ```
+
+`0` means unlimited for the two extraction limits, and it is the default. See [Ingestion Coverage](#ingestion-coverage).
 
 Self-build variables, required only if you want the Brain to write its own code:
 
@@ -300,6 +306,7 @@ GET  /api/brain/conversations/{thread_id}
 POST /api/brain/agent/import-url
 POST /api/brain/agent/find-official-sources
 POST /api/brain/agent/run
+GET  /api/brain/drive/coverage
 GET  /api/brain/code/status
 POST /api/brain/code/propose
 GET  /api/brain/code/proposals
@@ -315,7 +322,28 @@ Detailed architecture notes are in:
 docs/investment-brain-architecture.md
 docs/local-brain-worker.md
 docs/self-building-brain.md
+docs/drive-ingestion-coverage.md
 ```
+
+## Ingestion Coverage
+
+Extraction is unlimited by default. Previously a PDF was cut at page 40 and any file at 250,000 characters, and nothing said so — a truncated filing still answers questions, just from the fraction that fit. Both caps are gone, along with the hard ceilings that silently overruled the environment variables meant to raise them.
+
+`.xlsx` and `.pptx` are now extracted, using only the standard library so `requirements.txt` stays untouched. Decks yield speaker notes as well as slide text.
+
+Native Google files export differently as a result. **A Google Sheet exported as CSV contains only its first tab**, so Sheets now export as `.xlsx` and Slides as `.pptx` rather than plain text. If you keep multi-tab models in Drive, the Brain has only ever read their first sheet.
+
+Still bounded: 64 MB per file, because the downloader holds the whole file in memory. Still missing: OCR, so a scan with no text layer yields nothing.
+
+To measure what actually landed:
+
+```text
+GET /api/brain/drive/coverage
+```
+
+or the **Drive coverage** panel on the Brain page. It lists Drive live and joins it against the store, reporting exact percentages for files, PDF pages, and embedded chunks, plus an explicitly-labelled *estimate* for token volume — the size of a document never read can only be inferred from its byte count. Every file is classified, so the gap is itemised rather than assumed.
+
+Files indexed under the old caps stay truncated until a forced re-sync: `POST /api/brain/index/drive/start {"force": true}`. Details, including how to get to 100%, are in `docs/drive-ingestion-coverage.md`.
 
 ## Self-Build
 
@@ -444,7 +472,7 @@ This separation is important: changing the book should not erase what happened e
 Backend syntax check:
 
 ```powershell
-$env:PYTHONDONTWRITEBYTECODE='1'; python -m py_compile backend\server.py backend\drive_indexer.py backend\brain_agent.py backend\brain_store.py backend\brain_store_postgres.py backend\gemini_client.py backend\github_client.py backend\code_agent.py
+$env:PYTHONDONTWRITEBYTECODE='1'; python -m py_compile backend\server.py backend\drive_indexer.py backend\brain_agent.py backend\brain_store.py backend\brain_store_postgres.py backend\gemini_client.py backend\github_client.py backend\code_agent.py backend\office_extract.py backend\drive_coverage.py
 ```
 
 Backend tests. These are plain assertion scripts, not pytest files, so each one is run directly and prints its own pass line:
@@ -463,6 +491,9 @@ python test_historical_diagnostics.py
 python test_portfolio_history_guard.py
 python test_price_gap_recovery.py
 python test_code_agent.py
+python test_office_extract.py
+python test_drive_coverage.py
+python test_ingestion_limits.py
 ```
 
 `.github/workflows/ci.yml` runs all of the above on every pull request, plus `tsc -b`, ESLint, and `vite build`. That workflow is what gates a self-build proposal, so keep it green.

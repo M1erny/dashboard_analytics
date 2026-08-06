@@ -1191,3 +1191,52 @@ class PostgresBrainStore:
             }
             result["indexed"] = int(conn.execute("SELECT COUNT(*) AS c FROM brain_index").fetchone()["c"])
             return result
+
+    def source_content_stats(self) -> list[dict[str, Any]]:
+        """Per-source indexed volume, for measuring how much of a library actually landed.
+
+        Chunks overlap by design, so summing their word counts double counts the
+        overlap. The chunker stamps wordEnd on every chunk, and the largest one is
+        the document's true word count.
+        """
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.id AS id,
+                       s.title AS title,
+                       s.kind AS kind,
+                       s.metadata AS metadata,
+                       COUNT(c.id) AS chunk_count,
+                       COUNT(c.embedding) AS embedded_chunks,
+                       COALESCE(
+                           MAX(
+                               CASE
+                                   WHEN c.metadata->>'wordEnd' ~ '^[0-9]+$'
+                                   THEN (c.metadata->>'wordEnd')::bigint
+                                   ELSE NULL
+                               END
+                           ),
+                           0
+                       ) AS words
+                  FROM sources s
+             LEFT JOIN chunks c ON c.source_id = s.id
+              GROUP BY s.id, s.title, s.kind, s.metadata
+                """
+            ).fetchall()
+
+        return [
+            {
+                "id": int(row["id"]),
+                "title": row["title"],
+                "kind": row["kind"],
+                "metadata": (
+                    row["metadata"]
+                    if isinstance(row["metadata"], dict)
+                    else PostgresBrainStore._json_loads(row["metadata"], {})
+                ),
+                "chunkCount": int(row["chunk_count"] or 0),
+                "embeddedChunks": int(row["embedded_chunks"] or 0),
+                "words": int(row["words"] or 0),
+            }
+            for row in rows
+        ]

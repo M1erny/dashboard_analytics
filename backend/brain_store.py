@@ -971,6 +971,42 @@ class BrainStore:
             result["indexed"] = int(conn.execute("SELECT COUNT(*) AS c FROM brain_index").fetchone()["c"])
             return result
 
+    def source_content_stats(self) -> list[dict[str, Any]]:
+        """Per-source indexed volume, for measuring how much of a library actually landed.
+
+        Chunks overlap by design, so summing their word counts double counts the
+        overlap. The chunker stamps wordEnd on every chunk, and the largest one is
+        the document's true word count.
+        """
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.id AS id,
+                       s.title AS title,
+                       s.kind AS kind,
+                       s.metadata AS metadata,
+                       COUNT(c.id) AS chunk_count,
+                       COUNT(c.embedding) AS embedded_chunks,
+                       COALESCE(MAX(CAST(json_extract(c.metadata, '$.wordEnd') AS INTEGER)), 0) AS words
+                  FROM sources s
+             LEFT JOIN chunks c ON c.source_id = s.id
+              GROUP BY s.id
+                """
+            ).fetchall()
+
+        return [
+            {
+                "id": int(row["id"]),
+                "title": row["title"],
+                "kind": row["kind"],
+                "metadata": BrainStore._json_loads(row["metadata"], {}),
+                "chunkCount": int(row["chunk_count"] or 0),
+                "embeddedChunks": int(row["embedded_chunks"] or 0),
+                "words": int(row["words"] or 0),
+            }
+            for row in rows
+        ]
+
 
 def create_brain_store():
     database_url = os.environ.get("BRAIN_DATABASE_URL") or os.environ.get("DATABASE_URL")
