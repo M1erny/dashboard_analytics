@@ -45,6 +45,7 @@ try:
     from brain_ingestion import chunk_text, normalize_text, stable_hash
     from brain_indexer import index_local_library, indexer_status
     from drive_indexer import (
+        DEFAULT_MAX_BYTES as DRIVE_DEFAULT_MAX_BYTES,
         GoogleDriveClient,
         configured_redirect_uri,
         extension_for_file,
@@ -55,6 +56,7 @@ try:
     from gemini_client import GeminiClient, load_backend_env
     from github_client import GitHubClient
     from code_agent import code_agent_settings, propose_code_change
+    from drive_coverage import build_coverage_report
 except ImportError as e:
     print(f"Error importing Investment Brain modules: {e}")
     DEFAULT_AGENT_MAX_BYTES = 15 * 1024 * 1024
@@ -66,6 +68,7 @@ except ImportError as e:
     create_brain_store = None
     index_local_library = None
     indexer_status = None
+    DRIVE_DEFAULT_MAX_BYTES = 64 * 1024 * 1024
     GoogleDriveClient = None
     configured_redirect_uri = None
     extension_for_file = None
@@ -77,6 +80,7 @@ except ImportError as e:
     GitHubClient = None
     code_agent_settings = None
     propose_code_change = None
+    build_coverage_report = None
 
 app = FastAPI()
 
@@ -131,6 +135,10 @@ BRAIN_SEARCH_TIMEOUT_SECONDS = _env_float("BRAIN_SEARCH_TIMEOUT_SECONDS", 18.0)
 # autosave needs ~25s of that, so the writing window stays well inside the budget.
 BRAIN_ANALYSIS_TIMEOUT_SECONDS = max(5.0, min(_env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 24.0), 60.0))
 BRAIN_INDEX_TIMEOUT_SECONDS = _env_float("BRAIN_INDEX_TIMEOUT_SECONDS", 240.0)
+# One number for the per-file download ceiling, shared by the sync request default
+# and the coverage report, so the report never calls a file "too large" against a
+# limit the sync does not actually use.
+DRIVE_SYNC_MAX_BYTES = _env_int("BRAIN_DRIVE_MAX_BYTES", DRIVE_DEFAULT_MAX_BYTES)
 SEMANTIC_MIN_SCORE = max(0.0, min(_env_float("BRAIN_SEMANTIC_MIN_SCORE", 0.66), 1.0))
 # How many distinct files the backend reads around the strongest semantic hits.
 BRAIN_DEEP_SOURCE_FILES = max(1, min(_env_int("BRAIN_DEEP_SOURCE_FILES", 3), 5))
@@ -1024,27 +1032,29 @@ class BrainTextIngestRequest(BaseModel):
 class BrainLocalIndexRequest(BaseModel):
     rootPath: str | None = None
     extensions: list[str] | None = None
-    limitFiles: int = Field(default=250, ge=1, le=5000)
+    limitFiles: int = Field(default=20_000, ge=1, le=20_000)
     maxBytes: int = Field(default=50 * 1024 * 1024, ge=1024)
     force: bool = False
 
 
 class BrainDriveIndexRequest(BaseModel):
     folderId: str | None = None
-    limitFiles: int = Field(default=2000, ge=1, le=2000)
-    maxBytes: int = Field(default=10 * 1024 * 1024, ge=1024)
-    changedFilesLimit: int | None = Field(default=10, ge=1, le=100)
+    limitFiles: int = Field(default=20_000, ge=1, le=20_000)
+    maxBytes: int = Field(default=DRIVE_SYNC_MAX_BYTES, ge=1024)
+    # A sync runs as a background job, so the per-run file ceiling exists to bound
+    # one pass, not to bound the library. Leaving it low silently strands files.
+    changedFilesLimit: int | None = Field(default=2000, ge=1, le=20_000)
     force: bool = False
 
 
 class BrainEmbeddingBackfillRequest(BaseModel):
-    limit: int = Field(default=5, ge=1, le=25)
+    limit: int = Field(default=25, ge=1, le=500)
     force: bool = False
 
 
 class BrainEmbeddingBackfillStartRequest(BaseModel):
-    batchSize: int = Field(default=5, ge=1, le=10)
-    maxChunks: int = Field(default=500, ge=1, le=5000)
+    batchSize: int = Field(default=16, ge=1, le=100)
+    maxChunks: int = Field(default=100_000, ge=1, le=1_000_000)
     force: bool = False
 
 
@@ -1507,6 +1517,55 @@ async def list_google_drive_brain_files(limitFiles: int = 2000):
         },
         "files": items,
     }
+
+
+@app.get("/api/brain/drive/coverage")
+async def get_drive_coverage(folderId: str | None = None, limitFiles: int = 2000, includeFiles: bool = True):
+    """Report how much of the Drive folder actually reached the Brain.
+
+    This lists Drive live and joins it against indexed sources, so it is a real
+    measurement rather than a restatement of what the last sync claimed.
+    """
+    store = _brain_or_503()
+    client = _drive_or_503()
+    if not build_coverage_report:
+        raise HTTPException(status_code=503, detail="Drive coverage reporting is not available")
+
+    folder_id = folderId or (parse_drive_folder_id() if parse_drive_folder_id else None)
+    if not folder_id:
+        raise HTTPException(status_code=400, detail="No Drive folder is configured. Set GOOGLE_DRIVE_FOLDER_ID.")
+
+    limit_files = max(1, min(int(limitFiles), 5000))
+    try:
+        drive_files = await _run_brain_step(
+            "Drive listing",
+            client.iter_files,
+            folder_id,
+            limit_files=limit_files,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+
+    try:
+        source_stats = await _run_brain_step(
+            "Indexed source stats",
+            store.source_content_stats,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+
+    report = build_coverage_report(
+        drive_files,
+        source_stats,
+        max_bytes=DRIVE_SYNC_MAX_BYTES,
+        folder_id=folder_id,
+        listing_complete=len(drive_files) < limit_files,
+    )
+    if not includeFiles:
+        report.pop("files", None)
+    return report
 
 
 @app.get("/api/brain/drive/auth-url")

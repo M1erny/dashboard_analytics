@@ -8,6 +8,10 @@ on:
     branches:
       - main
   pull_request:
+  # A pull request opened straight after a force-push can miss its automatic run.
+  # Without a manual trigger the only way to get CI onto that commit is another
+  # commit, which is a poor reason to dirty a branch.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}

@@ -5,16 +5,15 @@ import json
 import os
 import re
 import unicodedata
-import zipfile
 from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
-from xml.etree import ElementTree
 
 import httpx
 
 from brain_ingestion import chunk_text, normalize_text, stable_hash
 from brain_indexer import SUPPORTED_EXTENSIONS, strip_html
+from office_extract import _Budget, extract_docx, extract_pptx, extract_xlsx
 
 try:
     from pypdf import PdfReader
@@ -31,14 +30,28 @@ DRIVE_SCOPES = f"{DRIVE_READONLY_SCOPE} {DRIVE_FILE_SCOPE}"
 REFRESH_TOKEN_SETTING = "google_drive_refresh_token"
 
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+# Native Workspace files are exported before extraction, and the export format
+# decides how much survives. A Sheet exported as text/csv keeps only the first
+# tab, and a Slides deck exported as text/plain drops every speaker note, so both
+# now export as OOXML and go through the extractors in office_extract.
+# Drive caps an export at roughly 10 MB; anything larger is reported by
+# /api/brain/drive/coverage instead of failing quietly.
 GOOGLE_WORKSPACE_EXPORTS = {
     "application/vnd.google-apps.document": ("text/plain", ".txt"),
-    "application/vnd.google-apps.presentation": ("text/plain", ".txt"),
-    "application/vnd.google-apps.spreadsheet": ("text/csv", ".csv"),
+    "application/vnd.google-apps.presentation": (
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ".pptx",
+    ),
+    "application/vnd.google-apps.spreadsheet": (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".xlsx",
+    ),
 }
 MIME_EXTENSION_MAP = {
     "application/pdf": ".pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
     "text/plain": ".txt",
     "text/markdown": ".md",
     "text/csv": ".csv",
@@ -57,9 +70,18 @@ TEXT_EXTENSIONS = {
     ".json",
     ".jsonl",
 }
-DEFAULT_MAX_BYTES = 2 * 1024 * 1024
-DEFAULT_MAX_PDF_PAGES = 40
-DEFAULT_MAX_EXTRACTED_CHARS = 250_000
+# Extraction is unlimited by default. A partly read document still answers
+# questions, it just answers them from whichever fraction happened to fit, and it
+# never says so. 0 means no limit for all three of these.
+#
+# The byte limit is the exception and is a real number rather than 0, because
+# download_file holds the whole file in memory before extraction. An unbounded
+# download would take the Render instance down instead of skipping one file.
+# Anything over the limit is reported by /api/brain/drive/coverage rather than
+# being silently dropped.
+DEFAULT_MAX_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_PDF_PAGES = 0
+DEFAULT_MAX_EXTRACTED_CHARS = 0
 CONVERSATION_TRANSCRIPT_PREFIX = "investment brain/conversations/"
 
 
@@ -123,33 +145,7 @@ def google_drive_auth_url(redirect_uri: str) -> str:
 
 
 def extract_docx_bytes(data: bytes, *, max_chars: int = DEFAULT_MAX_EXTRACTED_CHARS) -> tuple[str, dict[str, Any]]:
-    paragraphs: list[str] = []
-    chars = 0
-    truncated = False
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        with archive.open("word/document.xml") as document:
-            tree = ElementTree.parse(document)
-
-    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-    for paragraph in tree.findall(".//w:p", namespace):
-        text = "".join(node.text or "" for node in paragraph.findall(".//w:t", namespace)).strip()
-        if text:
-            remaining = max_chars - chars
-            if remaining <= 0:
-                truncated = True
-                break
-            if len(text) > remaining:
-                text = text[:remaining]
-                truncated = True
-            paragraphs.append(text)
-            chars += len(text)
-
-    return "\n\n".join(paragraphs), {
-        "paragraphs": len(paragraphs),
-        "extractor": "docx-xml",
-        "truncated": truncated,
-        "maxExtractedChars": max_chars,
-    }
+    return extract_docx(data, max_chars=max_chars)
 
 
 def extract_pdf_bytes(
@@ -164,26 +160,22 @@ def extract_pdf_bytes(
     reader = PdfReader(io.BytesIO(data))
     parts: list[str] = []
     pages_read = 0
-    chars = 0
+    budget = _Budget(max_chars)
+    page_limit = max_pages if max_pages and max_pages > 0 else None
     truncated = False
     for index, page in enumerate(reader.pages, start=1):
-        if pages_read >= max_pages:
+        if page_limit is not None and pages_read >= page_limit:
             truncated = True
             break
         page_text = page.extract_text() or ""
         if page_text.strip():
-            page_part = f"[Page {index}]\n{page_text.strip()}"
-            remaining = max_chars - chars
-            if remaining <= 0:
-                truncated = True
+            allowed = budget.take(f"[Page {index}]\n{page_text.strip()}")
+            if allowed is None:
                 break
-            if len(page_part) > remaining:
-                page_part = page_part[:remaining]
-                truncated = True
-            parts.append(page_part)
-            chars += len(page_part)
+            parts.append(allowed)
         pages_read = index
 
+    truncated = truncated or budget.truncated
     return "\n\n".join(parts), {
         "pages": len(reader.pages),
         "pagesRead": pages_read,
@@ -192,6 +184,13 @@ def extract_pdf_bytes(
         "maxPdfPages": max_pages,
         "maxExtractedChars": max_chars,
     }
+
+
+def _clip(text: str, max_chars: int) -> str:
+    """Apply a character cap, where 0 or less means no cap."""
+    if max_chars and max_chars > 0:
+        return text[:max_chars]
+    return text
 
 
 def read_text_bytes(data: bytes) -> str:
@@ -212,22 +211,29 @@ def extract_drive_file_text(
 ) -> tuple[str, dict[str, Any]]:
     suffix = extension.lower()
     if suffix in TEXT_EXTENSIONS:
-        return read_text_bytes(data)[:max_extracted_chars], {
+        text = read_text_bytes(data)
+        kept = _clip(text, max_extracted_chars)
+        return kept, {
             "extractor": "plain-text",
-            "truncated": len(data) > max_extracted_chars,
+            "truncated": len(kept) < len(text),
             "maxExtractedChars": max_extracted_chars,
         }
     if suffix in {".html", ".htm"}:
         text = strip_html(read_text_bytes(data))
-        return text[:max_extracted_chars], {
+        kept = _clip(text, max_extracted_chars)
+        return kept, {
             "extractor": "html-stripper",
-            "truncated": len(text) > max_extracted_chars,
+            "truncated": len(kept) < len(text),
             "maxExtractedChars": max_extracted_chars,
         }
     if suffix == ".pdf":
         return extract_pdf_bytes(data, max_pages=max_pdf_pages, max_chars=max_extracted_chars)
     if suffix == ".docx":
         return extract_docx_bytes(data, max_chars=max_extracted_chars)
+    if suffix == ".xlsx":
+        return extract_xlsx(data, max_chars=max_extracted_chars)
+    if suffix == ".pptx":
+        return extract_pptx(data, max_chars=max_extracted_chars)
     raise RuntimeError(f"Unsupported Drive file extension: {html.escape(suffix)}")
 
 
@@ -762,12 +768,14 @@ def index_drive_folder(
         raise ValueError("GOOGLE_DRIVE_FOLDER_ID or folderId is required")
 
     client = GoogleDriveClient(store=store)
-    limit_files = max(1, min(int(limit_files), 2000))
+    limit_files = max(1, min(int(limit_files), 20_000))
     max_bytes = max(1024, int(max_bytes or _env_int("BRAIN_DRIVE_MAX_BYTES", DEFAULT_MAX_BYTES)))
-    max_pdf_pages = max(1, min(_env_int("BRAIN_DRIVE_MAX_PDF_PAGES", DEFAULT_MAX_PDF_PAGES), 250))
-    max_extracted_chars = max(20_000, min(_env_int("BRAIN_DRIVE_MAX_EXTRACTED_CHARS", DEFAULT_MAX_EXTRACTED_CHARS), 1_000_000))
+    # No upper ceiling on either extraction limit: a ceiling here would silently
+    # override an operator who asked for the whole document. 0 means unlimited.
+    max_pdf_pages = max(0, _env_int("BRAIN_DRIVE_MAX_PDF_PAGES", DEFAULT_MAX_PDF_PAGES) or 0)
+    max_extracted_chars = max(0, _env_int("BRAIN_DRIVE_MAX_EXTRACTED_CHARS", DEFAULT_MAX_EXTRACTED_CHARS) or 0)
     changed_files_limit = (
-        max(1, min(int(changed_files_limit), 100))
+        max(1, min(int(changed_files_limit), 20_000))
         if changed_files_limit is not None
         else None
     )

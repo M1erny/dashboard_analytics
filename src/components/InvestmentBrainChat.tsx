@@ -24,6 +24,7 @@ import {
 import { cn } from '../lib/utils';
 import { API_BASE, api } from '../lib/brainApi';
 import { BrainSelfBuild } from './BrainSelfBuild';
+import { BrainDriveCoverage } from './BrainDriveCoverage';
 
 type BrainCounts = {
     sources?: number;
@@ -865,7 +866,9 @@ export const InvestmentBrainChat: React.FC = () => {
             const response = await request(api('/api/brain/index/drive/start'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ limitFiles: 2000, maxBytes: 10 * 1024 * 1024, changedFilesLimit: 20, force: false }),
+                // Send no limits of our own. The backend owns the ceilings, and a
+                // payload that undercuts them strands files without saying so.
+                body: JSON.stringify({ force: false }),
             }, 12000);
             if (!response.ok) throw new Error(await errorText(response, 'Drive sync could not start.'));
             setNotice('Drive sync started in the background. New or changed files will be indexed.');
@@ -880,7 +883,9 @@ export const InvestmentBrainChat: React.FC = () => {
             const response = await request(api('/api/brain/embeddings/backfill/start'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ batchSize: 5, maxChunks: 500, force: false }),
+                // The backend owns the throughput ceilings. A payload that
+                // undercuts them turns one Embed click into many.
+                body: JSON.stringify({ force: false }),
             }, 12000);
             if (!response.ok) throw new Error(await errorText(response, 'Embedding job could not start.'));
             setNotice('Embedding is running in the background. Search remains available while it finishes.');
@@ -1121,7 +1126,7 @@ export const InvestmentBrainChat: React.FC = () => {
                     trustedOnly,
                     uploadToDrive: true,
                     embedAfterImport: true,
-                    embedMaxChunks: 120,
+                    embedMaxChunks: 500,
                     agentTask: agentTask.trim() || undefined,
                 }),
             }, 90000);
@@ -1157,7 +1162,7 @@ export const InvestmentBrainChat: React.FC = () => {
                     importBest: true,
                     uploadToDrive: true,
                     embedAfterImport: true,
-                    embedMaxChunks: 120,
+                    embedMaxChunks: 500,
                 }),
             }, 90000);
             if (!response.ok) throw new Error(await errorText(response, 'Research agent could not complete the import.'));
@@ -1574,6 +1579,8 @@ export const InvestmentBrainChat: React.FC = () => {
                                 <Button type="button" onClick={() => void importUrl(agentUrl)} disabled={!ready || !agentUrl.trim() || isAgentWorking} className="min-h-9 px-2.5" aria-label="Import public URL"><Plus className="h-3.5 w-3.5" /></Button>
                             </div>
                         </section>
+
+                        <BrainDriveCoverage disabled={backendState !== 'ready'} />
 
                         <BrainSelfBuild disabled={backendState !== 'ready'} />
                     </aside>

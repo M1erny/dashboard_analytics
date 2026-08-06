@@ -7,10 +7,10 @@ import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from xml.etree import ElementTree
 
 from brain_ingestion import chunk_text, normalize_text, stable_hash
 from brain_store import BrainStore
+from office_extract import _Budget, extract_docx, extract_pptx, extract_xlsx
 
 try:
     from pypdf import PdfReader
@@ -32,6 +32,8 @@ SUPPORTED_EXTENSIONS = {
     ".htm",
     ".pdf",
     ".docx",
+    ".xlsx",
+    ".pptx",
 }
 TEXT_EXTENSIONS = {
     ".txt",
@@ -58,9 +60,9 @@ SKIP_DIRS = {
     "build",
 }
 DEFAULT_LOCAL_MAX_BYTES = 250 * 1024 * 1024
-DEFAULT_LOCAL_MAX_PDF_PAGES = 2000
-DEFAULT_LOCAL_MAX_EXTRACTED_CHARS = 5_000_000
-DEFAULT_PDF_EXTRACTION_TIMEOUT_SECONDS = 90
+DEFAULT_LOCAL_MAX_PDF_PAGES = 0
+DEFAULT_LOCAL_MAX_EXTRACTED_CHARS = 0
+DEFAULT_PDF_EXTRACTION_TIMEOUT_SECONDS = 600
 
 
 def _env_int(name: str, default: int) -> int:
@@ -148,25 +150,22 @@ def _extract_pdf_text_direct(
     reader = PdfReader(path_value, strict=False)
     parts: list[str] = []
     pages_read = 0
-    chars = 0
+    budget = _Budget(max_chars)
+    page_limit = max_pages if max_pages and max_pages > 0 else None
     truncated = False
     for index, page in enumerate(reader.pages, start=1):
-        if pages_read >= max_pages:
+        if page_limit is not None and pages_read >= page_limit:
             truncated = True
             break
         page_text = page.extract_text() or ""
         if page_text.strip():
-            page_part = f"[Page {index}]\n{page_text.strip()}"
-            remaining = max_chars - chars
-            if remaining <= 0:
-                truncated = True
+            allowed = budget.take(f"[Page {index}]\n{page_text.strip()}")
+            if allowed is None:
                 break
-            if len(page_part) > remaining:
-                page_part = page_part[:remaining]
-                truncated = True
-            parts.append(page_part)
-            chars += len(page_part)
+            parts.append(allowed)
         pages_read = index
+
+    truncated = truncated or budget.truncated
 
     return "\n\n".join(parts), {
         "pages": len(reader.pages),
@@ -209,7 +208,11 @@ def extract_pdf_text(
         raise RuntimeError("PDF extraction requires pypdf. Install backend requirements first.")
 
     configured_timeout = _env_int("BRAIN_PDF_EXTRACTION_TIMEOUT_SECONDS", DEFAULT_PDF_EXTRACTION_TIMEOUT_SECONDS)
-    timeout = max(5, int(timeout_seconds or configured_timeout))
+    resolved = int(timeout_seconds if timeout_seconds is not None else configured_timeout)
+    # 0 disables the timeout. Reading every page of a long filing legitimately
+    # takes longer than reading the first forty, and a timeout tuned for the old
+    # page cap would turn "unlimited" into "nothing indexed at all".
+    timeout = max(5, resolved) if resolved > 0 else None
     context = multiprocessing.get_context("spawn")
     parent_connection, child_connection = context.Pipe(duplex=False)
     process = context.Process(
@@ -246,33 +249,14 @@ def extract_docx_text(
     *,
     max_chars: int = DEFAULT_LOCAL_MAX_EXTRACTED_CHARS,
 ) -> tuple[str, dict[str, Any]]:
-    paragraphs: list[str] = []
-    chars = 0
-    truncated = False
-    with zipfile.ZipFile(path) as archive:
-        with archive.open("word/document.xml") as document:
-            tree = ElementTree.parse(document)
+    return extract_docx(path, max_chars=max_chars)
 
-    namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-    for paragraph in tree.findall(".//w:p", namespace):
-        text = "".join(node.text or "" for node in paragraph.findall(".//w:t", namespace)).strip()
-        if text:
-            remaining = max_chars - chars
-            if remaining <= 0:
-                truncated = True
-                break
-            if len(text) > remaining:
-                text = text[:remaining]
-                truncated = True
-            paragraphs.append(text)
-            chars += len(text)
 
-    return "\n\n".join(paragraphs), {
-        "paragraphs": len(paragraphs),
-        "extractor": "docx-xml",
-        "truncated": truncated,
-        "maxExtractedChars": max_chars,
-    }
+def _clip(text: str, max_chars: int) -> str:
+    """Apply a character cap, where 0 or less means no cap."""
+    if max_chars and max_chars > 0:
+        return text[:max_chars]
+    return text
 
 
 def extract_file_text(
@@ -287,22 +271,28 @@ def extract_file_text(
 
     if suffix in TEXT_EXTENSIONS:
         text = read_text_file(path)
-        return text[:max_extracted_chars], {
+        kept = _clip(text, max_extracted_chars)
+        return kept, {
             **metadata,
-            "truncated": len(text) > max_extracted_chars,
+            "truncated": len(kept) < len(text),
             "maxExtractedChars": max_extracted_chars,
         }
     if suffix in {".html", ".htm"}:
         text = strip_html(read_text_file(path))
-        return text[:max_extracted_chars], {
+        kept = _clip(text, max_extracted_chars)
+        return kept, {
             "extractor": "html-stripper",
-            "truncated": len(text) > max_extracted_chars,
+            "truncated": len(kept) < len(text),
             "maxExtractedChars": max_extracted_chars,
         }
     if suffix == ".pdf":
         return extract_pdf_text(path, max_pages=max_pdf_pages, max_chars=max_extracted_chars)
     if suffix == ".docx":
         return extract_docx_text(path, max_chars=max_extracted_chars)
+    if suffix == ".xlsx":
+        return extract_xlsx(path, max_chars=max_extracted_chars)
+    if suffix == ".pptx":
+        return extract_pptx(path, max_chars=max_extracted_chars)
 
     raise RuntimeError(f"Unsupported file extension: {suffix}")
 
@@ -385,8 +375,8 @@ def index_local_library(
 
     limit_files = max(1, min(int(limit_files), 5000))
     max_bytes = max(1024, int(max_bytes or _env_int("BRAIN_LOCAL_MAX_BYTES", DEFAULT_LOCAL_MAX_BYTES)))
-    max_pdf_pages = max(1, min(int(max_pdf_pages or _env_int("BRAIN_LOCAL_MAX_PDF_PAGES", DEFAULT_LOCAL_MAX_PDF_PAGES)), 10000))
-    max_extracted_chars = max(20_000, min(int(max_extracted_chars or _env_int("BRAIN_LOCAL_MAX_EXTRACTED_CHARS", DEFAULT_LOCAL_MAX_EXTRACTED_CHARS)), 25_000_000))
+    max_pdf_pages = max(0, int(max_pdf_pages if max_pdf_pages is not None else _env_int("BRAIN_LOCAL_MAX_PDF_PAGES", DEFAULT_LOCAL_MAX_PDF_PAGES)) or 0)
+    max_extracted_chars = max(0, int(max_extracted_chars if max_extracted_chars is not None else _env_int("BRAIN_LOCAL_MAX_EXTRACTED_CHARS", DEFAULT_LOCAL_MAX_EXTRACTED_CHARS)) or 0)
     changed_files_limit = (
         max(1, min(int(changed_files_limit), 5000))
         if changed_files_limit is not None
