@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import source_dates
+
 
 MEMORY_TYPES = {"liked", "passed", "trend", "framework", "question"}
 DEFAULT_DB_PATH = Path(__file__).with_name("brain.db")
@@ -487,11 +489,25 @@ class BrainStore:
         query: str | None = None,
         kind: str | None = None,
         limit: int = 100,
+        *,
+        date_field: str | None = None,
+        uploaded_after: str | None = None,
+        uploaded_before: str | None = None,
+        sort: str | None = None,
+        include_undated: bool = False,
     ) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 500))
         fts_query = self._safe_fts_query(query)
+        key = source_dates.metadata_key(date_field)
+        low = source_dates.normalize_bound(uploaded_after, end_of_day=False)
+        high = source_dates.normalize_bound(uploaded_before, end_of_day=True)
+        # Producers write these timestamps in different ISO-8601 shapes, so the
+        # comparison uses the 19-character prefix they all agree on.
+        date_expression = f"substr(json_extract(s.metadata, '$.{key}'), 1, {source_dates.COMPARABLE_LENGTH})"
+
         with self._lock, self._connect() as conn:
             params: list[Any] = []
+            conditions: list[str] = []
             if fts_query:
                 sql = """
                     SELECT DISTINCT s.*
@@ -499,21 +515,37 @@ class BrainStore:
                     JOIN brain_index i
                       ON i.entity_type = 'source'
                      AND i.entity_id = CAST(s.id AS TEXT)
-                    WHERE brain_index MATCH ?
                 """
+                conditions.append("brain_index MATCH ?")
                 params.append(fts_query)
-                if kind:
-                    sql += " AND s.kind = ?"
-                    params.append(kind.strip().lower())
-                sql += " ORDER BY s.created_at DESC LIMIT ?"
-                params.append(limit)
             else:
-                sql = "SELECT * FROM sources"
-                if kind:
-                    sql += " WHERE kind = ?"
-                    params.append(kind.strip().lower())
-                sql += " ORDER BY created_at DESC LIMIT ?"
-                params.append(limit)
+                sql = "SELECT s.* FROM sources s"
+
+            if kind:
+                conditions.append("s.kind = ?")
+                params.append(kind.strip().lower())
+            # A NULL date fails every comparison, so including undated sources
+            # takes an explicit OR rather than just dropping the NOT NULL guard.
+            if low:
+                clause = f"{date_expression} >= ?"
+                conditions.append(f"({clause} OR {date_expression} IS NULL)" if include_undated else clause)
+                params.append(low)
+            if high:
+                clause = f"{date_expression} <= ?"
+                conditions.append(f"({clause} OR {date_expression} IS NULL)" if include_undated else clause)
+                params.append(high)
+
+            if conditions:
+                sql += " WHERE " + " AND ".join(conditions)
+
+            direction = "ASC" if str(sort or "").strip().lower() in {"oldest", "asc"} else "DESC"
+            # Sources missing this date sort last rather than heading a list
+            # ordered by it. SQLite sorts NULL first ascending, hence the guard.
+            sql += (
+                f" ORDER BY CASE WHEN {date_expression} IS NULL THEN 1 ELSE 0 END,"
+                f" {date_expression} {direction}, s.created_at {direction} LIMIT ?"
+            )
+            params.append(limit)
 
             return [self._source_from_row(row) for row in conn.execute(sql, params).fetchall()]
 

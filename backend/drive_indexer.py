@@ -384,7 +384,7 @@ class GoogleDriveClient:
         params = {
             "q": query,
             "pageSize": "100",
-            "fields": "nextPageToken,files(id,name,mimeType,size,md5Checksum,modifiedTime,webViewLink)",
+            "fields": "nextPageToken,files(id,name,mimeType,size,md5Checksum,createdTime,modifiedTime,webViewLink)",
             "supportsAllDrives": "true",
             "includeItemsFromAllDrives": "true",
         }
@@ -927,6 +927,7 @@ def index_drive_folder(
                 "mimeType": file.get("mimeType"),
                 "bytes": len(data),
                 "driveSize": size or None,
+                "uploadedAt": file.get("createdTime"),
                 "modifiedAt": file.get("modifiedTime"),
                 "indexedAt": indexed_at,
                 "webViewLink": file.get("webViewLink"),
