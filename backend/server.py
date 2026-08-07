@@ -57,6 +57,8 @@ try:
     from github_client import GitHubClient
     from code_agent import code_agent_settings, propose_code_change
     from drive_coverage import build_coverage_report
+    from drive_dates import backfill_drive_dates
+    import source_dates
 except ImportError as e:
     print(f"Error importing Investment Brain modules: {e}")
     DEFAULT_AGENT_MAX_BYTES = 15 * 1024 * 1024
@@ -81,6 +83,8 @@ except ImportError as e:
     code_agent_settings = None
     propose_code_change = None
     build_coverage_report = None
+    backfill_drive_dates = None
+    source_dates = None
 
 app = FastAPI()
 
@@ -2085,17 +2089,93 @@ async def list_brain_sources(
     q: str | None = None,
     kind: str | None = None,
     limit: int = 100,
+    dateField: str = Query(default="uploaded", pattern="^(uploaded|modified|indexed)$"),
+    after: str | None = None,
+    before: str | None = None,
+    sort: str = Query(default="newest", pattern="^(newest|oldest)$"),
+    includeUndated: bool = False,
 ):
+    """List indexed sources, optionally filtered by when they were uploaded.
+
+    `after` and `before` accept `YYYY-MM-DD` or a full ISO timestamp. A bare date
+    means the whole day at both ends, so before=2026-08-04 includes the 4th.
+    """
     store = _brain_or_503()
-    sources = await _run_brain_step(
-        "Source list",
-        store.list_sources,
-        query=q,
-        kind=kind,
-        limit=limit,
-    )
+    try:
+        sources = await _run_brain_step(
+            "Source list",
+            store.list_sources,
+            query=q,
+            kind=kind,
+            limit=limit,
+            date_field=dateField,
+            uploaded_after=after,
+            uploaded_before=before,
+            sort=sort,
+            include_undated=includeUndated,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_clean_public_error(e))
+
     sources = [source for source in sources if not _is_brain_conversation_source(source)]
-    return {"sources": sources}
+    undated = sum(1 for source in sources if not _source_date_value(source, dateField))
+    return {
+        "sources": sources,
+        "dateField": dateField,
+        "after": after,
+        "before": before,
+        "sort": sort,
+        "counts": {"returned": len(sources), "withoutDate": undated},
+        # Upload dates only exist for sources indexed after the crawl started
+        # requesting them. Say so rather than letting a short list read as a
+        # complete answer.
+        "note": (
+            "Some sources have no upload date yet. Run POST /api/brain/drive/backfill-dates "
+            "to fill them in without a full re-sync."
+            if undated and dateField == "uploaded"
+            else None
+        ),
+    }
+
+
+def _source_date_value(source: dict[str, Any], date_field: str) -> str | None:
+    if not source_dates:
+        return None
+    try:
+        return source_dates.source_date(source, date_field)
+    except ValueError:
+        return None
+
+
+@app.post("/api/brain/drive/backfill-dates")
+async def backfill_brain_drive_dates(folderId: str | None = None, force: bool = False):
+    """Attach Drive upload dates to sources indexed before the crawl captured them.
+
+    Cheap by design: one Drive listing, no downloads and no re-extraction.
+    """
+    store = _brain_or_503()
+    client = _drive_or_503()
+    if not backfill_drive_dates:
+        raise HTTPException(status_code=503, detail="Drive date backfill is not available")
+
+    folder_id = folderId or (parse_drive_folder_id() if parse_drive_folder_id else None)
+    if not folder_id:
+        raise HTTPException(status_code=400, detail="No Drive folder is configured. Set GOOGLE_DRIVE_FOLDER_ID.")
+
+    try:
+        return await _run_brain_step(
+            "Drive date backfill",
+            backfill_drive_dates,
+            store,
+            client,
+            folder_id=folder_id,
+            force=force,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_clean_public_error(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
 
 
 @app.get("/api/brain/references")

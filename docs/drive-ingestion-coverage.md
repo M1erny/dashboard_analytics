@@ -133,6 +133,24 @@ does not inflate your coverage number.
 4. **Re-measure.** The remaining gap is now real: unsupported formats and scans
    without OCR.
 
+## Upload dates
+
+Sources carry three timestamps, and they answer different questions:
+
+| Metadata key | Source | Question it answers |
+| --- | --- | --- |
+| `uploadedAt` | Drive `createdTime` | When did this file appear in Drive? |
+| `modifiedAt` | Drive `modifiedTime` | When did it last change? |
+| `indexedAt` | The Brain | When did the Brain read it? |
+
+`uploadedAt` is new. The folder crawl requested `modifiedTime` but never `createdTime`, so the upload date was not merely unindexed, it was never fetched. Everything indexed before this change has no upload date at all.
+
+A forced re-sync would fix that, but re-downloading and re-extracting an entire library to recover one timestamp per file is a poor trade. `POST /api/brain/drive/backfill-dates` lists Drive once and merges the dates into existing sources, touching no chunks and downloading nothing. It only writes to sources missing the date unless called with `force=true`, so running it twice costs almost nothing.
+
+Filtering lives in `list_sources` on both stores, and comparisons use the first 19 characters of each timestamp. That is not an optimisation: Drive writes `2026-08-04T21:05:00.000Z` while the Brain writes `2026-08-04T21:05:00.123456+00:00`, and comparing those as whole strings works by luck rather than by rule. `YYYY-MM-DDTHH:MM:SS` is the prefix both formats agree on exactly.
+
+A source with no date for the requested field is excluded from a dated query rather than quietly kept. A file with no upload date is not a file that happens to match; it is a gap, and including it would let an incomplete answer look complete. Pass `includeUndated=true` to see them anyway.
+
 ## Environment variables
 
 ```text

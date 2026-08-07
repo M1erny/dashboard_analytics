@@ -25,6 +25,7 @@ import { cn } from '../lib/utils';
 import { API_BASE, api } from '../lib/brainApi';
 import { BrainSelfBuild } from './BrainSelfBuild';
 import { BrainDriveCoverage } from './BrainDriveCoverage';
+import { BrainFilesByDate } from './BrainFilesByDate';
 
 type BrainCounts = {
     sources?: number;
@@ -1579,6 +1580,8 @@ export const InvestmentBrainChat: React.FC = () => {
                                 <Button type="button" onClick={() => void importUrl(agentUrl)} disabled={!ready || !agentUrl.trim() || isAgentWorking} className="min-h-9 px-2.5" aria-label="Import public URL"><Plus className="h-3.5 w-3.5" /></Button>
                             </div>
                         </section>
+
+                        <BrainFilesByDate disabled={backendState !== 'ready'} />
 
                         <BrainDriveCoverage disabled={backendState !== 'ready'} />
 

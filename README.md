@@ -307,6 +307,7 @@ POST /api/brain/agent/import-url
 POST /api/brain/agent/find-official-sources
 POST /api/brain/agent/run
 GET  /api/brain/drive/coverage
+POST /api/brain/drive/backfill-dates
 GET  /api/brain/code/status
 POST /api/brain/code/propose
 GET  /api/brain/code/proposals
@@ -344,6 +345,32 @@ GET /api/brain/drive/coverage
 or the **Drive coverage** panel on the Brain page. It lists Drive live and joins it against the store, reporting exact percentages for files, PDF pages, and embedded chunks, plus an explicitly-labelled *estimate* for token volume — the size of a document never read can only be inferred from its byte count. Every file is classified, so the gap is itemised rather than assumed.
 
 Files indexed under the old caps stay truncated until a forced re-sync: `POST /api/brain/index/drive/start {"force": true}`. Details, including how to get to 100%, are in `docs/drive-ingestion-coverage.md`.
+
+### Searching files by date
+
+`GET /api/brain/sources` filters and sorts indexed files by date, and the **Files by date** panel on the Brain page drives it:
+
+```text
+GET /api/brain/sources?dateField=uploaded&after=2026-01-01&before=2026-06-30&sort=oldest
+```
+
+Three dates answer different questions, and `dateField` picks which one you mean:
+
+| `dateField` | Meaning |
+| --- | --- |
+| `uploaded` (default) | When the file appeared in Drive (`createdTime`) |
+| `modified` | When it last changed (`modifiedTime`) |
+| `indexed` | When the Brain read it |
+
+`after` and `before` take `YYYY-MM-DD` or a full ISO timestamp. A bare date covers the whole day at both ends, so `before=2026-08-04` includes files uploaded during the 4th.
+
+The folder crawl did not request `createdTime` until recently, so anything indexed before that has no upload date. Those files are excluded from a dated query rather than silently included, and the response says how many were left out. Fix it without a full re-sync:
+
+```text
+POST /api/brain/drive/backfill-dates
+```
+
+That lists Drive once and merges the dates into existing sources. No downloads, no re-extraction. The panel offers it as a button whenever undated files show up.
 
 ## Self-Build
 
@@ -472,7 +499,7 @@ This separation is important: changing the book should not erase what happened e
 Backend syntax check:
 
 ```powershell
-$env:PYTHONDONTWRITEBYTECODE='1'; python -m py_compile backend\server.py backend\drive_indexer.py backend\brain_agent.py backend\brain_store.py backend\brain_store_postgres.py backend\gemini_client.py backend\github_client.py backend\code_agent.py backend\office_extract.py backend\drive_coverage.py
+$env:PYTHONDONTWRITEBYTECODE='1'; python -m py_compile backend\server.py backend\drive_indexer.py backend\brain_agent.py backend\brain_store.py backend\brain_store_postgres.py backend\gemini_client.py backend\github_client.py backend\code_agent.py backend\office_extract.py backend\drive_coverage.py backend\source_dates.py backend\drive_dates.py
 ```
 
 Backend tests. These are plain assertion scripts, not pytest files, so each one is run directly and prints its own pass line:
@@ -494,6 +521,7 @@ python test_code_agent.py
 python test_office_extract.py
 python test_drive_coverage.py
 python test_ingestion_limits.py
+python test_source_dates.py
 ```
 
 `.github/workflows/ci.yml` runs all of the above on every pull request, plus `tsc -b`, ESLint, and `vite build`. That workflow is what gates a self-build proposal, so keep it green.
