@@ -4193,6 +4193,10 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                     "modelCurve": to_float(result.get('model_curve', 0)),
                     "modelSlope": to_float(result.get('model_slope', 0)),
                     "modelIntercept": to_float(result.get('model_intercept', 0)),
+                    # "static_current_book" means the YTD beta was unusable and this
+                    # estimate fell back to a replay of today's book over the full
+                    # download window. Same widget, different book, so it has to say so.
+                    "betaSource": result.get('betaSource', 'ytd_realised'),
                     "marketMove": to_float(result.get('market_move', 0)),
                     "stressDays": result.get('stress_days'),
                     "dailyMarketMove": to_float(result.get('daily_market_move')),

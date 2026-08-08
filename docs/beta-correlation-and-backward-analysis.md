@@ -45,8 +45,20 @@ crash impact of **0.00%**: the most reassuring number the widget can show,
 produced by a calculation that did not work.
 
 It now falls through on an unusable value, and every scenario carries
-`betaSource`, either `ytd_realised` or `static_current_book`, so a fallback
-estimate can be labelled rather than passed off as the realised figure.
+`betaSource`, either `ytd_realised` or `static_current_book`.
+
+That fallback creates the one path on which the static series reaches a rendered
+widget, and it is worth naming: on a day the YTD engine cannot produce a usable
+beta — the first sessions of a new year, zero benchmark variance, an empty YTD
+slice — the Beta tile reads 0.00 while the stress panel shows real impacts from a
+different book. The stress panel therefore renders a banner saying exactly that
+whenever `betaSource` is `static_current_book`. Showing a labelled estimate from
+the current book beats showing a 0.00% crash impact; showing it unlabelled would
+not.
+
+The codebase was already honest about this series elsewhere: it is exported as
+`Current_Book_Scenario` with `scope: "Static current-target-weight replay; not
+realised portfolio history"`.
 
 ### Sign convention on the short book
 

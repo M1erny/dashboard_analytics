@@ -87,6 +87,9 @@ export interface StressTest {
     modelCurve?: number;
     modelSlope?: number;
     modelIntercept?: number;
+    /** 'static_current_book' means the YTD beta was unusable and this estimate
+     *  fell back to a replay of today's book over the full download window. */
+    betaSource?: 'ytd_realised' | 'static_current_book';
     marketMove?: number;
     stressDays?: number;
     dailyMarketMove?: number;
