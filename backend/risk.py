@@ -866,6 +866,10 @@ def calculate_segmented_ytd(
     rebalance_events = []
     all_segment_tickers = sorted({ticker for snap in active_snapshots for ticker in snap.get("positions", {}).keys()})
     contribution_history = pd.DataFrame(np.nan, index=price_index, columns=all_segment_tickers)
+    # Signed drifted exposure per position at every date, on the same segment basis
+    # as the contribution matrix. A position not held in a segment is zero exposure
+    # rather than NaN: exposure is a level, not a running total.
+    weight_history = pd.DataFrame(0.0, index=price_index, columns=all_segment_tickers)
     cumulative_position_contributions = {}
     latest_segment_position_contributions = {}
     latest_segment_position_contributions_ytd_basis = {}
@@ -893,6 +897,7 @@ def calculate_segmented_ytd(
         segment_long_market_value_factors = pd.Series(0.0, index=segment_index)
         segment_short_market_value_factors = pd.Series(0.0, index=segment_index)
         segment_position_curves = {}
+        segment_weight_curves = {}
 
         for ticker, info in positions.items():
             if ticker not in rel_prices.columns:
@@ -908,6 +913,9 @@ def calculate_segmented_ytd(
             position_curve = weight * direction * asset_cum_ret
             segment_contrib_curve += position_curve
             segment_position_curves[ticker] = position_curve
+            # weight * relative_price is this position's market value factor, so it
+            # is the drifted weight at each date within the segment.
+            segment_weight_curves[ticker] = weight * direction * relative_price
 
             if direction == 1:
                 segment_long_curve += position_curve
@@ -952,6 +960,8 @@ def calculate_segmented_ytd(
         for ticker, position_curve in segment_position_curves.items():
             prior_contribution = cumulative_position_contributions.get(ticker, 0.0)
             contribution_history.loc[segment_index, ticker] = prior_contribution + gross_start_value * position_curve
+        for ticker, weight_curve in segment_weight_curves.items():
+            weight_history.loc[segment_index, ticker] = weight_curve
 
         long_contribution_history.loc[segment_index] = (
             cumulative_long_contribution + gross_start_value * segment_long_curve
@@ -1032,7 +1042,14 @@ def calculate_segmented_ytd(
 
     portfolio_val_series_gross = portfolio_val_series_gross.ffill().dropna()
     portfolio_val_series_net = portfolio_val_series_net.ffill().dropna()
-    contribution_history = contribution_history.reindex(portfolio_val_series_net.index).ffill()
+    # A leading NaN means the name had not entered the book yet, and its cumulative
+    # contribution at that point is zero, not unknown. A forward fill cannot reach
+    # leading NaNs, so they are closed out explicitly here, exactly as the book-level
+    # series are below. calculate_batting_stats already drops exactly-zero cells, so
+    # this cannot inflate a position count or a hit rate -- it only stops a consumer
+    # that subtracts two rows from silently losing every name added at a later
+    # rebalance.
+    contribution_history = contribution_history.reindex(portfolio_val_series_net.index).ffill().fillna(0.0)
 
     if portfolio_val_series_gross.empty or portfolio_val_series_net.empty:
         return None
@@ -1050,6 +1067,7 @@ def calculate_segmented_ytd(
         "ytd_shorts_contrib": ytd_shorts_contrib,
         "position_contributions": position_contributions,
         "position_contribution_history": contribution_history,
+        "position_weight_history": weight_history.reindex(portfolio_val_series_net.index).fillna(0.0),
         "latest_segment_position_contributions": latest_segment_position_contributions,
         "latest_segment_position_contributions_ytd_basis": latest_segment_position_contributions_ytd_basis,
         "latest_segment_start_date": latest_segment_start_date,
@@ -1372,6 +1390,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             ytd_shorts_contrib = segmented_ytd["ytd_shorts_contrib"]
             ytd_position_contributions = segmented_ytd["position_contributions"]
             ytd_position_contribution_history = segmented_ytd["position_contribution_history"]
+            ytd_position_weight_history = segmented_ytd["position_weight_history"]
             ytd_long_contribution_history = segmented_ytd["long_contribution_history"]
             ytd_short_contribution_history = segmented_ytd["short_contribution_history"]
             since_rebalance_position_contributions = segmented_ytd["latest_segment_position_contributions"]
@@ -1384,6 +1403,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             portfolio_val_series = pd.Series(0.0, index=ytd_rel_prices.index)
             ytd_position_contributions = {}
             ytd_position_contribution_history = pd.DataFrame(np.nan, index=ytd_rel_prices.index, columns=active_tickers)
+            ytd_position_weight_history = pd.DataFrame(0.0, index=ytd_rel_prices.index, columns=active_tickers)
             # Book-level split is only produced by the segmented engine. Leave it absent
             # rather than inventing a series the single-book path never computed.
             ytd_long_contribution_history = None
@@ -1719,6 +1739,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_benchmark_aligned = pd.Series(dtype=float)
         ytd_position_contributions = {}
         ytd_position_contribution_history = pd.DataFrame()
+        ytd_position_weight_history = pd.DataFrame()
         since_rebalance_position_contributions = {}
         since_rebalance_position_contributions_ytd_basis = {}
         latest_rebalance_start_date = None
@@ -2010,6 +2031,7 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Beta_History': ytd_beta_history if 'ytd_beta_history' in locals() else None,
         'YTD_Position_Contributions': ytd_position_contributions if 'ytd_position_contributions' in locals() else {},
         'YTD_Position_Contribution_History': ytd_position_contribution_history if 'ytd_position_contribution_history' in locals() else pd.DataFrame(),
+        'YTD_Position_Weight_History': ytd_position_weight_history if 'ytd_position_weight_history' in locals() else pd.DataFrame(),
         'Since_Rebalance_Position_Contributions': since_rebalance_position_contributions if 'since_rebalance_position_contributions' in locals() else {},
         'Since_Rebalance_Position_Contributions_YTD_Basis': since_rebalance_position_contributions_ytd_basis if 'since_rebalance_position_contributions_ytd_basis' in locals() else {},
         'Latest_Rebalance_Start_Date': latest_rebalance_start_date if 'latest_rebalance_start_date' in locals() else None,

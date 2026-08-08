@@ -295,6 +295,42 @@ export interface FxExposure {
     pnl: number;
 }
 
+export interface BookAnalyticsPeriod {
+    key: string;
+    label: string;
+    start: string;
+    end: string;
+    anchor: string | null;
+    sessions: number;
+    metrics: {
+        battingAverage: number | null;
+        winnersCount: number;
+        losersCount: number;
+        positionsCount: number;
+        profitFactor: number | null;
+        profitFactorInfinite?: boolean;
+        winLossRatio: number | null;
+        winLossRatioInfinite?: boolean;
+        grossContribution?: number;
+        best: { ticker: string; contribution: number } | null;
+        worst: { ticker: string; contribution: number } | null;
+        topGrossWeight: number | null;
+        topGrossShare: number | null;
+        grossExposure: number | null;
+        topN?: number;
+    };
+}
+
+/** Book analytics precomputed per window. Contributions are gross of financing
+ *  and denominated in year-opening capital, which is what makes periods sum to
+ *  the year. */
+export interface BookAnalyticsReport {
+    basis?: string;
+    gross?: boolean;
+    note?: string;
+    periods?: BookAnalyticsPeriod[];
+}
+
 export interface FullRiskReport {
     vitals: Vitals;
     leverage: LeverageStats;
@@ -312,6 +348,7 @@ export interface FullRiskReport {
     fxExposures: Record<string, FxExposure>;
     rebalance?: RebalanceState;
     currentBookScenario?: CurrentBookScenario | null;
+    bookAnalytics?: BookAnalyticsReport;
     error?: string;
 }
 
@@ -375,6 +412,7 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     fxExposures: data.fxExposures || {},
                     rebalance: data.rebalance,
                     currentBookScenario: data.currentBookScenario || null,
+                    bookAnalytics: data.bookAnalytics,
                     error: data.error
                 };
             }

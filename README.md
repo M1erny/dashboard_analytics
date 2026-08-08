@@ -324,6 +324,7 @@ docs/investment-brain-architecture.md
 docs/local-brain-worker.md
 docs/self-building-brain.md
 docs/drive-ingestion-coverage.md
+docs/period-book-analytics.md
 ```
 
 ## Ingestion Coverage
@@ -474,6 +475,28 @@ More detail:
 docs/local-brain-worker.md
 ```
 
+## Book Analytics Over Time
+
+The Book Analytics strip answers "best and worst in Q2" and any other window, not just year to date. Period buttons sit in the strip header.
+
+It works because `calculate_segmented_ytd` already builds a cumulative per-ticker contribution matrix, chained across every rebalance snapshot and rebased at each seam onto one basis, so a window is a subtraction and quarters sum back to the year exactly. That matrix was computed on every request and discarded; nothing about how performance is calculated changed.
+
+Three properties decide what the numbers mean, and all three are stated in the payload:
+
+- **Windows are half-open.** A period is anchored on the last session *before* it opens. Anchoring Q2 on 1 April rather than 31 March silently discards 1 April's return.
+- **Contributions are denominated in year-opening capital.** That is what makes windows additive; a Q3 figure reads "percent of January capital", not "percent return during Q3".
+- **They are gross of financing**, so they reconcile to the gross YTD return, never the net one.
+
+Concentration needed new state, since only current drifted weights were kept. The segment loop already computes `weight * relative_price` per position per date, which *is* the drifted weight, so `position_weight_history` captures it — a new output only, changing no existing calculation.
+
+Standard windows (`ytd`, `qtd`, `mtd`, `sinceRebalance`, `q1`-`q4`, `h1`/`h2`, months, `r30d`, `r90d`) ride along with `/api/metrics`. Anything else:
+
+```text
+GET /api/book-analytics?period=custom&start=2026-05-04&end=2026-05-29
+```
+
+The position count changes between periods, which is correct: a book rebalanced mid-year held different names in Q1 and Q3. Full details, including a NaN trap that was live on the current book, are in `docs/period-book-analytics.md`.
+
 ## Performance Methodology
 
 - Primary return, drawdown, beta, volatility, and alpha cards use the dated, rebalance-aware YTD net NAV path.
@@ -522,6 +545,7 @@ python test_office_extract.py
 python test_drive_coverage.py
 python test_ingestion_limits.py
 python test_source_dates.py
+python test_book_analytics.py
 ```
 
 `.github/workflows/ci.yml` runs all of the above on every pull request, plus `tsc -b`, ESLint, and `vite build`. That workflow is what gates a self-build proposal, so keep it green.
