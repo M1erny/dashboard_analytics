@@ -232,4 +232,35 @@ assert abs(month_total - by_key["ytd"]["metrics"]["grossContribution"]) < 1e-9, 
     f"months sum to {month_total}, year is {by_key['ytd']['metrics']['grossContribution']}"
 )
 
+# --- Backward windows -------------------------------------------------------
+#
+# The owner's stated case: come back in two years, add more rebalance snapshots,
+# and still ask "what was the hit rate in Q2 2026". A bare "q2" can only ever mean
+# the current year, so periods must be able to name their year.
+
+LONG_DATES = pd.bdate_range("2025-01-01", "2027-06-30")
+
+for key, expect_label, expect_start, expect_end in [
+    ("q2-2026", "Q2 2026", "2026-04-01", "2026-06-30"),
+    ("h1-2025", "H1 2025", "2025-01-01", "2025-06-30"),
+    ("2026", "2026", "2026-01-01", "2026-12-31"),
+    ("2026-03", "March 2026", "2026-03-02", "2026-03-31"),
+]:
+    resolved = book_analytics.resolve_window(LONG_DATES, key)
+    assert resolved["label"] == expect_label, resolved
+    assert str(resolved["start"].date()) == expect_start, resolved
+    assert str(resolved["end"].date()) == expect_end, resolved
+
+# A year-qualified window must anchor on the previous year's last session, so the
+# first session of the year is not silently dropped.
+year_window = book_analytics.resolve_window(LONG_DATES, "2026")
+assert str(year_window["anchor"].date()) == "2025-12-31", year_window
+
+# An unqualified key still means the latest year in the data, not a fixed one.
+assert book_analytics.resolve_window(LONG_DATES, "q2")["label"] == "Q2 2027"
+
+# A year the data never covered is refused rather than silently clamped.
+assert book_analytics.resolve_window(LONG_DATES, "q2-2019") is None
+assert book_analytics.resolve_window(LONG_DATES, "2030") is None
+
 print("Period book analytics checks passed.")

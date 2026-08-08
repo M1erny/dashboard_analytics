@@ -325,6 +325,7 @@ docs/local-brain-worker.md
 docs/self-building-brain.md
 docs/drive-ingestion-coverage.md
 docs/period-book-analytics.md
+docs/beta-correlation-and-backward-analysis.md
 ```
 
 ## Ingestion Coverage
@@ -496,6 +497,20 @@ GET /api/book-analytics?period=custom&start=2026-05-04&end=2026-05-29
 ```
 
 The position count changes between periods, which is correct: a book rebalanced mid-year held different names in Q1 and Q3. Full details, including a NaN trap that was live on the current book, are in `docs/period-book-analytics.md`.
+
+### Looking backwards, and which beta is which
+
+A period must name its year to mean a past one — `q2-2026`, `2027`, `2026-03`. Bare `q2` always resolves against the latest year in the data.
+
+```text
+GET /api/book-analytics?period=q2-2026
+```
+
+A historical window rebuilds the contribution history from that year's opening, based on the prior year's final close exactly as the live path is, and uses the book that was live then rather than today's. It returns a warning when no snapshot precedes that year, since the opening book was then inferred rather than read from the ledger. Five years of prices are downloaded every run and the snapshot ledger is permanent, so the ingredients survive.
+
+Headline risk metrics — beta, correlation, volatility, Sharpe, drawdown, VaR — remain year-to-date only. `calculate_risk_metrics` takes no window parameter, and half-parameterising it is how a number ends up computed over one window and labelled with another.
+
+There are two portfolio return series with different meanings: a static replay of today's book over the full download window, and the rebalance-aware segmented series. **The dashboard displays the rebalance-aware one.** The static series is not rendered; it appears in the CLI report and as a stress-test fallback, which now carries `betaSource` so a fallback estimate can be labelled. Details in `docs/beta-correlation-and-backward-analysis.md`.
 
 ## Performance Methodology
 

@@ -960,6 +960,10 @@ def calculate_segmented_ytd(
         for ticker, position_curve in segment_position_curves.items():
             prior_contribution = cumulative_position_contributions.get(ticker, 0.0)
             contribution_history.loc[segment_index, ticker] = prior_contribution + gross_start_value * position_curve
+        # Clear first: several snapshots can resolve onto the same row when they
+        # pre-date the analysis window, and without this their exposures stack and
+        # a 100% book reads as 200% gross.
+        weight_history.loc[segment_index, :] = 0.0
         for ticker, weight_curve in segment_weight_curves.items():
             weight_history.loc[segment_index, ticker] = weight_curve
 
@@ -1202,9 +1206,11 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         long_only_beta = np.cov(clean_long, clean_bench)[0][1] / market_variance
         
         # Short-only beta: how much market risk does the short book carry?
-        # Note: short_only_ret is already the P&L (negative of stock return × weight),
-        # so a positive beta here means the short book moves WITH the market 
-        # (i.e., the shorts are correlated, providing a hedge when they go down).
+        # short_only_ret is P&L, not the stocks' return: it rises when the shorted
+        # names fall. So an ordinary short book of market-correlated names produces a
+        # NEGATIVE beta here, and that negative number is the hedge. A positive value
+        # would mean the short book gains when the market rises, which is the opposite
+        # of a hedge.
         clean_short = short_only_ret[valid_mask]
         short_only_beta = np.cov(clean_short, clean_bench)[0][1] / market_variance
     
@@ -2239,8 +2245,23 @@ def stress_test_portfolio(metrics):
     print("--- 4b. Running Non-Linear Stress Tests ---")
     if metrics is None: return {}
     
-    # Use YTD Beta for linear estimate to match the YTD quadratic model
-    beta = metrics.get('YTD_Beta', metrics['Beta'])
+    # Use YTD beta for the linear estimate, to match the YTD quadratic model.
+    # 'YTD_Beta' is always present and is set to exactly 0.0 on every failure path,
+    # so a dict-level default never fires. Falling through on an unusable value
+    # matters: a zero beta prints "market crash impact 0.00%", which reads as a
+    # perfectly hedged book rather than as a missing calculation.
+    ytd_beta_value = metrics.get('YTD_Beta')
+    beta_is_usable = (
+        isinstance(ytd_beta_value, (int, float))
+        and not pd.isna(ytd_beta_value)
+        and ytd_beta_value != 0.0
+    )
+    beta = ytd_beta_value if beta_is_usable else metrics.get('Beta', 0.0)
+    # The fallback beta comes from a static replay of today's book over the full
+    # download window, not from this year's realised path. Usable as an estimate,
+    # but a caller has to be able to say so rather than present it as the same
+    # measure the dashboard shows elsewhere.
+    beta_source = "ytd_realised" if beta_is_usable else "static_current_book"
     convexity = metrics.get('Convexity_Metrics')
     
     scenarios = {
@@ -2251,6 +2272,8 @@ def stress_test_portfolio(metrics):
     }
     
     results = {}
+    # Recorded per scenario so a fallback estimate can be labelled rather than
+    # read as the same measure the dashboard shows elsewhere.
     
     # Get quadratic coefficients if available
     has_quadratic = (convexity is not None and 
@@ -2308,6 +2331,10 @@ def stress_test_portfolio(metrics):
             'model_intercept': intercept
         }
     
+    for _scenario in results.values():
+        if isinstance(_scenario, dict):
+            _scenario["betaSource"] = beta_source
+
     return results
 
 def run_monte_carlo(metrics, num_sims=1000, days=60):

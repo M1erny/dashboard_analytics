@@ -30,6 +30,7 @@ discover.
 """
 
 import calendar
+import re
 from typing import Any
 
 import numpy as np
@@ -83,13 +84,36 @@ def resolve_window(
 
     index = pd.DatetimeIndex(index)
     first, last = index[0], index[-1]
-    year = int(last.year)
     key = (period or "ytd").strip().lower()
+
+    # A period may name its year explicitly: q2-2026, h1-2027, 2026-03, or 2026.
+    # Without that, "q2" can only ever mean the current year, which is useless the
+    # moment the owner wants to look back at a year that has ended.
+    year = int(last.year)
+    explicit_year = None
+    calendar_year_match = re.fullmatch(r"(\d{4})", key)
+    month_match = re.fullmatch(r"(\d{4})-(\d{2})", key)
+    suffix_match = re.fullmatch(r"(q[1-4]|h[12])-(\d{4})", key)
+    if calendar_year_match:
+        explicit_year = int(calendar_year_match.group(1))
+        key = "calendar"
+    elif month_match:
+        explicit_year = int(month_match.group(1))
+        key = f"m{int(month_match.group(2))}"
+    elif suffix_match:
+        key = suffix_match.group(1)
+        explicit_year = int(suffix_match.group(2))
+    if explicit_year is not None:
+        year = explicit_year
 
     if key == "custom":
         window_start = _as_timestamp(start) or first
         window_end = _as_timestamp(end) or last
         label = f"{window_start.date()} to {window_end.date()}"
+    elif key == "calendar":
+        window_start = pd.Timestamp(year=year, month=1, day=1)
+        window_end = pd.Timestamp(year=year, month=12, day=31)
+        label = str(year)
     elif key == "ytd":
         window_start, window_end, label = first, last, "Year to date"
     elif key == "qtd":
@@ -119,7 +143,7 @@ def resolve_window(
         month = int(key[1:])
         window_start = pd.Timestamp(year=year, month=month, day=1)
         window_end = pd.Timestamp(year=year, month=month, day=calendar.monthrange(year, month)[1])
-        label = f"{window_start.strftime('%B %Y')}"
+        label = window_start.strftime("%B %Y")
     elif key in {"r30d", "r90d", "r180d"}:
         days = int(key[1:-1])
         window_start = last - pd.Timedelta(days=days)

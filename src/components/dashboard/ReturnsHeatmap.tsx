@@ -944,7 +944,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                                                 : 'text-gray-500 hover:bg-white/[0.05] hover:text-gray-300'
                                         }`}
                                     >
-                                        {period.label.replace(` ${new Date(period.end).getFullYear()}`, '')}
+                                        {period.label}
                                     </button>
                                 ))}
                             </div>
