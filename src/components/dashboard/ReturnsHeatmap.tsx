@@ -5,6 +5,41 @@ import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarCh
 
 type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'sinceRebalanceContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry' | 'volatilityContribution';
 type SortDir = 'asc' | 'desc';
+
+export type BookPeriodMetrics = {
+    battingAverage: number | null;
+    winnersCount: number;
+    losersCount: number;
+    positionsCount: number;
+    profitFactor: number | null;
+    profitFactorInfinite?: boolean;
+    winLossRatio: number | null;
+    winLossRatioInfinite?: boolean;
+    grossContribution?: number;
+    best: { ticker: string; contribution: number } | null;
+    worst: { ticker: string; contribution: number } | null;
+    topGrossWeight: number | null;
+    topGrossShare: number | null;
+    grossExposure: number | null;
+    topN?: number;
+};
+
+export type BookPeriod = {
+    key: string;
+    label: string;
+    start: string;
+    end: string;
+    anchor: string | null;
+    sessions: number;
+    metrics: BookPeriodMetrics;
+};
+
+export type BookAnalyticsPayload = {
+    basis?: string;
+    gross?: boolean;
+    note?: string;
+    periods?: BookPeriod[];
+};
 type ColumnGroup = 'position' | 'contribution' | 'returns' | 'risk';
 
 // ─── Color System ────────────────────────────────────────────
@@ -305,12 +340,14 @@ const groupMeta: Record<ColumnGroup, { label: string; icon: React.ReactNode; col
 };
 
 // ─── Main Component ──────────────────────────────────────────
-export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], periodLabel = "YTD", vitals }: {
+export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], periodLabel = "YTD", vitals, bookAnalyticsPeriods }: {
     periodicReturns: PeriodicReturn[];
     activeRisks?: RiskAttribution[];
     periodLabel?: string;
     vitals?: Pick<Vitals, 'ytdReturn' | 'ytdReturnGross' | 'ytdSecurityGrossContribution' | 'ytdFinancingCost' | 'financingScope'>;
+    bookAnalyticsPeriods?: BookAnalyticsPayload;
 }) => {
+    const [bookPeriodKey, setBookPeriodKey] = useState<string>('ytd');
     const [sortKey, setSortKey] = useState<SortKey>('ytdContribution');
     const [sortDir, setSortDir] = useState<SortDir>('desc');
     const [hoveredRow, setHoveredRow] = useState<string | null>(null);
@@ -572,6 +609,56 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             losersCount: losers.length,
         };
     }, [periodicReturns]);
+
+    // The backend ships every standard window precomputed. Its numbers are the
+    // authoritative ones: they come from the segmented accounting that chains
+    // across rebalances, which the browser cannot reproduce from YTD columns alone.
+    const availablePeriods = useMemo(() => bookAnalyticsPeriods?.periods ?? [], [bookAnalyticsPeriods]);
+    const selectedPeriod = useMemo(
+        () => availablePeriods.find(period => period.key === bookPeriodKey) ?? availablePeriods.find(period => period.key === 'ytd') ?? null,
+        [availablePeriods, bookPeriodKey],
+    );
+
+    // Falls back to the locally computed YTD figures when the backend predates
+    // period support, so an older deployment still renders the strip.
+    const displayedBook = useMemo(() => {
+        if (selectedPeriod) {
+            const m = selectedPeriod.metrics;
+            return {
+                battingAvg: m.battingAverage,
+                winnersCount: m.winnersCount,
+                losersCount: m.losersCount,
+                profitFactor: m.profitFactorInfinite ? Infinity : m.profitFactor,
+                winLossRatio: m.winLossRatioInfinite ? Infinity : m.winLossRatio,
+                top5GrossWeight: m.topGrossWeight,
+                top5GrossShare: m.topGrossShare,
+                totalGrossWeight: m.grossExposure,
+                best: m.best ? { ticker: m.best.ticker, value: m.best.contribution } : null,
+                worst: m.worst ? { ticker: m.worst.ticker, value: m.worst.contribution } : null,
+                label: selectedPeriod.label,
+                range: `${selectedPeriod.start} to ${selectedPeriod.end}`,
+                sessions: selectedPeriod.sessions,
+                positionsCount: m.positionsCount,
+            };
+        }
+        if (!bookAnalytics) return null;
+        return {
+            battingAvg: bookAnalytics.battingAvg,
+            winnersCount: bookAnalytics.winnersCount,
+            losersCount: bookAnalytics.losersCount,
+            profitFactor: bookAnalytics.profitFactor,
+            winLossRatio: bookAnalytics.winLossRatio,
+            top5GrossWeight: bookAnalytics.top5GrossWeight,
+            top5GrossShare: bookAnalytics.top5GrossShare,
+            totalGrossWeight: bookAnalytics.totalGrossWeight,
+            best: bookAnalytics.best,
+            worst: bookAnalytics.worst,
+            label: periodLabel,
+            range: null as string | null,
+            sessions: 0,
+            positionsCount: bookAnalytics.winnersCount + bookAnalytics.losersCount,
+        };
+    }, [selectedPeriod, bookAnalytics, periodLabel]);
 
     const SortIndicator = ({ columnKey }: { columnKey: SortKey }) => {
         if (sortKey !== columnKey) {
@@ -836,61 +923,85 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                 </div>
             )}
 
-            {bookAnalytics && (
+            {displayedBook && (
                 <div className="border-b border-white/[0.06] bg-gradient-to-r from-white/[0.01] via-white/[0.03] to-white/[0.01] px-6 py-4">
-                    <div className="flex items-center gap-2 mb-3">
+                    <div className="flex flex-wrap items-center gap-2 mb-3">
                         <div className="flex items-center justify-center w-5 h-5 rounded-md bg-indigo-500/15 ring-1 ring-indigo-500/20">
                             <Activity className="h-3 w-3 text-indigo-400" />
                         </div>
                         <span className="text-[10px] uppercase tracking-[0.16em] font-bold text-gray-400">Book Analytics</span>
+                        {availablePeriods.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1">
+                                {availablePeriods.map(period => (
+                                    <button
+                                        key={period.key}
+                                        type="button"
+                                        onClick={() => setBookPeriodKey(period.key)}
+                                        title={`${period.label}: ${period.start} to ${period.end} (${period.sessions} sessions)`}
+                                        className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] transition-colors ${
+                                            period.key === (selectedPeriod?.key ?? 'ytd')
+                                                ? 'bg-indigo-500/20 text-indigo-200 ring-1 ring-indigo-400/30'
+                                                : 'text-gray-500 hover:bg-white/[0.05] hover:text-gray-300'
+                                        }`}
+                                    >
+                                        {period.label}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
                         <div className="flex-1 h-px bg-gradient-to-r from-white/[0.06] to-transparent ml-2" />
+                        {displayedBook.range && (
+                            <span className="text-[9px] font-mono text-gray-600" title="Contributions are gross of financing and denominated in year-opening capital, which is what makes periods sum to the year.">
+                                {displayedBook.range} · {displayedBook.positionsCount} positions · gross
+                            </span>
+                        )}
                     </div>
                     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                         <StatCard
                             icon={<Target className="h-3.5 w-3.5 text-indigo-400" />}
                             label="Batting Avg"
-                            value={`${(bookAnalytics.battingAvg * 100).toFixed(0)}%`}
-                            subtext={`${bookAnalytics.winnersCount}W / ${bookAnalytics.losersCount}L`}
-                            color={bookAnalytics.battingAvg >= 0.55 ? "text-emerald-400" : bookAnalytics.battingAvg >= 0.45 ? "text-amber-400" : "text-red-400"}
+                            value={displayedBook.battingAvg == null ? '—' : `${(displayedBook.battingAvg * 100).toFixed(0)}%`}
+                            subtext={`${displayedBook.winnersCount}W / ${displayedBook.losersCount}L`}
+                            color={displayedBook.battingAvg == null ? "text-gray-500" : displayedBook.battingAvg >= 0.55 ? "text-emerald-400" : displayedBook.battingAvg >= 0.45 ? "text-amber-400" : "text-red-400"}
                         />
                         <StatCard
                             icon={<Zap className="h-3.5 w-3.5 text-amber-400" />}
                             label="Profit Factor"
-                            value={bookAnalytics.profitFactor === Infinity ? '∞' : `${bookAnalytics.profitFactor.toFixed(2)}×`}
+                            value={displayedBook.profitFactor == null ? '—' : displayedBook.profitFactor === Infinity ? '∞' : `${displayedBook.profitFactor.toFixed(2)}×`}
                             subtext="gains / losses"
-                            color={bookAnalytics.profitFactor >= 2.0 ? "text-emerald-400" : bookAnalytics.profitFactor >= 1.0 ? "text-amber-400" : "text-red-400"}
+                            color={displayedBook.profitFactor == null ? "text-gray-500" : displayedBook.profitFactor >= 2.0 ? "text-emerald-400" : displayedBook.profitFactor >= 1.0 ? "text-amber-400" : "text-red-400"}
                         />
                         <StatCard
                             icon={<BarChart3 className="h-3.5 w-3.5 text-sky-400" />}
                             label="Win / Loss"
-                            value={bookAnalytics.winLossRatio === Infinity ? '∞' : `${bookAnalytics.winLossRatio.toFixed(2)}×`}
+                            value={displayedBook.winLossRatio == null ? '—' : displayedBook.winLossRatio === Infinity ? '∞' : `${displayedBook.winLossRatio.toFixed(2)}×`}
                             subtext="avg winner / avg loser"
-                            color={bookAnalytics.winLossRatio >= 1.5 ? "text-emerald-400" : bookAnalytics.winLossRatio >= 1.0 ? "text-amber-400" : "text-red-400"}
+                            color={displayedBook.winLossRatio == null ? "text-gray-500" : displayedBook.winLossRatio >= 1.5 ? "text-emerald-400" : displayedBook.winLossRatio >= 1.0 ? "text-amber-400" : "text-red-400"}
                         />
                         <StatCard
                             icon={<Flame className="h-3.5 w-3.5 text-orange-400" />}
                             label="Top 5 Gross"
-                            value={`${(bookAnalytics.top5GrossWeight * 100).toFixed(0)}%`}
-                            subtext={`${(bookAnalytics.top5GrossShare * 100).toFixed(0)}% of ${(bookAnalytics.totalGrossWeight * 100).toFixed(0)}% gross`}
-                            color={bookAnalytics.top5GrossWeight >= 1.0 || bookAnalytics.top5GrossShare >= 0.75 ? "text-rose-400" : bookAnalytics.top5GrossWeight >= 0.75 || bookAnalytics.top5GrossShare >= 0.55 ? "text-amber-400" : "text-emerald-400"}
+                            value={displayedBook.top5GrossWeight == null ? '—' : `${(displayedBook.top5GrossWeight * 100).toFixed(0)}%`}
+                            subtext={displayedBook.top5GrossShare == null || displayedBook.totalGrossWeight == null ? 'exposure at period close' : `${(displayedBook.top5GrossShare * 100).toFixed(0)}% of ${(displayedBook.totalGrossWeight * 100).toFixed(0)}% gross`}
+                            color={displayedBook.top5GrossWeight == null ? "text-gray-500" : displayedBook.top5GrossWeight >= 1.0 || (displayedBook.top5GrossShare ?? 0) >= 0.75 ? "text-rose-400" : displayedBook.top5GrossWeight >= 0.75 || (displayedBook.top5GrossShare ?? 0) >= 0.55 ? "text-amber-400" : "text-emerald-400"}
                         />
-                        {bookAnalytics.best && (
+                        {displayedBook.best && (
                             <StatCard
                                 icon={<Trophy className="h-3.5 w-3.5 text-emerald-400" />}
                                 label="Best"
-                                value={bookAnalytics.best.ticker}
-                                subtext={`+${(bookAnalytics.best.value * 100).toFixed(2)}% contrib`}
+                                value={displayedBook.best.ticker}
+                                subtext={`${displayedBook.best.value >= 0 ? '+' : ''}${(displayedBook.best.value * 100).toFixed(2)}% contrib`}
                                 color="text-emerald-400"
                                 borderColor="border-emerald-500/15"
                                 bgColor="bg-emerald-500/[0.04]"
                             />
                         )}
-                        {bookAnalytics.worst && bookAnalytics.worst.value < 0 && (
+                        {displayedBook.worst && displayedBook.worst.value < 0 && (
                             <StatCard
                                 icon={<TrendingDown className="h-3.5 w-3.5 text-rose-400" />}
                                 label="Worst"
-                                value={bookAnalytics.worst.ticker}
-                                subtext={`${(bookAnalytics.worst.value * 100).toFixed(2)}% contrib`}
+                                value={displayedBook.worst.ticker}
+                                subtext={`${(displayedBook.worst.value * 100).toFixed(2)}% contrib`}
                                 color="text-rose-400"
                                 borderColor="border-rose-500/15"
                                 bgColor="bg-rose-500/[0.04]"

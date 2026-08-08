@@ -31,6 +31,12 @@ except ImportError as e:
     risk = None
 
 try:
+    import book_analytics
+except ImportError as e:
+    print(f"Error importing book_analytics.py: {e}")
+    book_analytics = None
+
+try:
     from brain_agent import (
         DEFAULT_AGENT_MAX_BYTES,
         find_official_source_candidates,
@@ -4187,6 +4193,10 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                     "modelCurve": to_float(result.get('model_curve', 0)),
                     "modelSlope": to_float(result.get('model_slope', 0)),
                     "modelIntercept": to_float(result.get('model_intercept', 0)),
+                    # "static_current_book" means the YTD beta was unusable and this
+                    # estimate fell back to a replay of today's book over the full
+                    # download window. Same widget, different book, so it has to say so.
+                    "betaSource": result.get('betaSource', 'ytd_realised'),
                     "marketMove": to_float(result.get('market_move', 0)),
                     "stressDays": result.get('stress_days'),
                     "dailyMarketMove": to_float(result.get('daily_market_move')),
@@ -4579,6 +4589,36 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             response["periodicReturns"].append(item)
 
             
+        # Book analytics for every standard window. Each is a subtraction on the
+        # cumulative contribution matrix, so precomputing them all costs nothing
+        # and lets the UI switch period without a round trip.
+        if book_analytics:
+            contribution_history = metrics.get('YTD_Position_Contribution_History')
+            weight_history = metrics.get('YTD_Position_Weight_History')
+            directions = {
+                str(row.get("ticker")): row.get("direction")
+                for row in response["periodicReturns"]
+                if row.get("ticker")
+            }
+            try:
+                response["bookAnalytics"] = {
+                    "basis": book_analytics.BASIS,
+                    "gross": True,
+                    "note": (
+                        "Contributions are gross of financing and denominated in year-opening "
+                        "capital, which is what makes periods add up to the year."
+                    ),
+                    "periods": book_analytics.build_all_periods(
+                        contribution_history,
+                        weight_history,
+                        rebalance_start=metrics.get('Latest_Rebalance_Start_Date'),
+                        directions=directions,
+                    ),
+                }
+            except Exception as e:
+                print(f"Book analytics failed: {e}")
+                response["bookAnalytics"] = {"periods": [], "error": str(e)[:200]}
+
         # Format History (Cumulative 1000 base)
         portfolio_cum = (1 + metrics['Returns_Stream']).cumprod() * 1000
         benchmark_cum = (1 + metrics['Benchmark_Stream']).cumprod() * 1000
@@ -4686,6 +4726,13 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
 
         # Store in cache
         tier_cache["data"] = response
+        # Keep the frames the JSON response cannot carry, so an arbitrary window
+        # can be sliced later without recomputing or refetching market data.
+        tier_cache["raw_metrics"] = {
+            "YTD_Position_Contribution_History": metrics.get('YTD_Position_Contribution_History'),
+            "YTD_Position_Weight_History": metrics.get('YTD_Position_Weight_History'),
+            "Latest_Rebalance_Start_Date": metrics.get('Latest_Rebalance_Start_Date'),
+        }
         tier_cache["timestamp"] = time.time()
         print(f"Response cached at {tier_cache['timestamp']}")
 
@@ -4699,6 +4746,184 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
 # ==========================================
 # Portfolio Details API (lightweight, no market data fetch)
 # ==========================================
+
+def _historical_book_analytics(
+    portfolio: str,
+    period: str,
+    start: str | None,
+    end: str | None,
+    margin_rate: float,
+    borrow_fee: float,
+    top_n: int,
+) -> dict:
+    """Book analytics for a window that may lie in a past year.
+
+    The dashboard's own metrics are year-to-date by construction: ytd_calc_start is
+    always 1 January of the current year. calculate_segmented_ytd, however, takes
+    its start as a parameter, so a past window only needs the history rebuilt from
+    that year's opening. Nothing about the live YTD path is touched.
+    """
+    usd_prices, _fx, _volume, _raw = _get_cached_market_data(False, portfolio_name=portfolio)
+    if usd_prices is None or usd_prices.empty:
+        raise HTTPException(status_code=503, detail="No price history is loaded yet.")
+
+    prices_filled = usd_prices.ffill()
+    window = book_analytics.resolve_window(prices_filled.index, period, start=start, end=end)
+    if window is None:
+        raise HTTPException(
+            status_code=404,
+            detail="That window falls outside the available price history.",
+        )
+
+    # Contributions are denominated in the opening capital of the window's own year,
+    # which is what keeps that year's quarters summing to that year.
+    analysis_start = pd.Timestamp(year=int(window["end"].year), month=1, day=1)
+    start_location = prices_filled.index.searchsorted(analysis_start)
+    # Include the prior year's final close as the base, exactly as the live YTD
+    # path does. Starting on 1 January instead would mis-base the year's first
+    # session, and the rebuilt year would not reconcile with what that year
+    # reported at the time.
+    analysis_prices = prices_filled.iloc[max(0, start_location - 1):]
+    if len(analysis_prices) < 2:
+        raise HTTPException(status_code=404, detail="Not enough price history for that window.")
+
+    # Use the book that was actually live at the window's close, never today's.
+    as_of_config = risk.get_effective_portfolio_config(portfolio, as_of=window["end"])
+    snapshots = risk.get_rebalance_snapshots(portfolio, as_of_config)
+    covered = any(pd.Timestamp(snap["date"]) <= analysis_start for snap in snapshots)
+
+    segmented = risk.calculate_segmented_ytd(
+        analysis_prices,
+        portfolio,
+        as_of_config,
+        analysis_start.strftime("%Y-%m-%d"),
+        margin_rate,
+        borrow_fee,
+    )
+    if not segmented:
+        raise HTTPException(status_code=503, detail="Could not rebuild history for that window.")
+
+    directions = {
+        ticker: ("Short" if str(info.get("type", "Long")).lower() == "short" else "Long")
+        for ticker, info in risk.get_all_position_configs(portfolio).items()
+    }
+    built = book_analytics.build_period_analytics(
+        segmented["position_contribution_history"],
+        segmented["position_weight_history"],
+        period,
+        start=start,
+        end=end,
+        directions=directions,
+        top_n=top_n,
+    )
+    if built is None:
+        raise HTTPException(status_code=404, detail="That window produced no positions.")
+
+    built["analysisStart"] = analysis_start.strftime("%Y-%m-%d")
+    built["historical"] = True
+    if not covered:
+        # calculate_segmented_ytd inserts a synthetic opening segment holding the
+        # config it was handed when no snapshot precedes the window. Saying so
+        # matters: without a snapshot from before this window, the opening book is
+        # inferred rather than recorded.
+        built["warning"] = (
+            f"No rebalance snapshot exists on or before {analysis_start.date()}, so the opening "
+            "book for this window was inferred from the nearest later snapshot rather than read "
+            "from the ledger. Treat the earliest part of this window as approximate."
+        )
+    return built
+
+
+@app.get("/api/book-analytics")
+async def get_book_analytics(
+    period: str = "custom",
+    start: str | None = None,
+    end: str | None = None,
+    portfolio: str = "main",
+    costTier: str = "retail",
+    topN: int = Query(default=5, ge=1, le=20),
+):
+    """Book analytics for one arbitrary window.
+
+    The standard windows already ride along with /api/metrics. This exists for a
+    range that is not one of them, and reuses the same cached market data.
+    """
+    if not risk or not book_analytics:
+        raise HTTPException(status_code=503, detail="Book analytics are not available")
+
+    rates = {"institutional": (0.055, 0.010), "none": (0.0, 0.0)}.get(costTier, (0.120, 0.025))
+
+    # A year-qualified window (q2-2026, 2027, 2026-03) or an explicit range that
+    # predates this year needs the history rebuilt from that year's opening. The
+    # cached /api/metrics payload only covers the current year.
+    wants_history = bool(re.fullmatch(r"(\d{4})(-\d{2})?|(q[1-4]|h[12])-\d{4}", (period or "").strip().lower()))
+    if not wants_history and period == "custom" and start:
+        try:
+            wants_history = pd.Timestamp(start).year < datetime.now().year
+        except (ValueError, TypeError):
+            wants_history = False
+    if wants_history:
+        try:
+            return await _run_brain_step(
+                "Historical book analytics",
+                _historical_book_analytics,
+                portfolio, period, start, end, rates[0], rates[1], topN,
+                timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+            )
+        except HTTPException:
+            raise
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=_clean_public_error(e))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=_clean_public_error(e))
+
+    try:
+        metrics_payload = await get_metrics(costTier=costTier, portfolio=portfolio)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=_clean_public_error(e))
+
+    if isinstance(metrics_payload, dict) and metrics_payload.get("error"):
+        raise HTTPException(status_code=503, detail=str(metrics_payload["error"])[:300])
+
+    cached = _cache.get(f"{portfolio}_{costTier}") or {}
+    raw = (cached.get("raw_metrics") or {}) if isinstance(cached, dict) else {}
+    contribution_history = raw.get("YTD_Position_Contribution_History")
+    weight_history = raw.get("YTD_Position_Weight_History")
+    if contribution_history is None or getattr(contribution_history, "empty", True):
+        raise HTTPException(
+            status_code=503,
+            detail="No contribution history is available yet. Load /api/metrics first.",
+        )
+
+    directions = {
+        str(row.get("ticker")): row.get("direction")
+        for row in (metrics_payload.get("periodicReturns") or [])
+        if row.get("ticker")
+    }
+
+    try:
+        built = book_analytics.build_period_analytics(
+            contribution_history,
+            weight_history,
+            period,
+            start=start,
+            end=end,
+            rebalance_start=raw.get("Latest_Rebalance_Start_Date"),
+            directions=directions,
+            top_n=topN,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=_clean_public_error(e))
+
+    if built is None:
+        raise HTTPException(
+            status_code=404,
+            detail="That window falls outside the available price history.",
+        )
+    return {"basis": book_analytics.BASIS, "gross": True, **built}
+
 
 @app.get("/api/portfolio")
 async def get_portfolio(portfolio: str = 'main'):

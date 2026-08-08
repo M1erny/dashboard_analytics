@@ -463,6 +463,19 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                         </span>
                     </div>
 
+                    {/* The YTD beta failing does not stop these scenarios rendering: they
+                        fall back to a replay of today's book over the full history. That is
+                        a different book from the Beta tile above, so it is stated rather
+                        than left to look like the same measure. */}
+                    {stressTests?.some(st => st.betaSource === 'static_current_book') && (
+                        <div
+                            className="mb-2 rounded border border-amber-500/20 bg-amber-500/[0.06] px-2 py-1.5 text-[9px] leading-4 text-amber-300/90"
+                            title="This year's realised beta was unavailable, so these scenarios use a static replay of the current book over the full price history. It is an estimate from a different book than the Beta tile above."
+                        >
+                            Estimated from the current book over full history — this year's realised beta was unavailable.
+                        </div>
+                    )}
+
                     {stressTests?.map(st => {
                         const mktMove = st.marketMove ?? 0;
                         const shapeEffect = st.shapeEffect ?? (st.linearImpact != null ? st.impact - st.linearImpact : 0);
