@@ -525,18 +525,19 @@ export const Dashboard: React.FC = () => {
     const portfolioLabel = 'My Portfolio';
 
     return (
-        <div className="min-h-screen bg-background text-foreground">
+        <div className="relative min-h-[100dvh] overflow-x-hidden bg-[#050814] text-foreground">
+            <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_12%_8%,rgba(79,70,229,0.10),transparent_28%),radial-gradient(circle_at_88%_12%,rgba(14,165,233,0.07),transparent_26%),linear-gradient(to_bottom,rgba(15,23,42,0.18),transparent_42%)]" />
             {/* Animated top bar */}
-            <div className="animated-top-bar h-[2px] w-full" />
+            <div className="animated-top-bar relative z-10 h-[2px] w-full" />
 
-            <div className="px-4 py-5 sm:px-5 md:p-8">
+            <div className="relative z-10 px-3 py-4 sm:px-5 sm:py-5 lg:px-8 lg:py-7">
             {/* While a tier refetch is in flight the figures below still belong to the previous
                 tier, but the tier badge already reads the new one. Dim them so the mismatch
                 cannot be mistaken for a recomputed book. */}
             <div
                 aria-busy={isSwitchingTier}
                 className={cn(
-                    "mx-auto max-w-[1600px] space-y-6 md:space-y-8",
+                    "mx-auto max-w-[1600px] space-y-5 sm:space-y-6 lg:space-y-7",
                     // Everything except the header (the first child) is stale during a refetch.
                     // The header keeps full opacity so the tier controls and status stay legible.
                     isSwitchingTier && "[&>*:not(:first-child)]:opacity-40 [&>*:not(:first-child)]:transition-opacity [&>*:not(:first-child)]:duration-200"
@@ -544,10 +545,10 @@ export const Dashboard: React.FC = () => {
             >
 
                 {/* Responsive Header */}
-                <div className="flex flex-col xl:flex-row xl:items-start justify-between gap-5 md:gap-6">
+                <header className="flex flex-col justify-between gap-5 rounded-2xl border border-white/[0.08] bg-slate-950/65 p-4 shadow-2xl shadow-black/20 backdrop-blur-xl sm:p-5 xl:flex-row xl:items-start xl:gap-6">
                     <div className="min-w-0">
-                        <h1 className="text-3xl md:text-4xl font-black tracking-tight text-white flex items-center gap-3 min-w-0">
-                            <div className="p-2 bg-gradient-to-br from-indigo-500/20 to-blue-500/20 rounded-xl border border-white/10 shrink-0">
+                        <h1 className="flex min-w-0 items-center gap-3 text-[1.75rem] font-black tracking-tight text-white sm:text-3xl md:text-4xl">
+                            <div className="shrink-0 rounded-xl border border-indigo-400/15 bg-gradient-to-br from-indigo-500/20 to-blue-500/15 p-2.5 shadow-lg shadow-indigo-950/30">
                                 <LayoutDashboard className="h-6 w-6 md:h-7 md:w-7 text-indigo-400" />
                             </div>
                             <div className="flex flex-col min-w-0">
@@ -582,7 +583,7 @@ export const Dashboard: React.FC = () => {
                     </div>
 
                     {/* Header Controls */}
-                    <div className="flex flex-col sm:flex-row sm:flex-wrap xl:flex-nowrap items-stretch sm:items-center gap-3 text-sm w-full xl:w-auto">
+                    <div className="flex w-full flex-col items-stretch gap-3 text-sm sm:flex-row sm:flex-wrap sm:items-center xl:w-auto xl:flex-nowrap">
 
                         {/* Exposure Pills */}
                         <div className="grid grid-cols-2 items-stretch gap-2 w-full sm:grid-cols-[minmax(150px,auto)_minmax(132px,1fr)_minmax(132px,1fr)] xl:w-auto">
@@ -590,7 +591,7 @@ export const Dashboard: React.FC = () => {
                                 <FxExposureWidget vitals={vitals} periodLabel={vitals?.periodLabel ?? "YTD"} />
                             </div>
                             <div
-                                className="flex min-h-[68px] min-w-[132px] bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-3 py-2 rounded-xl border border-emerald-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-emerald-500/5 transition-all hover:scale-[1.02] hover:border-emerald-500/40"
+                                className="flex min-h-[68px] min-w-0 flex-col justify-center rounded-xl border border-emerald-500/20 bg-gradient-to-br from-emerald-500/10 to-emerald-900/20 px-3 py-2 shadow-lg shadow-emerald-500/5 backdrop-blur-md transition-colors hover:border-emerald-500/40 sm:min-w-[132px]"
                                 title="Cost-aware current long exposure as a share of estimated net NAV, versus January starting exposure"
                             >
                                 <p className="text-[9px] uppercase tracking-wider text-emerald-500/70 font-bold mb-0.5">Long Book</p>
@@ -603,7 +604,7 @@ export const Dashboard: React.FC = () => {
                                 </p>
                             </div>
                             <div
-                                className="flex min-h-[68px] min-w-[132px] bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-3 py-2 rounded-xl border border-rose-500/20 backdrop-blur-md flex-col justify-center shadow-lg shadow-rose-500/5 transition-all hover:scale-[1.02] hover:border-rose-500/40"
+                                className="flex min-h-[68px] min-w-0 flex-col justify-center rounded-xl border border-rose-500/20 bg-gradient-to-br from-rose-500/10 to-rose-900/20 px-3 py-2 shadow-lg shadow-rose-500/5 backdrop-blur-md transition-colors hover:border-rose-500/40 sm:min-w-[132px]"
                                 title="Cost-aware current short exposure as a share of estimated net NAV, versus January starting exposure"
                             >
                                 <p className="text-[9px] uppercase tracking-wider text-rose-500/70 font-bold mb-0.5">Short Book</p>
@@ -652,9 +653,9 @@ export const Dashboard: React.FC = () => {
 
 
                         {/* Cost Tier Toggle & Refresh Wrapper */}
-                        <div className="flex w-full sm:w-auto items-center gap-3">
+                        <div className="grid w-full grid-cols-[44px_minmax(0,1fr)] items-center gap-2 sm:flex sm:w-auto sm:gap-3">
 
-                            <div className="flex flex-1 sm:flex-none items-center rounded-lg border border-white/10 bg-white/[0.04] p-1 h-[40px] min-w-0">
+                            <div className="col-span-2 flex h-11 min-w-0 w-full items-center rounded-xl border border-white/10 bg-white/[0.04] p-1 sm:col-span-1 sm:w-auto sm:flex-none">
                                 <CircleDollarSign className="h-4 w-4 text-amber-400 mx-2 hidden sm:block" />
                                 {COST_TIER_OPTIONS.map(option => {
                                     const active = costTier === option.value;
@@ -671,7 +672,7 @@ export const Dashboard: React.FC = () => {
                                             aria-pressed={active}
                                             aria-label={option.label}
                                             className={cn(
-                                                "group h-8 flex-1 sm:flex-none px-2 sm:px-2.5 rounded-md text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.08em] transition-colors whitespace-nowrap",
+                                                "group h-9 flex-1 sm:flex-none px-2 sm:px-2.5 rounded-lg text-[10px] sm:text-[11px] font-bold uppercase tracking-[0.08em] transition-colors whitespace-nowrap",
                                                 "inline-flex items-center justify-center gap-1.5",
                                                 active
                                                     ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
@@ -708,22 +709,23 @@ export const Dashboard: React.FC = () => {
                                         }
                                     }).finally(() => setIsSwitchingTier(false));
                                 }}
-                                className="bg-white/5 hover:bg-white/10 w-[40px] h-[40px] rounded-lg border border-white/10 transition-colors flex items-center justify-center shrink-0"
+                                className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 transition-colors hover:bg-white/10"
                                 title="Force Refresh Data"
+                                aria-label="Refresh dashboard data"
                             >
                                 <RefreshCw className={cn("h-4 w-4 text-emerald-400", isSwitchingTier ? "animate-spin" : "")} />
                             </button>
                             <a
                                 href="/dashboard/brain"
-                                className="bg-white/5 hover:bg-white/10 h-[40px] rounded-lg border border-white/10 transition-colors inline-flex items-center justify-center gap-2 px-3 shrink-0 text-[11px] font-bold uppercase tracking-[0.08em] text-gray-300"
+                                className="inline-flex h-11 shrink-0 items-center justify-center gap-2 rounded-xl border border-violet-400/15 bg-violet-500/[0.07] px-3.5 text-[11px] font-bold uppercase tracking-[0.08em] text-gray-200 transition-colors hover:border-violet-400/25 hover:bg-violet-500/[0.12]"
                                 title="Open Investment Brain"
                             >
                                 <BrainCircuit className="h-4 w-4 text-violet-300" />
-                                <span className="hidden md:inline">Brain</span>
+                                <span>Brain</span>
                             </a>
                         </div>
                     </div>
-                </div>
+                </header>
 
                 {refreshError && (
                     <div className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3">
