@@ -574,7 +574,7 @@ const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: 
     <button
         {...props}
         className={cn(
-            'inline-flex min-h-9 items-center justify-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors disabled:cursor-not-allowed disabled:border-white/[0.08] disabled:bg-white/[0.025] disabled:text-slate-600',
+            'inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] transition-colors disabled:cursor-not-allowed disabled:border-white/[0.08] disabled:bg-white/[0.025] disabled:text-slate-600 sm:min-h-9',
             tone === 'primary' && 'border-emerald-500/35 bg-emerald-500/15 text-emerald-100 hover:bg-emerald-500/25',
             tone === 'success' && 'border-cyan-500/30 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20',
             tone === 'quiet' && 'border-white/10 bg-white/[0.035] text-slate-300 hover:bg-white/[0.07]',
@@ -1235,25 +1235,26 @@ export const InvestmentBrainChat: React.FC = () => {
     };
 
     return (
-        <div className="min-h-screen bg-[#06080d] text-foreground">
-            <div className="h-px bg-gradient-to-r from-emerald-400 via-cyan-400 to-violet-400" />
-            <main className="mx-auto flex min-h-screen max-w-[1500px] flex-col px-4 py-4 sm:px-6 lg:px-8">
-                <header className="flex flex-col gap-4 border-b border-white/[0.07] pb-4 md:flex-row md:items-center md:justify-between">
+        <div className="relative min-h-[100dvh] overflow-x-hidden bg-[#06080d] text-foreground">
+            <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_8%_5%,rgba(16,185,129,0.08),transparent_26%),radial-gradient(circle_at_92%_8%,rgba(139,92,246,0.07),transparent_24%)]" />
+            <div className="relative z-10 h-px bg-gradient-to-r from-emerald-400 via-cyan-400 to-violet-400" />
+            <main className="relative z-10 mx-auto flex min-h-[calc(100dvh-1px)] max-w-[1500px] flex-col px-3 py-3 sm:px-6 sm:py-4 lg:px-8">
+                <header className="flex flex-col gap-4 rounded-xl border border-white/[0.07] bg-black/10 p-3.5 shadow-xl shadow-black/10 backdrop-blur-md sm:p-4 md:flex-row md:items-center md:justify-between">
                     <div className="min-w-0">
                         <a href="/" className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 transition-colors hover:text-slate-300">
                             <ArrowLeft className="h-3.5 w-3.5" /> Dashboard
                         </a>
-                        <div className="mt-3 flex items-center gap-3">
-                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-emerald-400/20 bg-emerald-400/10">
+                        <div className="mt-2.5 flex items-center gap-3">
+                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-emerald-400/20 bg-emerald-400/10 shadow-lg shadow-emerald-950/30">
                                 <BrainCircuit className="h-5 w-5 text-emerald-300" />
                             </div>
                             <div className="min-w-0">
-                                <h1 className="text-2xl font-bold text-white">Investment Brain</h1>
-                                <p className="mt-0.5 text-sm text-slate-400">Ask, inspect the evidence, and keep the thread moving.</p>
+                                <h1 className="bg-gradient-to-r from-white via-white to-slate-400 bg-clip-text text-[1.65rem] font-bold leading-tight text-transparent sm:text-3xl">Investment Brain</h1>
+                                <p className="mt-0.5 text-[13px] leading-5 text-slate-400 sm:text-sm">Ask, inspect the evidence, and keep the thread moving.</p>
                             </div>
                         </div>
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex w-full flex-wrap items-center gap-2 md:w-auto md:justify-end">
                         {conversationAutosave?.webViewLink ? (
                             <a
                                 href={conversationAutosave.webViewLink}
@@ -1288,18 +1289,18 @@ export const InvestmentBrainChat: React.FC = () => {
                                 <span className="hidden border-l border-current/20 pl-2 sm:inline">{formatPercent(displayedExposure?.gross)} {portfolioContext.marketDataAvailable ? 'gross' : 'target gross'}</span>
                             </span>
                         )}
-                        <span className={cn('inline-flex min-h-8 items-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.1em]', ready ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300')}>
+                        <span className={cn('inline-flex min-h-10 flex-1 items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] sm:min-h-9 sm:flex-none', ready ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300')}>
                             <span className={cn('h-1.5 w-1.5 rounded-full', ready ? 'bg-emerald-300' : 'bg-amber-300')} />
                             {ready ? libraryState : backendState === 'checking' ? 'Checking Brain' : 'Backend offline'}
                         </span>
-                        <Button type="button" onClick={resetThread} disabled={isAsking}>
+                        <Button type="button" onClick={resetThread} disabled={isAsking} className="flex-1 sm:flex-none">
                             <Plus className="h-3.5 w-3.5" /> New thread
                         </Button>
                     </div>
                 </header>
 
-                <div className="grid flex-1 grid-cols-1 items-start gap-5 py-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-                    <section className="flex min-h-[560px] flex-col rounded-lg border border-white/[0.08] bg-[#090e17]/95">
+                <div className="grid min-h-0 flex-1 grid-cols-1 items-start gap-4 py-4 sm:gap-5 sm:py-5 xl:grid-cols-[minmax(0,1fr)_350px]">
+                    <section className="flex h-[calc(100dvh-220px)] min-h-[560px] flex-col overflow-hidden rounded-xl border border-white/[0.09] bg-[#090e17]/95 shadow-2xl shadow-black/20 sm:h-[calc(100dvh-180px)] xl:sticky xl:top-5 xl:h-[calc(100dvh-148px)] xl:max-h-[920px] xl:min-h-[640px]">
                         <div className="flex items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3 sm:px-5">
                             <div className="flex min-w-0 items-center gap-2">
                                 <MessageSquare className="h-4 w-4 text-emerald-300" />
@@ -1331,20 +1332,20 @@ export const InvestmentBrainChat: React.FC = () => {
                             </div>
                         </div>
 
-                        <div ref={outputRef} className="flex-1 space-y-5 overflow-auto px-4 py-5 sm:px-7">
+                        <div ref={outputRef} className="min-h-0 flex-1 space-y-5 overflow-auto px-4 py-5 sm:px-7">
                             {!thread.length && !isAsking && (
-                                <div className="mx-auto flex max-w-2xl flex-col items-start py-12 sm:py-20">
+                                <div className="mx-auto flex max-w-2xl flex-col items-start py-7 sm:py-12 lg:py-16">
                                     <span className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-300"><Sparkles className="h-3.5 w-3.5" /> Evidence-first research</span>
                                     <h2 className="mt-4 text-2xl font-bold leading-tight text-white sm:text-3xl">A second mind for the work that compounds.</h2>
                                     <p className="mt-3 max-w-xl text-sm leading-6 text-slate-400">The Brain combines your current portfolio, Yahoo-adjusted market momentum, and Drive research retrieved by meaning. Every answer keeps its market date and research sources attached.</p>
-                                    <div className="mt-6 flex flex-wrap gap-2">
+                                    <div className="mt-6 grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
                                         {[
                                             'Where is momentum strongest and weakest in my current book?',
                                             'Which holdings create the most concentration risk today?',
                                             'Where does value accrue in AI infrastructure?',
                                             'What is the strongest bear case?',
                                         ].map(suggestion => (
-                                            <button key={suggestion} type="button" onClick={() => setDraft(suggestion)} className="rounded-md border border-white/[0.09] bg-white/[0.025] px-3 py-2 text-left text-xs text-slate-300 transition-colors hover:border-emerald-500/30 hover:bg-emerald-500/[0.06] hover:text-white">
+                                            <button key={suggestion} type="button" onClick={() => setDraft(suggestion)} className="min-h-11 rounded-lg border border-white/[0.09] bg-white/[0.025] px-3 py-2.5 text-left text-xs leading-5 text-slate-300 transition-colors hover:border-emerald-500/30 hover:bg-emerald-500/[0.06] hover:text-white">
                                                 {suggestion}
                                             </button>
                                         ))}
@@ -1355,7 +1356,7 @@ export const InvestmentBrainChat: React.FC = () => {
                             {thread.map(message => (
                                 <article key={message.id} className={cn('max-w-3xl', message.role === 'user' ? 'ml-auto' : 'mr-auto')}>
                                     <div className={cn('rounded-lg border px-4 py-3.5 sm:px-5', message.role === 'user' ? 'border-sky-500/20 bg-sky-500/[0.08]' : 'border-white/[0.08] bg-white/[0.025]')}>
-                                        <div className="mb-3 flex items-center justify-between gap-3">
+                                        <div className="mb-3 flex flex-col items-start justify-between gap-1.5 sm:flex-row sm:items-center sm:gap-3">
                                             <span className={cn('text-[10px] font-bold uppercase tracking-[0.12em]', message.role === 'user' ? 'text-sky-300' : 'text-emerald-300')}>
                                                 {message.role === 'user' ? 'You' : 'Investment Brain'}
                                             </span>
@@ -1400,8 +1401,8 @@ export const InvestmentBrainChat: React.FC = () => {
                             )}
                         </div>
 
-                        <div ref={composerRef} className="border-t border-white/[0.07] bg-[#080d15] p-3 sm:p-4">
-                            <div className="rounded-lg border border-white/[0.1] bg-white/[0.025] p-2 focus-within:border-emerald-500/35">
+                        <div ref={composerRef} className="border-t border-white/[0.07] bg-[#080d15]/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-xl sm:p-4">
+                            <div className="rounded-xl border border-white/[0.1] bg-white/[0.025] p-2 focus-within:border-emerald-500/35 focus-within:bg-white/[0.035]">
                                 <div className="flex gap-2">
                                     <textarea
                                         value={draft}
@@ -1417,12 +1418,12 @@ export const InvestmentBrainChat: React.FC = () => {
                                     </Button>
                                 </div>
                             </div>
-                            <p className="mt-2 px-1 text-[10px] text-slate-600">Enter to send · Shift + Enter for a new line · sources are attached to every answer</p>
+                            <p className="mt-2 hidden px-1 text-[10px] text-slate-600 sm:block">Enter to send · Shift + Enter for a new line · sources are attached to every answer</p>
                         </div>
                     </section>
 
-                    <aside className="space-y-3">
-                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
+                    <aside className="grid grid-cols-1 items-start gap-3 md:grid-cols-2 xl:block xl:space-y-3">
+                        <section className="rounded-xl border border-white/[0.08] bg-[#090e17]/95 p-4 shadow-xl shadow-black/10">
                             <div className="flex items-center justify-between gap-3">
                                 <div className="flex items-center gap-2"><History className="h-4 w-4 text-emerald-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Saved threads</h2></div>
                                 <Button type="button" onClick={() => void loadSavedThreads()} disabled={!ready || isSavedThreadsLoading} className="min-h-7 px-2" aria-label="Refresh saved Brain threads">{isSavedThreadsLoading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}</Button>
@@ -1446,7 +1447,7 @@ export const InvestmentBrainChat: React.FC = () => {
                             )}
                         </section>
 
-                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
+                        <section className="rounded-xl border border-white/[0.08] bg-[#090e17]/95 p-4 shadow-xl shadow-black/10 md:col-span-2 xl:col-auto">
                             <div className="flex items-center justify-between gap-3">
                                 <div className="flex items-center gap-2"><Library className="h-4 w-4 text-cyan-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Library</h2></div>
                                 <Button type="button" onClick={() => void refresh()} className="min-h-7 px-2" aria-label="Refresh library status"><RefreshCw className="h-3.5 w-3.5" /></Button>
@@ -1500,7 +1501,7 @@ export const InvestmentBrainChat: React.FC = () => {
                             </div>
                         </section>
 
-                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
+                        <section className="rounded-xl border border-white/[0.08] bg-[#090e17]/95 p-4 shadow-xl shadow-black/10">
                             <div className="flex items-center gap-2"><Search className="h-4 w-4 text-sky-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Search sources</h2></div>
                             <div className="mt-3 flex gap-2">
                                 <input value={libraryQuery} onChange={event => setLibraryQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void searchLibrary(); }} placeholder="Search your library" className="h-9 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-sky-500/35" />
@@ -1519,7 +1520,7 @@ export const InvestmentBrainChat: React.FC = () => {
                             )}
                         </section>
 
-                        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
+                        <section className="rounded-xl border border-white/[0.08] bg-[#090e17]/95 p-4 shadow-xl shadow-black/10 md:col-span-2 xl:col-auto">
                             <div className="flex items-center justify-between gap-3">
                                 <div className="flex items-center gap-2"><FileSearch className="h-4 w-4 text-violet-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Official filing finder</h2></div>
                                 <span className="rounded border border-white/[0.08] px-1.5 py-1 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-500">SEC EDGAR</span>
