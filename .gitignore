@@ -1,4 +1,18 @@
-# Throwaway investigation scripts and downloaded source documents. These are
-# working files for a single question, not part of the dashboard, and one of
-# them is a 1.2 MB SEC filing that has no business in the history.
+# Throwaway investigation scripts and downloaded source documents. Working
+# files for a single question, not part of the dashboard — one is a 1.2 MB SEC
+# filing that has no business in the history.
 scratch/
+
+# Dependencies and build output
+node_modules/
+dist/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Runtime artefacts: logs, debug dumps and the local database
+*.log
+debug_risk.txt
+backend/debug_risk.txt
+backend/brain.db
