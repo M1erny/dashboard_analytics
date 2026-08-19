@@ -22,10 +22,20 @@ interface ExecutiveSummaryProps {
 // which series, and in which currency the return is measured.
 const benchmarkTitle = (source: BenchmarkSource | undefined, fallback: string) => {
     if (!source) return fallback;
-    const parts = [`${source.label} (${source.ticker}), in ${source.currency}`];
+    const parts = [`${source.label} (${source.ticker}), shown in ${source.currency}`];
+    if (source.localCurrency && source.localCurrency !== source.currency) {
+        parts.push(`quoted in ${source.localCurrency}; the ${source.currency} figure is what holding it would have returned for this book, so the pp gap is arithmetic`);
+    }
     if (source.note) parts.push(source.note);
     if (source.warning) parts.push(`⚠ ${source.warning}`);
     return parts.join(' — ');
+};
+
+/** The benchmark's return in its own currency, only when that differs from the tile's. */
+const localReading = (source: BenchmarkSource | undefined, fallback?: number | null) => {
+    if (!source?.localCurrency || source.localCurrency === source.currency) return null;
+    const value = source.localReturn ?? fallback;
+    return typeof value === 'number' ? value : null;
 };
 
 // ─── Formatters ──────────────────────────────────────────────
@@ -132,9 +142,9 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     <div className="mt-auto border-t border-white/[0.06] bg-white/[0.02]">
                     <div className="min-h-[68px] grid grid-cols-3 divide-x divide-white/[0.06]">
                         {[
-                            { label: 'SPY', value: vitals.benchmarkYtd, title: 'SPDR S&P 500 ETF, total return in USD' },
-                            { label: 'MSCI', value: vitals.msciYtd, title: benchmarkTitle(vitals.msciBenchmark, 'iShares MSCI World ETF, in USD') },
-                            { label: `🇵🇱 ${vitals.wigBenchmark?.label ?? 'WIG20'}`, value: vitals.wigYtd, title: benchmarkTitle(vitals.wigBenchmark, 'Polish equity benchmark') },
+                            { label: 'SPY', value: vitals.benchmarkYtd, local: null, localCurrency: null, title: 'SPDR S&P 500 ETF, total return in USD' },
+                            { label: 'MSCI', value: vitals.msciYtd, local: localReading(vitals.msciBenchmark, vitals.msciYtdLocal), localCurrency: vitals.msciBenchmark?.localCurrency ?? null, title: benchmarkTitle(vitals.msciBenchmark, 'iShares MSCI World ETF, in USD') },
+                            { label: `🇵🇱 ${vitals.wigBenchmark?.label ?? 'WIG20'}`, value: vitals.wigYtd, local: localReading(vitals.wigBenchmark, vitals.wigYtdLocal), localCurrency: vitals.wigBenchmark?.localCurrency ?? null, title: benchmarkTitle(vitals.wigBenchmark, 'Polish equity benchmark') },
                         ].map(b => {
                             const portfolioRet = vitals.ytdReturn ?? 0;
                             const bVal = b.value ?? 0;
@@ -151,6 +161,14 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                     )}>
                                         {delta >= 0 ? '+' : '-'}{Math.abs(delta * 100).toFixed(1)}pp
                                     </span>
+                                    {/* The benchmark's own currency, when it is not the one the
+                                        comparison is done in. Both numbers are real; only one of
+                                        them can be subtracted from a USD portfolio return. */}
+                                    {b.local !== null && b.localCurrency && (
+                                        <span className="text-[9px] font-mono text-gray-600" title={`The benchmark's own return, in ${b.localCurrency}`}>
+                                            {b.localCurrency} {fmtSigned(b.local, 1)}
+                                        </span>
+                                    )}
                                 </div>
                             );
                         })}
@@ -160,8 +178,8 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                         price index the press prints. A hover tooltip cannot say so on a phone. */}
                     <p className="border-t border-white/[0.06] px-3 py-1.5 text-center text-[9px] leading-4 text-gray-600">
                         {vitals.wigBenchmark
-                            ? `${vitals.wigBenchmark.label}: total return in ${vitals.wigBenchmark.currency}, above the WIG20 price index. SPY and MSCI in USD.`
-                            : 'SPY and MSCI in USD.'}
+                            ? `All three in ${vitals.wigBenchmark.currency} so the pp gaps compare. ${vitals.wigBenchmark.label} is a total-return tracker — its ${vitals.wigBenchmark.localCurrency ?? 'local'} reading is below it, and it runs above the WIG20 price index.`
+                            : 'Benchmark returns in the portfolio base currency.'}
                     </p>
                     </div>
                 </div>

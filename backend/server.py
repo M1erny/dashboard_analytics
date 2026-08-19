@@ -145,6 +145,11 @@ BRAIN_SEARCH_TIMEOUT_SECONDS = _env_float("BRAIN_SEARCH_TIMEOUT_SECONDS", 18.0)
 # autosave needs ~25s of that, so the writing window stays well inside the budget.
 BRAIN_ANALYSIS_TIMEOUT_SECONDS = max(5.0, min(_env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 24.0), 60.0))
 BRAIN_INDEX_TIMEOUT_SECONDS = _env_float("BRAIN_INDEX_TIMEOUT_SECONDS", 240.0)
+# The market-data fetch is the slowest thing an analysis can wait on: a cold yfinance
+# pull behind get_metrics. Unbounded, it can outlast whatever patience the host has for
+# an open connection, and the question dies with no response at all. Bounded, the worst
+# case is an answer that says the market snapshot is missing.
+BRAIN_PORTFOLIO_CONTEXT_TIMEOUT_SECONDS = max(10.0, min(_env_float("BRAIN_PORTFOLIO_CONTEXT_TIMEOUT_SECONDS", 70.0), 180.0))
 # One number for the per-file download ceiling, shared by the sync request default
 # and the coverage report, so the report never calls a file "too large" against a
 # limit the sync does not actually use.
@@ -2961,6 +2966,64 @@ def _brain_market_data_intent(text: str) -> dict[str, Any]:
     return {"requested": bool(reasons), "reasons": reasons, "explicitlyDisabled": False}
 
 
+LIVE_MARKET_DATA_GUIDANCE = """Use the live portfolio context whenever the question concerns holdings, sizing, momentum, volume, concentration, exposure, contribution, portfolio risk, or potential action. Always distinguish target weight from current drifted weight. A positive underlying return helps a long but hurts a short. Position-adjusted momentum is already side-corrected: higher values help the book and lower values hurt it. When ranking momentum, use the supplied pre-ranked position-adjusted lists across both sides; never classify a rising adverse short as a leader. For every short, copy the signed BOOK EFFECT rather than the underlying stock return when discussing portfolio momentum. Keep raw calendar-YTD security return, side-adjusted calendar-YTD return, realized YTD contribution, and since-rebalance contribution separate. A 'YTD portfolio winner/detractor' must be ranked by realized YTD contribution. If the question asks to distinguish performance measures, explicitly report the MANDATORY RANKING FACTS before interpreting technical signals. Keep NAV weight and share of gross exposure as separate denominators. Completed-session volume only is used in rolling volume diagnostics. Treat the volume/momentum screen as a review queue, not a trade instruction: do not recommend selling or covering solely from technical signals; require thesis/valuation/catalyst evidence, or explicitly label the conclusion 'technical review candidate'. Describe market data as live portfolio context as of its stated date, not as a numbered document citation. If fresh=false or the as-of date is unknown, explicitly warn that the market snapshot may be stale."""
+
+def _portfolio_context_title(market_data_available: bool, market_data_error: str | None) -> str:
+    """How the portfolio block is introduced to the model."""
+    if market_data_available:
+        return "Authoritative live portfolio and market context from the dashboard risk engine"
+    if market_data_error:
+        return "Authoritative portfolio composition from the dated configuration (the market-data fetch FAILED)"
+    return "Authoritative portfolio composition from the dated configuration (market data not fetched)"
+
+
+def _market_data_guidance(market_data_available: bool, market_data_error: str | None) -> str:
+    """What the model is told about the market snapshot.
+
+    Three states, not two. A fetch that was never asked for and a fetch that was
+    asked for and failed produce the same empty context, and describing both as
+    "intentionally not fetched" makes the model report a broken pipeline as a
+    design decision — which is exactly what it did.
+    """
+    if market_data_available:
+        return LIVE_MARKET_DATA_GUIDANCE
+    if market_data_error:
+        return (
+            "LIVE MARKET DATA WAS REQUESTED FOR THIS QUESTION AND THE FETCH FAILED: "
+            f"{market_data_error}. Open the answer by saying plainly that current prices, drifted weights, "
+            "momentum, volume, volatility and realised performance are UNAVAILABLE because the fetch failed — "
+            "not because they were left out. Answer from target composition and research only, and do not "
+            "invent any of the missing figures."
+        )
+    return (
+        "Live market data was intentionally not fetched because this question did not require it. "
+        "Use target composition when relevant, but do not invent current weights, prices, momentum, "
+        "volume, performance, contribution, or risk."
+    )
+
+
+def _index_gap_reason(embedding_state: dict[str, Any] | None) -> str | None:
+    """Why retrieval came back empty, when the index itself is the reason."""
+    state = embedding_state or {}
+    if "total" not in state:
+        # No stats came back. "We do not know" is not the same claim as "empty",
+        # and only one of them is safe to print under an answer.
+        return None
+    total = int(_finite_number(state.get("total")) or 0)
+    embedded = int(_finite_number(state.get("embedded")) or 0)
+    missing = int(_finite_number(state.get("missing")) or 0)
+    if not total:
+        return "the brain holds no indexed passages at all"
+    if not embedded:
+        return f"none of the {total:,} indexed passages are embedded, so semantic search had nothing to search"
+    if missing:
+        return (
+            f"{missing:,} of {total:,} passages are still unembedded, so semantic search covered only part "
+            "of the library"
+        )
+    return None
+
+
 def _build_brain_portfolio_outline(portfolio: str = "main") -> dict[str, Any]:
     portfolio_config = risk.get_effective_portfolio_config(portfolio) if risk else {}
     positions = []
@@ -3744,6 +3807,19 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         )
         weak_semantic_fallback = len(context_items)
 
+    # Retrieval returning literally nothing is ambiguous: the library may hold no
+    # answer, or it may hold no embeddings. Those need opposite actions from the owner
+    # — write the missing research, or press Embed — so ask the store which it was
+    # rather than leaving "no sources" to be read as "nothing relevant exists".
+    index_gap: str | None = None
+    if not context_items and hasattr(store, "embedding_stats"):
+        try:
+            embedding_state = await _run_brain_step("Embedding coverage", store.embedding_stats, timeout=8) or {}
+            index_gap = _index_gap_reason(embedding_state)
+        except Exception:
+            # A diagnosis is a nicety; failing to get one must not fail the answer.
+            index_gap = None
+
     step_started = time.perf_counter()
     deep_sources_task = asyncio.create_task(_run_brain_step(
         "Deep source expansion",
@@ -3767,24 +3843,34 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     full_document_context = await full_document_context_task
     timings["deepSourceExpansionMs"] = round((time.perf_counter() - step_started) * 1000, 1)
 
+    market_data_error: str | None = None
     if portfolio_context_task is not None:
         try:
-            portfolio_context = await portfolio_context_task
-        except Exception as exc:
-            timings["portfolioContextError"] = _clean_public_error(exc)[:240]
+            portfolio_context = await asyncio.wait_for(
+                portfolio_context_task,
+                timeout=BRAIN_PORTFOLIO_CONTEXT_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            portfolio_context_task.cancel()
+            market_data_error = (
+                f"the market-data fetch did not finish within {int(BRAIN_PORTFOLIO_CONTEXT_TIMEOUT_SECONDS)}s"
+            )
+            timings["portfolioContextError"] = market_data_error
             portfolio_context = _build_brain_portfolio_outline("main")
+        except Exception as exc:
+            market_data_error = _clean_public_error(exc)[:240]
+            timings["portfolioContextError"] = market_data_error
+            portfolio_context = _build_brain_portfolio_outline("main")
+        if market_data_error is None and not portfolio_context.get("marketDataAvailable"):
+            # The fetch returned, but without a usable snapshot. That is still a failure
+            # to answer the question that was asked, not a decision not to ask it.
+            market_data_error = "the market-data fetch returned no usable snapshot"
+            timings["portfolioContextError"] = market_data_error
     timings["portfolioContextMs"] = round((time.perf_counter() - portfolio_started) * 1000, 1)
 
-    portfolio_context_title = (
-        "Authoritative live portfolio and market context from the dashboard risk engine"
-        if portfolio_context.get("marketDataAvailable")
-        else "Authoritative portfolio composition from the dated configuration (market data not fetched)"
-    )
-    market_data_guidance = (
-        """Use the live portfolio context whenever the question concerns holdings, sizing, momentum, volume, concentration, exposure, contribution, portfolio risk, or potential action. Always distinguish target weight from current drifted weight. A positive underlying return helps a long but hurts a short. Position-adjusted momentum is already side-corrected: higher values help the book and lower values hurt it. When ranking momentum, use the supplied pre-ranked position-adjusted lists across both sides; never classify a rising adverse short as a leader. For every short, copy the signed BOOK EFFECT rather than the underlying stock return when discussing portfolio momentum. Keep raw calendar-YTD security return, side-adjusted calendar-YTD return, realized YTD contribution, and since-rebalance contribution separate. A 'YTD portfolio winner/detractor' must be ranked by realized YTD contribution. If the question asks to distinguish performance measures, explicitly report the MANDATORY RANKING FACTS before interpreting technical signals. Keep NAV weight and share of gross exposure as separate denominators. Completed-session volume only is used in rolling volume diagnostics. Treat the volume/momentum screen as a review queue, not a trade instruction: do not recommend selling or covering solely from technical signals; require thesis/valuation/catalyst evidence, or explicitly label the conclusion 'technical review candidate'. Describe market data as live portfolio context as of its stated date, not as a numbered document citation. If fresh=false or the as-of date is unknown, explicitly warn that the market snapshot may be stale."""
-        if portfolio_context.get("marketDataAvailable")
-        else "Live market data was intentionally not fetched because this question did not require it. Use target composition when relevant, but do not invent current weights, prices, momentum, volume, performance, contribution, or risk."
-    )
+    market_data_available = bool(portfolio_context.get("marketDataAvailable"))
+    portfolio_context_title = _portfolio_context_title(market_data_available, market_data_error)
+    market_data_guidance = _market_data_guidance(market_data_available, market_data_error)
     weak_evidence_guidance = (
         "\nEVIDENCE WARNING: nothing in the brain cleared the relevance floor for this question and exact search found nothing either. "
         "Every numbered passage below is only the closest available material, not evidence. Open the answer by saying plainly that the brain "
@@ -3792,6 +3878,12 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
         if weak_semantic_fallback
         else ""
     )
+    if index_gap:
+        weak_evidence_guidance += (
+            f"\nINDEX WARNING: no passage was retrieved for this question, and {index_gap}. "
+            "Say so explicitly rather than concluding that the research library has nothing on the subject, "
+            "and name the difference: an empty result here is a gap in the index, not a gap in the evidence.\n"
+        )
 
     prompt = f"""
 Use the provided research context to answer the investment question. Separate evidence from inference.
@@ -3857,6 +3949,8 @@ Full-document sources are investor-selected primary context. They contain the fu
         "marketDataRequested": market_data_intent.get("requested", False),
         "marketDataReasons": market_data_intent.get("reasons", []),
         "marketDataAvailable": portfolio_context.get("marketDataAvailable", False),
+        "marketDataError": market_data_error,
+        "indexGap": index_gap,
     }
 
     step_started = time.perf_counter()
@@ -4104,6 +4198,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "ytdReturnPln": to_float(metrics.get('YTD_Return_PLN')),
                 "wigYtd": to_float(metrics.get('WIG_YTD')),
                 "msciYtd": to_float(metrics.get('MSCI_YTD')),
+                "wigYtdLocal": to_float(metrics.get('WIG_YTD_Local')),
+                "msciYtdLocal": to_float(metrics.get('MSCI_YTD_Local')),
                 "wigBenchmark": metrics.get('WIG_Benchmark'),
                 "msciBenchmark": metrics.get('MSCI_Benchmark'),
                 "ytdLongsContrib": to_float(metrics.get('YTD_Longs_Contrib')),

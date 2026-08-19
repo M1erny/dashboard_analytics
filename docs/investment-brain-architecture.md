@@ -631,6 +631,45 @@ GET    /api/brain/search
 5. Add why-I-liked / why-I-passed / why-I-sold company memory.
 6. Add backups and export tools.
 
+## Missing Inputs Must Be Named
+
+An answer built without the market snapshot, or with nothing retrieved, looks
+exactly like an answer built on everything. The model reports what the prompt
+tells it, so the prompt has to be true about what it is missing.
+
+**Market data has three states, not two.** A fetch that was never requested and a
+fetch that was requested and failed both produce an empty snapshot. The prompt
+used to describe both as *"intentionally not fetched because this question did not
+require it"* — so a question that explicitly asked about performance and risk came
+back reporting that live data "was not fetched or provided in the configuration",
+presenting a broken pipeline as a design decision. `_market_data_guidance` now
+distinguishes them, and a failed fetch is stated as a failure, with its reason,
+and forbidden from being filled in with invention.
+
+**The fetch is time-boxed.** `BRAIN_PORTFOLIO_CONTEXT_TIMEOUT_SECONDS` (70s by
+default) bounds the slowest thing an analysis waits on — a cold yfinance pull
+behind `get_metrics`. Unbounded, it could outlast whatever patience the host has
+for an open connection, and the question died with no response at all. Bounded,
+the worst case is an answer that says the snapshot is missing. The default sits
+below the client's 90-second ask timeout on purpose, and a test pins that.
+
+**An empty retrieval is diagnosed, not just reported.** No passages returned means
+either the library holds no answer or the library holds no embeddings, and those
+need opposite actions from the owner — write the research, or press Embed.
+`_index_gap_reason` asks the store which it was. When stats are unavailable it
+returns nothing rather than claiming the library is empty: not knowing is a
+different statement from knowing it is empty, and only one of them is safe to
+print under an answer.
+
+All three surface in the UI as a caveat above the answer and in `retrieval`
+(`marketDataError`, `indexGap`), so the gap is visible without reading the prose.
+
+`backend/test_brain_context_gaps.py` pins the three-way split, the diagnosis, the
+"unknown is not empty" rule, and the timeout bound. It also pins that the reported
+question — *"Analyze my portfolio performance, construction, risk etc like munger or
+buffet"* — does request market data, so that an empty snapshot for it can only ever
+be a failed fetch and never a missed intent.
+
 ## Principle
 
 The brain should never be just a chatbot. It should be a durable investing memory system:

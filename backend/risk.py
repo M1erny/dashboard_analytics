@@ -547,26 +547,26 @@ def normalize_to_base_currency(stock_df, fx_df, portfolio_name="main"):
     return normalized_df
 
 
-def describe_benchmark(ticker, currency_used):
-    """What a benchmark series is, in the words the dashboard should use for it."""
+def describe_benchmark(ticker):
+    """What a benchmark series is, in the words the dashboard should use for it.
+
+    ``currency`` is the currency of the headline figure and is always the base
+    currency, because the headline is subtracted from a base-currency portfolio
+    return. ``localCurrency`` is what the benchmark is actually quoted in, and
+    ``localReturn`` is filled in by the caller that computes it.
+    """
     described = BENCHMARK_DESCRIPTIONS.get(ticker, {})
     quote_currency = BENCHMARK_QUOTE_CURRENCY.get(ticker, BASE_CURRENCY)
-    info = {
+    return {
         'ticker': ticker,
         'label': described.get('label') or ticker,
         'basis': described.get('basis', 'price'),
         'quoteCurrency': quote_currency,
-        'currency': currency_used,
+        'currency': BASE_CURRENCY,
+        'localCurrency': quote_currency,
+        'localReturn': None,
         'note': described.get('note', ''),
     }
-    if currency_used != quote_currency:
-        # The only way to get here is a missing pre-normalisation frame. Say so
-        # rather than printing an FX-contaminated number under a clean label.
-        info['warning'] = (
-            f"Returned in {currency_used} because the original-currency price frame "
-            f"was unavailable; it therefore includes the {quote_currency}/{currency_used} move."
-        )
-    return info
 
 
 def benchmark_quote_returns(returns_df, local_returns_df, ticker):
@@ -595,6 +595,87 @@ def benchmark_quote_returns(returns_df, local_returns_df, ticker):
         return returns_df[ticker], BASE_CURRENCY if quote_currency != BASE_CURRENCY else quote_currency
 
     return None, quote_currency
+
+
+def benchmark_base_currency_returns(returns_df, local_returns_df, fx_df, ticker):
+    """Benchmark returns expressed in BASE_CURRENCY.
+
+    The strip prints a difference against the portfolio, and a difference is only
+    arithmetic when both sides are measured in one currency. Two readings are
+    therefore needed, and they answer different questions:
+
+    - quote currency  - what did the index do?
+    - base currency   - what would holding it have done for this book?
+
+    Do not infer the base reading from whichever frame happens to carry the
+    ticker. A benchmark that is also a position is already converted there; one
+    that is not stays in its own currency, and the difference is invisible. The
+    conversion is applied explicitly instead.
+
+    Returns ``(series, reason_unavailable)``.
+    """
+    quote_currency = BENCHMARK_QUOTE_CURRENCY.get(ticker, BASE_CURRENCY)
+    if quote_currency == BASE_CURRENCY:
+        if ticker in returns_df.columns:
+            return returns_df[ticker], None
+        return None, 'no price data'
+
+    local, used_currency = benchmark_quote_returns(returns_df, local_returns_df, ticker)
+    if local is None:
+        return None, 'no price data'
+    if used_currency == BASE_CURRENCY:
+        # The quote-currency series was unavailable and this one is already converted.
+        return local, None
+
+    fx_ticker = f"{quote_currency}{BASE_CURRENCY}=X"
+    if fx_df is None or fx_ticker not in fx_df.columns:
+        return None, f'no {fx_ticker} rate'
+
+    local = local.dropna()
+    if local.empty:
+        return None, 'no price data'
+    index = local.index
+    if hasattr(index, 'tz') and index.tz is not None:
+        local = local.copy()
+        local.index = index.tz_localize(None)
+    fx_series = fx_df[fx_ticker]
+    fx_index = fx_series.index
+    if hasattr(fx_index, 'tz') and fx_index.tz is not None:
+        fx_series = fx_series.copy()
+        fx_series.index = fx_index.tz_localize(None)
+    fx_returns = (
+        fx_series.reindex(local.index.union(fx_series.index)).ffill().pct_change().reindex(local.index)
+    )
+    return (1 + local) * (1 + fx_returns.fillna(0.0)) - 1, None
+
+
+def _benchmark_readings(returns_df, local_returns_df, fx_df, ticker, start):
+    """(base-currency return, quote-currency return, description) for one benchmark."""
+    quote_currency = BENCHMARK_QUOTE_CURRENCY.get(ticker, BASE_CURRENCY)
+    description = describe_benchmark(ticker)
+    warnings = []
+
+    base_series, unavailable = benchmark_base_currency_returns(returns_df, local_returns_df, fx_df, ticker)
+    base_return = _compound_since(base_series, start)
+
+    local_series, used_currency = benchmark_quote_returns(returns_df, local_returns_df, ticker)
+    # A series that had to fall back to the converted frame is not a local reading,
+    # whatever its label says, so report nothing rather than the wrong thing.
+    local_return = _compound_since(local_series, start) if used_currency == quote_currency else None
+    description['localReturn'] = local_return
+
+    if quote_currency != BASE_CURRENCY and local_return is None:
+        warnings.append(
+            f"The {quote_currency} reading is unavailable; only the {BASE_CURRENCY} figure is shown."
+        )
+    if base_return is None:
+        base_return = 0
+        warnings.append(
+            f"No {BASE_CURRENCY} reading for {ticker} in the year-to-date window ({unavailable or 'no data'})."
+        )
+    if warnings:
+        description['warning'] = ' '.join(warnings)
+    return base_return, local_return, description
 
 
 def _compound_since(series, start):
@@ -1777,22 +1858,17 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             print(f"Error calculating PLN return: {e}")
             ytd_return_pln = ytd_return
         
-        # WIG YTD — in PLN, the currency WIG20 is quoted in.
-        wig_ret, wig_currency = benchmark_quote_returns(returns_df, local_returns_df, BENCHMARK_WIG)
-        wig_ytd = _compound_since(wig_ret, ytd_calc_start)
-        wig_benchmark = describe_benchmark(BENCHMARK_WIG, wig_currency)
-        if wig_ytd is None:
-            wig_ytd = 0
-            wig_benchmark['warning'] = f"No price data for {BENCHMARK_WIG} in the year-to-date window."
+        # Two readings per benchmark. The base-currency one is the headline because
+        # the tile subtracts it from a base-currency portfolio return, and a
+        # difference is only arithmetic in one currency. The quote-currency one is
+        # what the index itself did, and it is carried alongside.
+        wig_ytd, wig_ytd_local, wig_benchmark = _benchmark_readings(
+            returns_df, local_returns_df, fx_df, BENCHMARK_WIG, ytd_calc_start
+        )
+        msci_ytd, msci_ytd_local, msci_benchmark = _benchmark_readings(
+            returns_df, local_returns_df, fx_df, BENCHMARK_MSCI, ytd_calc_start
+        )
 
-        # MSCI World YTD
-        msci_ret, msci_currency = benchmark_quote_returns(returns_df, local_returns_df, BENCHMARK_MSCI)
-        msci_ytd = _compound_since(msci_ret, ytd_calc_start)
-        msci_benchmark = describe_benchmark(BENCHMARK_MSCI, msci_currency)
-        if msci_ytd is None:
-            msci_ytd = 0
-            msci_benchmark['warning'] = f"No price data for {BENCHMARK_MSCI} in the year-to-date window."
-            
         # Longs/Shorts Contribution was already accumulated efficiently in the main YTD loop above.
         ytd_historical_diagnostics = build_historical_diagnostics(
             portfolio_val_series,
@@ -1829,8 +1905,10 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_return_pln = 0.0
         wig_ytd = 0.0
         msci_ytd = 0.0
-        wig_benchmark = describe_benchmark(BENCHMARK_WIG, BENCHMARK_QUOTE_CURRENCY.get(BENCHMARK_WIG, BASE_CURRENCY))
-        msci_benchmark = describe_benchmark(BENCHMARK_MSCI, BENCHMARK_QUOTE_CURRENCY.get(BENCHMARK_MSCI, BASE_CURRENCY))
+        wig_ytd_local = None
+        msci_ytd_local = None
+        wig_benchmark = describe_benchmark(BENCHMARK_WIG)
+        msci_benchmark = describe_benchmark(BENCHMARK_MSCI)
         ytd_longs_contrib = 0.0
         ytd_shorts_contrib = 0.0
         ytd_max_drawdown = 0.0
@@ -2082,6 +2160,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Return_PLN': ytd_return_pln,
         'WIG_YTD': wig_ytd,
         'MSCI_YTD': msci_ytd,
+        'WIG_YTD_Local': wig_ytd_local,
+        'MSCI_YTD_Local': msci_ytd_local,
         'WIG_Benchmark': wig_benchmark,
         'MSCI_Benchmark': msci_benchmark,
         'Period_Label': period_label,
