@@ -172,6 +172,8 @@ type RetrievalDiagnostics = {
     marketDataRequested?: boolean;
     marketDataReasons?: string[];
     marketDataAvailable?: boolean;
+    marketDataError?: string | null;
+    indexGap?: string | null;
 };
 
 type ReferenceSetResponse = {
@@ -707,6 +709,30 @@ const PanelSection: React.FC<{ icon: IconComponent; tone: string; title: string;
     </section>
 );
 
+/**
+ * What an answer could not use, in the order the owner would act on it. An answer
+ * built without the market snapshot, or with nothing retrieved because the index
+ * is not embedded, reads exactly like an answer built on everything — unless the
+ * gap is stated above it. More than one can be true at once, so they are listed
+ * rather than chosen between.
+ */
+const answerCaveats = (retrieval?: RetrievalDiagnostics, semanticError?: string) => {
+    const caveats: string[] = [];
+    if (retrieval?.marketDataError) {
+        caveats.push(`Live market data was needed for this question but the fetch failed (${retrieval.marketDataError}), so prices, drifted weights, momentum and realised performance are missing from this answer.`);
+    }
+    if (retrieval?.indexGap) {
+        caveats.push(`Nothing was retrieved, and ${retrieval.indexGap}. That is a gap in the index, not proof the library has nothing on the subject.`);
+    }
+    if (semanticError) {
+        caveats.push('Vector retrieval was unavailable; exact search still contributed.');
+    }
+    if (retrieval?.weakSemanticFallback) {
+        caveats.push(`Nothing in the brain cleared the relevance floor. This answer leans on ${retrieval.weakSemanticFallback} weak match${retrieval.weakSemanticFallback === 1 ? '' : 'es'} — read it as an evidence gap, not a finding.`);
+    }
+    return caveats.length ? caveats.join(' ') : undefined;
+};
+
 /** One line describing where an answer's evidence came from. */
 const retrievalSummary = (retrieval?: RetrievalDiagnostics) => {
     if (!retrieval) return '';
@@ -941,18 +967,16 @@ export const InvestmentBrainChat: React.FC = () => {
                 context: payload.context,
                 retrieval: payload.retrieval,
                 timingMs: payload.timings?.totalMs,
-                status: payload.timings?.semanticError
-                    ? 'Vector retrieval was unavailable; exact search still contributed.'
-                    : payload.retrieval?.weakSemanticFallback
-                        ? `Nothing in the brain cleared the relevance floor. This answer leans on ${payload.retrieval.weakSemanticFallback} weak match${payload.retrieval.weakSemanticFallback === 1 ? '' : 'es'} — read it as an evidence gap, not a finding.`
-                        : undefined,
+                status: answerCaveats(payload.retrieval, payload.timings?.semanticError),
             }]);
             const readCount = payload.retrieval?.expandedFiles ?? 0;
             const fullDocumentCount = payload.retrieval?.fullDocuments ?? 0;
             const liveBook = payload.retrieval?.portfolioPositions
                 ? payload.retrieval.marketDataAvailable
                     ? ` with the ${payload.retrieval.portfolioPositions}-position live book as of ${payload.retrieval.portfolioDataAsOf ?? 'the latest market close'}`
-                    : ` with the ${payload.retrieval.portfolioPositions}-position target book; no market refresh was needed`
+                    : payload.retrieval.marketDataError
+                        ? ` with the ${payload.retrieval.portfolioPositions}-position target book; the market refresh FAILED`
+                        : ` with the ${payload.retrieval.portfolioPositions}-position target book; no market refresh was needed`
                 : '';
             const saveNote = payload.autosave?.status === 'saved' || payload.autosave?.status === 'unchanged'
                 ? ' Saved to Drive.'
