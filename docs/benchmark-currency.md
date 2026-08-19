@@ -67,37 +67,54 @@ Polish stock in USD against the benchmark in USD. Both sides carry the same FX
 factor there, so the comparison is internally consistent; changing it would move
 a displayed number for no gain in correctness.
 
-## The same ticker, two honest numbers
+## A benchmark needs two readings, not one
 
-Once the benchmark was read in PLN, `ETFBW20TR.WA` began showing two different
-year-to-date figures on one screen:
+Reading the benchmark in PLN fixed one thing and broke another. The tile does not
+just display a number — it prints a difference against the portfolio, and it sits
+beside two USD benchmarks. Subtracting a PLN return from a USD portfolio return is
+not arithmetic, and comparing a PLN tile against a USD tile beside it is not a
+comparison. The strip had three values on two different axes.
 
-| Where | Number | Why |
+The two readings answer different questions and the strip needs both:
+
+| Reading | Answers | Where it shows |
 | --- | --- | --- |
-| Benchmark tile | +29.0% | the tracker's return **in PLN**, the currency it is quoted in |
-| Position row | +24.3% | the same tracker **in USD**, the accounting base currency |
+| Base currency (USD) | what would holding it have done for this book? | the headline figure and the pp gap |
+| Quote currency (PLN) | what did the index itself do? | the small line beneath |
 
-Both are correct and they must differ. A dollar-denominated book holding a zloty
-ETF earns the ETF's move plus the zloty's move; the benchmark it is measured
-against is quoted in zloty and must not carry that FX component. The gap between
-them is exactly the year's PLN/USD move.
+So `ETFBW20TR.WA` now reads **+24.3%** with **PLN +29.0%** under it, and the pp gap
+against the portfolio finally means something. Both numbers are true; only one of
+them can be subtracted.
 
-`calculate_periodic_returns` runs on the USD frame and always has — that is what
-makes a position's return reconcile with its contribution. Nothing there changed.
+`benchmark_base_currency_returns` applies the conversion explicitly rather than
+reading whichever frame happens to carry the ticker. That distinction is not
+cosmetic: a benchmark that is also a position arrives already converted in the USD
+frame, while one that is not stays in its own currency there, and nothing in the
+frame says which. A test covers the unheld case, because the current ticker is held
+and would hide the bug.
 
-What was missing was the labelling, and a `title` attribute does not exist on a
-phone, which is where this was noticed. So both are now stated on screen:
+`describe_benchmark` therefore reports `currency` (always the base currency, the one
+the headline is in) separately from `quoteCurrency` and `localCurrency`. When the
+original-currency frame is missing there is no local reading to show, and the
+description says so instead of presenting the converted number under a PLN label.
 
-- the returns column group reads **Returns (USD)**
-- a caption under the benchmark strip reads *"WIG20TR: total return in PLN, above
-  the WIG20 price index. SPY and MSCI in USD."*
+## The position row is a third number, and also right
+
+The same ticker's YTD in the positions table is **+24.3%** — the same base-currency
+figure, because `calculate_periodic_returns` runs on the USD frame and always has.
+That is what makes a position's return reconcile with its contribution.
+
+The labelling makes all of it legible: the returns column group reads **Returns
+(USD)**, and a caption under the benchmark strip states that all three benchmarks
+are shown in the base currency so the pp gaps compare, that WIG20TR is a
+total-return tracker, and that its PLN reading is the line beneath it.
 
 That caption also settles the other half of the confusion. The press quotes WIG20,
-the price index; the tile tracks WIG20**TR**, which adds dividends. At a price
-index around +24% the total-return series sits near +29%, and the coincidence that
-the ETF's *USD* return is also near +24% makes the price index and the currency
-effect easy to mistake for each other. They are two separate gaps that happened to
-be the same size.
+the price index; the tile tracks WIG20**TR**, which adds dividends. At a price index
+around +24% the total-return series sits near +29%, and the coincidence that the
+ETF's *USD* return is also near +24% makes the price index and the currency effect
+easy to mistake for each other. They are two separate gaps that happened to be the
+same size.
 
 ## Tests
 

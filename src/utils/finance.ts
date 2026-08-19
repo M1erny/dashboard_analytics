@@ -20,7 +20,12 @@ export interface BenchmarkSource {
     label: string;
     basis: string;
     quoteCurrency: string;
+    /** Currency of the headline figure — always the portfolio's base currency. */
     currency: string;
+    /** Currency the benchmark itself is quoted in. */
+    localCurrency?: string;
+    /** The benchmark's own return in its quote currency. */
+    localReturn?: number | null;
     note?: string;
     warning?: string;
 }
@@ -52,6 +57,8 @@ export interface Vitals {
     ytdReturnPln: number;
     wigYtd: number;
     msciYtd: number;
+    wigYtdLocal?: number | null;
+    msciYtdLocal?: number | null;
     wigBenchmark?: BenchmarkSource;
     msciBenchmark?: BenchmarkSource;
     ytdLongsContrib: number;

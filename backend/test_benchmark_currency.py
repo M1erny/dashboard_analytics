@@ -114,24 +114,27 @@ def main():
             f"{a} vs {b} vs {truth}",
         )
 
-    # 4. Without the original frame the number is admitted to be in USD rather
-    #    than quietly labelled PLN. A wrong number under an honest label is
-    #    recoverable; a wrong number under a clean label is not.
-    fallback_series, fallback_ccy = risk.benchmark_quote_returns(usd_returns, None, risk.BENCHMARK_WIG)
-    fallback = risk._compound_since(fallback_series, start)
-    check("fallback declares USD", fallback_ccy == "USD", f"got {fallback_ccy}")
-    check(
-        "fallback matches the converted series",
-        fallback is not None and abs(fallback - usd_truth) < 1e-12,
-        f"got {fallback}, expected {usd_truth}",
+    # 4. Without the original-currency frame there is no local reading to show, and
+    #    the description must say so rather than presenting the converted number
+    #    under a PLN label. A wrong number under an honest label is recoverable; a
+    #    wrong number under a clean one is not.
+    no_local_base, no_local_local, no_local_desc = risk._benchmark_readings(
+        usd_returns, None, fx, risk.BENCHMARK_WIG, start
     )
-    described = risk.describe_benchmark(risk.BENCHMARK_WIG, fallback_ccy)
-    check("fallback carries a warning", bool(described.get("warning")), str(described))
+    check(
+        "the base reading still works without the local frame",
+        abs(no_local_base - usd_truth) < 1e-12,
+        f"got {no_local_base}, expected {usd_truth}",
+    )
+    check("no local reading is claimed", no_local_local is None, str(no_local_local))
+    check("and the gap is stated", bool(no_local_desc.get("warning")), str(no_local_desc))
 
     # 5. The description names the series honestly.
-    clean = risk.describe_benchmark(risk.BENCHMARK_WIG, "PLN")
-    check("clean description carries no warning", "warning" not in clean, str(clean))
+    clean = risk.describe_benchmark(risk.BENCHMARK_WIG)
+    check("a clean description carries no warning", "warning" not in clean, str(clean))
     check("description reports the ticker", clean["ticker"] == risk.BENCHMARK_WIG)
+    check("headline currency is the base one", clean["currency"] == "USD", str(clean))
+    check("quote currency is kept separately", clean["quoteCurrency"] == "PLN", str(clean))
     if risk.BENCHMARK_WIG == "ETFBW20TR.WA":
         check(
             "a total-return tracker is not labelled as the price index",
@@ -183,6 +186,72 @@ def main():
         gap_value is not None and abs(gap_value - expected_gap) < 1e-12,
         f"got {gap_value}, expected {expected_gap}",
     )
+
+    # 10. The tile subtracts the benchmark from a base-currency portfolio return,
+    #     so it needs a base-currency benchmark. Reading the index in PLN is right
+    #     for "what did WIG20TR do" and wrong for "did I beat it" — the strip needs
+    #     both, and the pp gap must be computed on the comparable one.
+    base_series, unavailable = risk.benchmark_base_currency_returns(
+        usd_returns, local_returns, fx, risk.BENCHMARK_WIG
+    )
+    base = risk._compound_since(base_series, start)
+    check("a base-currency reading is available", unavailable is None, str(unavailable))
+    check(
+        "the base reading equals index times FX",
+        base is not None and abs(base - usd_truth) < 1e-12,
+        f"got {base}, expected {usd_truth}",
+    )
+    check(
+        "and differs from the PLN reading",
+        base is not None and abs(base - pln_truth) > 0.05,
+        f"base {base} vs local {pln_truth}",
+    )
+
+    # A base-currency benchmark is untouched by the conversion.
+    for ticker in (risk.BENCHMARK, risk.BENCHMARK_MSCI):
+        series, reason = risk.benchmark_base_currency_returns(usd_returns, local_returns, fx, ticker)
+        value = risk._compound_since(series, start)
+        truth = raw_prices[ticker].iloc[-1] / raw_prices[ticker].iloc[0] - 1
+        check(f"{ticker} base reading is unchanged", value is not None and abs(value - truth) < 1e-12, str(value))
+        check(f"{ticker} needs no FX", reason is None, str(reason))
+
+    # 11. A PLN benchmark that is NOT a portfolio position is never converted by
+    #     normalize_to_base_currency, so the base reading cannot be taken from
+    #     whichever frame happens to carry it. Both cases must agree.
+    unheld_local = local_returns.rename(columns={risk.BENCHMARK_WIG: "UNHELD.WA"})
+    unheld_usd = usd_returns.drop(columns=[risk.BENCHMARK_WIG]).join(unheld_local["UNHELD.WA"])
+    original_quote = dict(risk.BENCHMARK_QUOTE_CURRENCY)
+    risk.BENCHMARK_QUOTE_CURRENCY["UNHELD.WA"] = "PLN"
+    try:
+        unheld_series, unheld_reason = risk.benchmark_base_currency_returns(
+            unheld_usd, unheld_local, fx, "UNHELD.WA"
+        )
+        unheld = risk._compound_since(unheld_series, start)
+        check(
+            "an unheld PLN benchmark is still converted to USD",
+            unheld is not None and abs(unheld - usd_truth) < 1e-12,
+            f"got {unheld}, expected {usd_truth}; reason {unheld_reason}",
+        )
+    finally:
+        risk.BENCHMARK_QUOTE_CURRENCY.clear()
+        risk.BENCHMARK_QUOTE_CURRENCY.update(original_quote)
+
+    # 12. No FX rate means no base reading, rather than a PLN number labelled USD.
+    no_fx_series, no_fx_reason = risk.benchmark_base_currency_returns(
+        usd_returns, local_returns, raw_prices[[risk.BENCHMARK]], risk.BENCHMARK_WIG
+    )
+    check("a missing FX rate yields no base reading", no_fx_series is None, str(no_fx_series))
+    check("and says which rate is missing", "PLNUSD=X" in (no_fx_reason or ""), str(no_fx_reason))
+
+    # 13. The paired reading carries both numbers and names both currencies.
+    base_value, local_value, described_pair = risk._benchmark_readings(
+        usd_returns, local_returns, fx, risk.BENCHMARK_WIG, start
+    )
+    check("the pair reports the base figure first", abs(base_value - usd_truth) < 1e-12, str(base_value))
+    check("and the quote-currency figure alongside", abs(local_value - pln_truth) < 1e-12, str(local_value))
+    check("headline currency is the base one", described_pair["currency"] == "USD", str(described_pair))
+    check("quote currency is named separately", described_pair["localCurrency"] == "PLN", str(described_pair))
+    check("no warning on a clean pair", "warning" not in described_pair, str(described_pair))
 
     print()
     if FAILURES:

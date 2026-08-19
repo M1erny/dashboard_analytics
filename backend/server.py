@@ -4198,6 +4198,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "ytdReturnPln": to_float(metrics.get('YTD_Return_PLN')),
                 "wigYtd": to_float(metrics.get('WIG_YTD')),
                 "msciYtd": to_float(metrics.get('MSCI_YTD')),
+                "wigYtdLocal": to_float(metrics.get('WIG_YTD_Local')),
+                "msciYtdLocal": to_float(metrics.get('MSCI_YTD_Local')),
                 "wigBenchmark": metrics.get('WIG_Benchmark'),
                 "msciBenchmark": metrics.get('MSCI_Benchmark'),
                 "ytdLongsContrib": to_float(metrics.get('YTD_Longs_Contrib')),
