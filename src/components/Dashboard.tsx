@@ -56,6 +56,14 @@ const QUOTES = [
     // Richard Dawkins — 2
     { text: "The essence of life is statistical improbability on a colossal scale.", author: "Richard Dawkins" },
     { text: "We are survival machines — robot vehicles blindly programmed to preserve the selfish molecules known as genes.", author: "Richard Dawkins" },
+    // Nassim Taleb — 3
+    { text: "Wind extinguishes a candle and energizes fire. The same applies to randomness, uncertainty, chaos: you want to use them, not hide from them.", author: "Nassim Taleb" },
+    { text: "Mild success can be explainable by skills and labor. Wild success is attributable to variance.", author: "Nassim Taleb" },
+    { text: "Don't tell me what you think, tell me what you have in your portfolio.", author: "Nassim Taleb" },
+    // Oscar Wilde — 3
+    { text: "What is a cynic? A man who knows the price of everything and the value of nothing.", author: "Oscar Wilde" },
+    { text: "Experience is simply the name we give our mistakes.", author: "Oscar Wilde" },
+    { text: "The truth is rarely pure and never simple.", author: "Oscar Wilde" },
 ];
 
 // ─── Author color map (pure function, outside component) ─────
@@ -68,6 +76,8 @@ const getAuthorColors = (author: string) => {
         case 'Jeff Bezos': return { color: 'text-orange-500/30', bg: 'bg-orange-500/50', text: 'text-orange-400', dot: 'bg-orange-400' };
         case 'Elon Musk': return { color: 'text-red-500/30', bg: 'bg-red-500/50', text: 'text-red-400', dot: 'bg-red-400' };
         case 'Richard Dawkins': return { color: 'text-blue-500/30', bg: 'bg-blue-500/50', text: 'text-blue-400', dot: 'bg-blue-400' };
+        case 'Nassim Taleb': return { color: 'text-cyan-500/30', bg: 'bg-cyan-500/50', text: 'text-cyan-400', dot: 'bg-cyan-400' };
+        case 'Oscar Wilde': return { color: 'text-rose-500/30', bg: 'bg-rose-500/50', text: 'text-rose-400', dot: 'bg-rose-400' };
         default: return { color: 'text-indigo-500/30', bg: 'bg-indigo-500/50', text: 'text-indigo-400', dot: 'bg-indigo-400' };
     }
 };
