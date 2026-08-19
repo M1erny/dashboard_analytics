@@ -67,6 +67,38 @@ Polish stock in USD against the benchmark in USD. Both sides carry the same FX
 factor there, so the comparison is internally consistent; changing it would move
 a displayed number for no gain in correctness.
 
+## The same ticker, two honest numbers
+
+Once the benchmark was read in PLN, `ETFBW20TR.WA` began showing two different
+year-to-date figures on one screen:
+
+| Where | Number | Why |
+| --- | --- | --- |
+| Benchmark tile | +29.0% | the tracker's return **in PLN**, the currency it is quoted in |
+| Position row | +24.3% | the same tracker **in USD**, the accounting base currency |
+
+Both are correct and they must differ. A dollar-denominated book holding a zloty
+ETF earns the ETF's move plus the zloty's move; the benchmark it is measured
+against is quoted in zloty and must not carry that FX component. The gap between
+them is exactly the year's PLN/USD move.
+
+`calculate_periodic_returns` runs on the USD frame and always has — that is what
+makes a position's return reconcile with its contribution. Nothing there changed.
+
+What was missing was the labelling, and a `title` attribute does not exist on a
+phone, which is where this was noticed. So both are now stated on screen:
+
+- the returns column group reads **Returns (USD)**
+- a caption under the benchmark strip reads *"WIG20TR: total return in PLN, above
+  the WIG20 price index. SPY and MSCI in USD."*
+
+That caption also settles the other half of the confusion. The press quotes WIG20,
+the price index; the tile tracks WIG20**TR**, which adds dividends. At a price
+index around +24% the total-return series sits near +29%, and the coincidence that
+the ETF's *USD* return is also near +24% makes the price index and the currency
+effect easy to mistake for each other. They are two separate gaps that happened to
+be the same size.
+
 ## Tests
 
 `backend/test_benchmark_currency.py` pins:
