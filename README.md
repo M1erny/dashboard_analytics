@@ -322,6 +322,7 @@ Detailed architecture notes are in:
 ```text
 docs/investment-brain-architecture.md
 docs/local-brain-worker.md
+docs/brain-ui.md
 docs/self-building-brain.md
 docs/drive-ingestion-coverage.md
 docs/period-book-analytics.md

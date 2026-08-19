@@ -302,7 +302,7 @@ const columns: ColumnDef[] = [
     { key: 'r7dContribution',  label: '7D',         group: 'contribution', tooltip: '7-day portfolio contribution' },
     { key: 'r1dContribution',  label: SESSION_LABEL_TOKEN, group: 'contribution', tooltip: 'Portfolio contribution over the latest covered session' },
     { key: 'r1d',              label: SESSION_LABEL_TOKEN, group: 'returns', tooltip: 'Security return over the latest covered session' },
-    { key: 'ytd',              label: 'YTD',        group: 'returns' },
+    { key: 'ytd',              label: 'YTD',        group: 'returns', tooltip: 'Security return in USD, the accounting base currency. A position quoted in another currency therefore differs from its return on its home exchange by the FX move.' },
     { key: 'r7d',              label: '7D',         group: 'returns', tooltip: '7-day return' },
     { key: 'r1m',              label: '1M',         group: 'returns' },
     { key: 'volatility',       label: 'Vol',        group: 'risk', tooltip: 'Annualized volatility' },
@@ -335,7 +335,7 @@ const getInitialColumnOrder = (): SortKey[] => {
 const groupMeta: Record<ColumnGroup, { label: string; icon: React.ReactNode; color: string; accentColor: string }> = {
     position:     { label: 'Position',      icon: <BarChart3 className="h-3 w-3" />, color: 'text-blue-400',    accentColor: 'bg-blue-500' },
     contribution: { label: 'Contribution',  icon: <Zap className="h-3 w-3" />,       color: 'text-violet-400',  accentColor: 'bg-violet-500' },
-    returns:      { label: 'Returns',       icon: <TrendingUp className="h-3 w-3" />,color: 'text-emerald-400', accentColor: 'bg-emerald-500' },
+    returns:      { label: 'Returns (USD)', icon: <TrendingUp className="h-3 w-3" />,color: 'text-emerald-400', accentColor: 'bg-emerald-500' },
     risk:         { label: 'Risk',          icon: <Flame className="h-3 w-3" />,     color: 'text-rose-400',    accentColor: 'bg-rose-500' },
 };
 

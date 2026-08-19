@@ -5,15 +5,20 @@ import {
     BrainCircuit,
     BriefcaseBusiness,
     BookOpenCheck,
+    CalendarClock,
     ChevronDown,
+    ChevronRight,
     Cloud,
+    Command,
+    CornerDownLeft,
+    Database,
     ExternalLink,
     FileSearch,
     FolderSync,
+    GitBranch,
     History,
-    Library,
     LoaderCircle,
-    MessageSquare,
+    PanelLeft,
     Plus,
     RefreshCw,
     Search,
@@ -331,6 +336,44 @@ const request = async (url: string, options: RequestInit = {}, timeoutMs = 65000
 // waiting indicator so the countdown can never disagree with the real abort deadline.
 const askTimeoutMs = (fullDocumentCount: number) => (fullDocumentCount ? 150000 : 90000);
 
+/**
+ * `fetch` rejects with a bare `TypeError` — "Failed to fetch" in Chrome, "Load
+ * failed" in Safari — for every network-level failure alike: a dropped
+ * connection, a server process killed mid-request, a refused preflight, a phone
+ * changing network. The message names none of them, so the owner is told only
+ * that something went wrong.
+ *
+ * Probing the backend immediately afterwards separates the two cases that need
+ * different fixes: the service is still up and this one request was killed, or
+ * the service itself went away. The elapsed time separates them further — a
+ * failure at two seconds is not the same event as one at a hundred.
+ */
+const diagnoseAskFailure = async (error: unknown, elapsedMs: number, fullDocumentCount: number) => {
+    const seconds = Math.max(1, Math.round(elapsedMs / 1000));
+    const fullDocs = fullDocumentCount
+        ? ` ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context is the most expensive setting there is; try fewer.`
+        : '';
+
+    if (error instanceof DOMException && error.name === 'AbortError') {
+        return `No answer within ${seconds}s, so the request was given up on. The backend may be waking up.${fullDocs}`;
+    }
+    if (!(error instanceof TypeError)) {
+        return error instanceof Error ? error.message : 'The Brain could not complete this question.';
+    }
+
+    let backendAlive = false;
+    try {
+        backendAlive = (await request(api('/api/brain/status'), {}, 12000)).ok;
+    } catch {
+        backendAlive = false;
+    }
+
+    if (backendAlive) {
+        return `The connection dropped after ${seconds}s, but the backend is answering again now — so this one request was killed, not the service. That is usually a question too heavy or too slow for the host to hold open.${fullDocs} The Render logs will say whether it was a restart or an out-of-memory kill.`;
+    }
+    return `The backend stopped responding after ${seconds}s and is still unreachable. It has restarted, gone to sleep, or the connection was lost. Wait for it to come back, then send the question again.`;
+};
+
 const errorText = async (response: Response, fallback: string) => {
     const payload = await response.json().catch(() => null) as { detail?: string | { message?: string; reason?: string } } | null;
     if (typeof payload?.detail === 'string') return payload.detail;
@@ -504,7 +547,7 @@ const MarkdownAnswer: React.FC<{ content: string }> = ({ content }) => {
                 index += 1;
             }
             blocks.push(
-                <ul key={`l-${index}`} className="space-y-1.5 pl-5 text-sm leading-6 text-slate-200 marker:text-emerald-300">
+                <ul key={`l-${index}`} className="list-disc space-y-1.5 pl-5 text-sm leading-6 text-slate-200 marker:text-emerald-300">
                     {items.map((item, itemIndex) => <li key={`${itemIndex}-${item}`}>{renderInline(item, `l-${index}-${itemIndex}`)}</li>)}
                 </ul>
             );
@@ -583,6 +626,111 @@ const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: 
     />
 );
 
+// ─── Shell primitives ────────────────────────────────────────
+// The Brain grew a column of stacked cards, one per capability. An editor solves
+// the same problem differently: one surface for the work, a rail for what you
+// have open, a panel for tools you summon, and a status bar for state. These are
+// the pieces that shape.
+
+type IconComponent = React.ComponentType<{ className?: string }>;
+
+type WorkbenchTab = 'library' | 'search' | 'filings' | 'drive' | 'code';
+
+const WORKBENCH_TABS: Array<{ id: WorkbenchTab; label: string; short: string; icon: IconComponent }> = [
+    { id: 'library', label: 'Library and index', short: 'Index', icon: Database },
+    { id: 'search', label: 'Search sources', short: 'Search', icon: Search },
+    { id: 'filings', label: 'Filing finder and imports', short: 'Filings', icon: FileSearch },
+    { id: 'drive', label: 'Drive files and coverage', short: 'Drive', icon: CalendarClock },
+    { id: 'code', label: 'Self-build proposals', short: 'Code', icon: GitBranch },
+];
+
+// Shown in shortcut hints. A Ctrl hint on a Mac is worse than no hint.
+const modKeyLabel = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent) ? '⌘' : 'Ctrl+';
+
+const IconButton: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { label: string; active?: boolean }> = ({ label, active, className, ...props }) => (
+    <button
+        {...props}
+        type="button"
+        title={label}
+        aria-label={label}
+        aria-pressed={active}
+        className={cn(
+            'flex h-8 w-8 shrink-0 items-center justify-center rounded-md transition-colors disabled:cursor-not-allowed disabled:text-slate-700',
+            active ? 'bg-white/[0.08] text-white' : 'text-slate-500 hover:bg-white/[0.05] hover:text-slate-200',
+            className,
+        )}
+    />
+);
+
+const CHIP_TONES: Record<'violet' | 'cyan' | 'amber' | 'slate', string> = {
+    violet: 'border-violet-500/25 bg-violet-500/[0.09] text-violet-200',
+    cyan: 'border-cyan-500/25 bg-cyan-500/[0.09] text-cyan-200',
+    amber: 'border-amber-500/25 bg-amber-500/[0.09] text-amber-200',
+    slate: 'border-white/[0.12] bg-white/[0.05] text-slate-200',
+};
+
+/** A piece of context the next question will carry, editable where it is shown. */
+const ContextChip: React.FC<{
+    onClick: () => void;
+    icon: IconComponent;
+    tone: keyof typeof CHIP_TONES;
+    children: React.ReactNode;
+    active?: boolean;
+    disabled?: boolean;
+    title?: string;
+}> = ({ onClick, icon: Icon, tone, children, active, disabled, title }) => (
+    <button
+        type="button"
+        onClick={onClick}
+        disabled={disabled}
+        title={title}
+        className={cn(
+            'inline-flex min-h-7 items-center gap-1.5 rounded-md border px-2 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:border-transparent disabled:bg-transparent disabled:text-slate-700',
+            active ? CHIP_TONES[tone] : 'border-transparent text-slate-500 hover:bg-white/[0.05] hover:text-slate-300',
+        )}
+    >
+        <Icon className="h-3.5 w-3.5" />
+        {children}
+    </button>
+);
+
+const PanelSection: React.FC<{ icon: IconComponent; tone: string; title: string; action?: React.ReactNode; children: React.ReactNode }> = ({ icon: Icon, tone, title, action, children }) => (
+    <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
+        <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+                <Icon className={cn('h-4 w-4 shrink-0', tone)} />
+                <h2 className="truncate text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">{title}</h2>
+            </div>
+            {action}
+        </div>
+        {children}
+    </section>
+);
+
+/** One line describing where an answer's evidence came from. */
+const retrievalSummary = (retrieval?: RetrievalDiagnostics) => {
+    if (!retrieval) return '';
+    const parts = [
+        retrieval.semanticAvailable ? `${retrieval.semanticHits ?? 0} semantic` : 'exact search',
+        `${retrieval.keywordHits ?? 0} exact`,
+    ];
+    if (retrieval.referenceSources) parts.push(`${retrieval.referenceSources} framework${retrieval.referenceSources === 1 ? '' : 's'}`);
+    if (retrieval.fullDocuments) parts.push(`${retrieval.fullDocuments} full file${retrieval.fullDocuments === 1 ? '' : 's'}`);
+    if (retrieval.portfolioPositions) parts.push(`${retrieval.portfolioPositions} ${retrieval.marketDataAvailable ? 'live positions' : 'portfolio targets'}`);
+    if (retrieval.expandedFiles) parts.push(`${retrieval.expandedFiles} file read${retrieval.expandedFiles === 1 ? '' : 's'}`);
+    return parts.join(' · ');
+};
+
+type PaletteCommand = {
+    id: string;
+    label: string;
+    group: string;
+    icon: IconComponent;
+    hint?: string;
+    disabled?: boolean;
+    run: () => void;
+};
+
 export const InvestmentBrainChat: React.FC = () => {
     const bootstrapSnapshot = useRef<BrainBootstrapSnapshot | null>(readBrainBootstrapSnapshot());
     const [backendState, setBackendState] = useState<'checking' | 'ready' | 'offline'>('checking');
@@ -613,7 +761,7 @@ export const InvestmentBrainChat: React.FC = () => {
     const [isSystemPromptOpen, setIsSystemPromptOpen] = useState(false);
     const [isSystemPromptLoading, setIsSystemPromptLoading] = useState(false);
     const [isSystemPromptSaving, setIsSystemPromptSaving] = useState(false);
-    const [draft, setDraft] = useState('What does my research say about the moat, risks, valuation lens, and what would change my mind?');
+    const [draft, setDraft] = useState('');
     const [thread, setThread] = useState<ChatMessage[]>([]);
     const [threadId, setThreadId] = useState(() => conversationId());
     const [conversationAutosave, setConversationAutosave] = useState<ConversationAutosave | null>(null);
@@ -634,6 +782,7 @@ export const InvestmentBrainChat: React.FC = () => {
     const [isAgentWorking, setIsAgentWorking] = useState(false);
     const outputRef = useRef<HTMLDivElement | null>(null);
     const composerRef = useRef<HTMLDivElement | null>(null);
+    const draftRef = useRef<HTMLTextAreaElement | null>(null);
 
     const refresh = async () => {
         try {
@@ -704,7 +853,9 @@ export const InvestmentBrainChat: React.FC = () => {
     useEffect(() => { void refresh(); }, []);
 
     useEffect(() => {
-        if (thread.length || isAsking) composerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+        if (!thread.length && !isAsking) return;
+        const pane = outputRef.current;
+        if (pane) pane.scrollTo({ top: pane.scrollHeight, behavior: 'smooth' });
     }, [thread.length, isAsking]);
 
     // A question can legitimately run for a minute. Without a clock the owner cannot
@@ -763,6 +914,7 @@ export const InvestmentBrainChat: React.FC = () => {
             ? `Reading ${fullContextSources.length} full document${fullContextSources.length === 1 ? '' : 's'}, then retrieving supporting evidence...`
             : 'Searching evidence, then reading the strongest source files...');
 
+        const askStartedAt = Date.now();
         try {
             const response = await request(api('/api/brain/analyze-company'), {
                 method: 'POST',
@@ -807,11 +959,13 @@ export const InvestmentBrainChat: React.FC = () => {
                 : payload.autosave?.status === 'failed' || payload.autosave?.status === 'unavailable'
                     ? ' Answer completed, but Drive autosave needs attention.'
                     : '';
-            setNotice(`${payload.model} answered in ${formatSeconds(payload.timings?.totalMs)}${liveBook}${fullDocumentCount ? ` and ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context` : readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.${saveNote}`);
+            const answeredBy = payload.model ? `${payload.model} answered` : 'Answered';
+            const answeredIn = payload.timings?.totalMs ? ` in ${formatSeconds(payload.timings.totalMs)}` : '';
+            setNotice(`${answeredBy}${answeredIn}${liveBook}${fullDocumentCount ? ` and ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context` : readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.${saveNote}`);
         } catch (error) {
-            const text = error instanceof DOMException && error.name === 'AbortError'
-                ? 'This request took too long. The backend may be waking up; try the question again.'
-                : error instanceof Error ? error.message : 'The Brain could not complete this question.';
+            const elapsedMs = Date.now() - askStartedAt;
+            if (error instanceof TypeError) setNotice('Connection lost. Checking whether the backend is still up...');
+            const text = await diagnoseAskFailure(error, elapsedMs, fullContextSources.length);
             setThread(current => [...current, { id: messageId(), role: 'assistant', content: text, status: 'No new conclusion was generated.', failed: true }]);
             // Give the question back so it can be retried without retyping. Only when the
             // composer is still empty: the textarea stays editable during the wait.
@@ -1230,168 +1384,256 @@ export const InvestmentBrainChat: React.FC = () => {
         setThread([]);
         setThreadId(conversationId());
         setConversationAutosave(null);
-        setDraft('What does my research say about the moat, risks, valuation lens, and what would change my mind?');
+        setDraft('');
         setNotice('New research thread.');
+        draftRef.current?.focus();
     };
 
+    // ─── Shell state ─────────────────────────────────────────
+    const [isRailOpen, setIsRailOpen] = useState(() => typeof window === 'undefined' || window.innerWidth >= 1024);
+    const [panelTab, setPanelTab] = useState<WorkbenchTab | null>(null);
+    const [isPaletteOpen, setIsPaletteOpen] = useState(false);
+    const [paletteQuery, setPaletteQuery] = useState('');
+
+    const togglePanel = (tab: WorkbenchTab) => setPanelTab(current => (current === tab ? null : tab));
+
+    // The rail needs a name for the open thread before the transcript has one.
+    const firstQuestion = thread.find(message => message.role === 'user')?.content.trim();
+    const threadTitle = firstQuestion ? excerpt(firstQuestion, 64) : 'New thread';
+
+    // The thread list is navigation, so it loads with the page rather than on a click.
+    useEffect(() => {
+        if (!ready || savedThreadsLoaded || isSavedThreadsLoading) return;
+        void loadSavedThreads();
+        // loadSavedThreads is recreated every render; the guards above are what stop a loop.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ready, savedThreadsLoaded]);
+
+    const paletteCommands = useMemo<PaletteCommand[]>(() => {
+        const commands: PaletteCommand[] = [
+            { id: 'new-thread', label: 'New thread', group: 'Thread', icon: Plus, disabled: isAsking, run: resetThread },
+            { id: 'reload-threads', label: 'Reload saved threads', group: 'Thread', icon: History, disabled: !ready || isSavedThreadsLoading, run: () => void loadSavedThreads() },
+            { id: 'reference', label: 'Reference layer', group: 'Context', icon: BookOpenCheck, disabled: !ready, hint: referenceSources.length ? referenceSources.map(source => sourceName(source)).join(' · ') : 'No standing framework selected', run: () => void openReferencePicker() },
+            { id: 'full-files', label: 'Full-document context', group: 'Context', icon: FileSearch, disabled: !ready, hint: fullContextSources.length ? fullContextSources.map(source => sourceName(source)).join(' · ') : 'No whole files selected', run: () => void openFullContextPicker() },
+            { id: 'prompt', label: 'AI system prompt', group: 'Context', icon: Sparkles, disabled: !ready, hint: systemPrompt ? excerpt(systemPrompt, 72) : 'Default research instructions', run: () => void openSystemPrompt() },
+            { id: 'search', label: 'Search sources', group: 'Library', icon: Search, run: () => setPanelTab('search') },
+            { id: 'filings', label: 'Find an SEC filing', group: 'Library', icon: FileSearch, run: () => setPanelTab('filings') },
+            { id: 'index', label: 'Library and index status', group: 'Library', icon: Database, run: () => setPanelTab('library') },
+            { id: 'embed', label: `Embed missing passages${embeddings.missing ? ` (${formatCount(embeddings.missing)})` : ''}`, group: 'Library', icon: Sparkles, disabled: !ready || (embeddings.missing ?? 0) === 0, run: () => void embedMissing() },
+            { id: 'files-by-date', label: 'Drive files by upload date', group: 'Drive', icon: CalendarClock, run: () => setPanelTab('drive') },
+            { id: 'sync', label: drive?.connected ? 'Sync Drive' : 'Connect Google Drive', group: 'Drive', icon: drive?.connected ? FolderSync : Cloud, disabled: !ready, run: () => void (drive?.connected ? syncDrive() : connectDrive()) },
+            { id: 'self-build', label: 'Self-build proposals', group: 'Code', icon: GitBranch, run: () => setPanelTab('code') },
+            { id: 'refresh', label: 'Refresh Brain status', group: 'View', icon: RefreshCw, run: () => void refresh() },
+            { id: 'rail', label: isRailOpen ? 'Hide the thread rail' : 'Show the thread rail', group: 'View', icon: PanelLeft, run: () => setIsRailOpen(open => !open) },
+            { id: 'dashboard', label: 'Back to the dashboard', group: 'Go', icon: ArrowLeft, run: () => { window.location.href = '/'; } },
+        ];
+        if (drive?.folderUrl) {
+            commands.push({ id: 'drive-folder', label: 'Open the Drive folder', group: 'Drive', icon: ExternalLink, run: () => window.open(drive.folderUrl!, '_blank', 'noreferrer') });
+        }
+        return commands;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [ready, isAsking, isSavedThreadsLoading, referenceSources, fullContextSources, systemPrompt, embeddings.missing, drive?.connected, drive?.folderUrl, isRailOpen]);
+
+    const paletteMatches = useMemo(() => {
+        const query = paletteQuery.trim().toLowerCase();
+        if (!query) return paletteCommands;
+        return paletteCommands.filter(command => `${command.label} ${command.group} ${command.hint ?? ''}`.toLowerCase().includes(query));
+    }, [paletteCommands, paletteQuery]);
+
+    // Editor-style shortcuts. Escape closes the palette; the source pickers keep
+    // their own Escape handler because closing those discards a selection.
+    useEffect(() => {
+        const onKeyDown = (event: KeyboardEvent) => {
+            const mod = event.metaKey || event.ctrlKey;
+            if (mod && event.key.toLowerCase() === 'k') {
+                event.preventDefault();
+                setPaletteQuery('');
+                setIsPaletteOpen(open => !open);
+                return;
+            }
+            if (mod && event.key.toLowerCase() === 'b') {
+                event.preventDefault();
+                setIsRailOpen(open => !open);
+                return;
+            }
+            if (mod && event.key.toLowerCase() === 'n' && !isAsking) {
+                event.preventDefault();
+                resetThread();
+                return;
+            }
+            if (event.key === 'Escape' && isPaletteOpen) setIsPaletteOpen(false);
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+    }, [isPaletteOpen, isAsking]);
+
     return (
-        <div className="relative min-h-[100dvh] overflow-x-hidden bg-[#06080d] text-foreground">
-            <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_8%_5%,rgba(16,185,129,0.08),transparent_26%),radial-gradient(circle_at_92%_8%,rgba(139,92,246,0.07),transparent_24%)]" />
-            <div className="relative z-10 h-px bg-gradient-to-r from-emerald-400 via-cyan-400 to-violet-400" />
-            <main className="relative z-10 mx-auto flex min-h-[calc(100dvh-1px)] max-w-[1500px] flex-col px-3 py-3 sm:px-6 sm:py-4 lg:px-8">
-                <header className="flex flex-col gap-4 rounded-xl border border-white/[0.07] bg-black/10 p-3.5 shadow-xl shadow-black/10 backdrop-blur-md sm:p-4 md:flex-row md:items-center md:justify-between">
-                    <div className="min-w-0">
-                        <a href="/" className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 transition-colors hover:text-slate-300">
-                            <ArrowLeft className="h-3.5 w-3.5" /> Dashboard
-                        </a>
-                        <div className="mt-2.5 flex items-center gap-3">
-                            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-emerald-400/20 bg-emerald-400/10 shadow-lg shadow-emerald-950/30">
-                                <BrainCircuit className="h-5 w-5 text-emerald-300" />
-                            </div>
-                            <div className="min-w-0">
-                                <h1 className="bg-gradient-to-r from-white via-white to-slate-400 bg-clip-text text-[1.65rem] font-bold leading-tight text-transparent sm:text-3xl">Investment Brain</h1>
-                                <p className="mt-0.5 text-[13px] leading-5 text-slate-400 sm:text-sm">Ask, inspect the evidence, and keep the thread moving.</p>
-                            </div>
-                        </div>
-                    </div>
-                    <div className="flex w-full flex-wrap items-center gap-2 md:w-auto md:justify-end">
-                        {conversationAutosave?.webViewLink ? (
-                            <a
-                                href={conversationAutosave.webViewLink}
-                                target="_blank"
-                                rel="noreferrer"
-                                title={conversationAutosave.fileName ?? 'Open the saved Markdown transcript in Google Drive'}
-                                className="inline-flex min-h-8 items-center gap-2 rounded-md border border-cyan-500/25 bg-cyan-500/[0.08] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-cyan-200 transition-colors hover:bg-cyan-500/[0.14]"
-                            >
-                                <Cloud className="h-3.5 w-3.5" />
-                                <span className="hidden sm:inline">Saved to Drive</span>
-                                <ExternalLink className="h-3 w-3" />
-                            </a>
-                        ) : conversationAutosave?.status === 'failed' || conversationAutosave?.status === 'unavailable' ? (
-                            <span
-                                title={conversationAutosave.reason ?? 'Drive autosave failed'}
-                                className="inline-flex min-h-8 items-center gap-2 rounded-md border border-amber-500/25 bg-amber-500/[0.08] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-amber-200"
-                            >
-                                <Cloud className="h-3.5 w-3.5" /> Save failed
-                            </span>
-                        ) : drive?.connected ? (
-                            <span className="hidden min-h-8 items-center gap-2 rounded-md border border-white/[0.08] bg-white/[0.025] px-3 text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500 sm:inline-flex">
-                                <Cloud className="h-3.5 w-3.5" /> Autosave on
-                            </span>
-                        ) : null}
-                        {portfolioContext && (
-                            <span
-                                title={`${portfolioModeLabel}${portfolioContext.marketDataAvailable ? ` as of ${portfolioContext.dataAsOf ?? 'unknown'}` : ''}: ${formatPercent(displayedExposure?.long)} long / ${formatPercent(displayedExposure?.short)} short`}
-                                className={cn('inline-flex min-h-8 items-center gap-2 rounded-md border px-3 text-[10px] font-bold uppercase tracking-[0.08em]', portfolioContext.marketDataAvailable ? portfolioContext.fresh ? 'border-cyan-500/25 bg-cyan-500/[0.08] text-cyan-200' : 'border-amber-500/25 bg-amber-500/[0.08] text-amber-200' : 'border-violet-500/25 bg-violet-500/[0.08] text-violet-200')}
-                            >
-                                <BriefcaseBusiness className="h-3.5 w-3.5" />
-                                <span>{portfolioContext.positionCount ?? 0} positions</span>
-                                <span className="hidden border-l border-current/20 pl-2 sm:inline">{formatPercent(displayedExposure?.gross)} {portfolioContext.marketDataAvailable ? 'gross' : 'target gross'}</span>
-                            </span>
-                        )}
-                        <span className={cn('inline-flex min-h-10 flex-1 items-center justify-center gap-2 rounded-lg border px-3 text-[10px] font-bold uppercase tracking-[0.1em] sm:min-h-9 sm:flex-none', ready ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300' : 'border-amber-500/25 bg-amber-500/10 text-amber-300')}>
-                            <span className={cn('h-1.5 w-1.5 rounded-full', ready ? 'bg-emerald-300' : 'bg-amber-300')} />
-                            {ready ? libraryState : backendState === 'checking' ? 'Checking Brain' : 'Backend offline'}
-                        </span>
-                        <Button type="button" onClick={resetThread} disabled={isAsking} className="flex-1 sm:flex-none">
-                            <Plus className="h-3.5 w-3.5" /> New thread
-                        </Button>
-                    </div>
-                </header>
+        <div className="flex h-[100dvh] flex-col overflow-hidden bg-[#06080d] text-foreground">
+            <div className="h-px shrink-0 bg-gradient-to-r from-emerald-400 via-cyan-400 to-violet-400" />
 
-                <div className="grid min-h-0 flex-1 grid-cols-1 items-start gap-4 py-4 sm:gap-5 sm:py-5 xl:grid-cols-[minmax(0,1fr)_350px]">
-                    <section className="flex h-[calc(100dvh-220px)] min-h-[560px] flex-col overflow-hidden rounded-xl border border-white/[0.09] bg-[#090e17]/95 shadow-2xl shadow-black/20 sm:h-[calc(100dvh-180px)] xl:sticky xl:top-5 xl:h-[calc(100dvh-148px)] xl:max-h-[920px] xl:min-h-[640px]">
-                        <div className="flex items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3 sm:px-5">
-                            <div className="flex min-w-0 items-center gap-2">
-                                <MessageSquare className="h-4 w-4 text-emerald-300" />
-                                <span className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Research thread</span>
+            <div className="flex min-h-0 flex-1">
+                {/* ── Rail: threads, the way an editor lists the work that is open ── */}
+                {isRailOpen && (
+                    <>
+                        <div className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden" onClick={() => setIsRailOpen(false)} aria-hidden="true" />
+                        <nav aria-label="Research threads" className="fixed inset-y-0 left-0 z-40 flex w-[268px] shrink-0 flex-col border-r border-white/[0.07] bg-[#080c14] lg:static lg:z-auto">
+                            <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-white/[0.07] pl-3 pr-2">
+                                <a href="/" className="inline-flex min-w-0 items-center gap-2 text-slate-300 transition-colors hover:text-white" title="Back to the dashboard">
+                                    <BrainCircuit className="h-4 w-4 shrink-0 text-emerald-300" />
+                                    <span className="truncate text-xs font-bold tracking-tight">Investment Brain</span>
+                                </a>
+                                <IconButton onClick={() => setIsRailOpen(false)} label="Hide the thread rail"><PanelLeft className="h-4 w-4" /></IconButton>
                             </div>
-                            <div className="flex min-w-0 flex-wrap items-center justify-end gap-2">
+
+                            <div className="p-2">
                                 <button
                                     type="button"
-                                    onClick={() => void openReferencePicker()}
-                                    disabled={!ready}
-                                    title={referenceSources.map(source => sourceName(source)).join('\n') || 'Choose files that are always used as a framework'}
-                                    className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md border border-violet-500/20 bg-violet-500/[0.07] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-violet-200 transition-colors hover:bg-violet-500/[0.13] disabled:cursor-not-allowed disabled:border-white/[0.08] disabled:bg-white/[0.025] disabled:text-slate-600"
+                                    onClick={resetThread}
+                                    disabled={isAsking}
+                                    className="flex w-full items-center gap-2 rounded-md border border-white/[0.09] bg-white/[0.03] px-2.5 py-2 text-xs font-semibold text-slate-200 transition-colors hover:border-emerald-500/30 hover:bg-emerald-500/[0.07] hover:text-white disabled:cursor-not-allowed disabled:text-slate-600"
                                 >
-                                    <BookOpenCheck className="h-3.5 w-3.5" />
-                                    <span className="hidden sm:inline">Reference </span>{referenceSources.length || 'set'}
+                                    <Plus className="h-3.5 w-3.5 text-emerald-300" /> New thread
+                                    <kbd className="ml-auto font-mono text-[9px] text-slate-600">{modKeyLabel}N</kbd>
                                 </button>
-                                <button
-                                    type="button"
-                                    onClick={() => void openFullContextPicker()}
-                                    disabled={!ready}
-                                    title={fullContextSources.map(source => sourceName(source)).join('\n') || 'Choose up to four indexed files to include in full'}
-                                    className="inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-md border border-cyan-500/20 bg-cyan-500/[0.07] px-2 text-[9px] font-bold uppercase tracking-[0.08em] text-cyan-200 transition-colors hover:bg-cyan-500/[0.13] disabled:cursor-not-allowed disabled:border-white/[0.08] disabled:bg-white/[0.025] disabled:text-slate-600"
-                                >
-                                    <FileSearch className="h-3.5 w-3.5" />
-                                    <span className="hidden sm:inline">Full files </span>{fullContextSources.length || 'set'}
-                                </button>
-                                {/* Every failure in this file reports here, so it must stay readable on any width. */}
-                                {notice && <span className="max-w-[48%] text-right text-[10px] font-medium leading-4 text-slate-500 line-clamp-2">{notice}</span>}
                             </div>
-                        </div>
 
-                        <div ref={outputRef} className="min-h-0 flex-1 space-y-5 overflow-auto px-4 py-5 sm:px-7">
-                            {!thread.length && !isAsking && (
-                                <div className="mx-auto flex max-w-2xl flex-col items-start py-7 sm:py-12 lg:py-16">
-                                    <span className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-300"><Sparkles className="h-3.5 w-3.5" /> Evidence-first research</span>
-                                    <h2 className="mt-4 text-2xl font-bold leading-tight text-white sm:text-3xl">A second mind for the work that compounds.</h2>
-                                    <p className="mt-3 max-w-xl text-sm leading-6 text-slate-400">The Brain combines your current portfolio, Yahoo-adjusted market momentum, and Drive research retrieved by meaning. Every answer keeps its market date and research sources attached.</p>
-                                    <div className="mt-6 grid w-full grid-cols-1 gap-2 sm:grid-cols-2">
-                                        {[
-                                            'Where is momentum strongest and weakest in my current book?',
-                                            'Which holdings create the most concentration risk today?',
-                                            'Where does value accrue in AI infrastructure?',
-                                            'What is the strongest bear case?',
-                                        ].map(suggestion => (
-                                            <button key={suggestion} type="button" onClick={() => setDraft(suggestion)} className="min-h-11 rounded-lg border border-white/[0.09] bg-white/[0.025] px-3 py-2.5 text-left text-xs leading-5 text-slate-300 transition-colors hover:border-emerald-500/30 hover:bg-emerald-500/[0.06] hover:text-white">
-                                                {suggestion}
-                                            </button>
-                                        ))}
+                            <div className="flex items-center justify-between gap-2 px-3 pb-1 pt-1">
+                                <span className="text-[9px] font-bold uppercase tracking-[0.14em] text-slate-600">Threads</span>
+                                <IconButton onClick={() => void loadSavedThreads()} disabled={!ready || isSavedThreadsLoading} label="Refresh saved threads">
+                                    {isSavedThreadsLoading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                                </IconButton>
+                            </div>
+
+                            <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 pb-2">
+                                {thread.length > 0 && (
+                                    <button type="button" className="w-full rounded-md border border-emerald-500/25 bg-emerald-500/[0.07] px-2.5 py-2 text-left">
+                                        <p className="truncate text-xs font-semibold text-white">{threadTitle}</p>
+                                        <p className="mt-0.5 text-[10px] text-emerald-300/70">Current · {Math.ceil(thread.length / 2)} exchange{Math.ceil(thread.length / 2) === 1 ? '' : 's'}</p>
+                                    </button>
+                                )}
+                                {savedThreads.filter(saved => saved.threadId !== threadId).map(saved => (
+                                    <div key={saved.threadId} className="group flex items-center gap-1 rounded-md px-1 transition-colors hover:bg-white/[0.04]">
+                                        <button
+                                            type="button"
+                                            onClick={() => void resumeSavedThread(saved)}
+                                            disabled={isAsking || isSavedThreadsLoading}
+                                            className="min-w-0 flex-1 py-2 pl-1.5 text-left disabled:cursor-not-allowed"
+                                        >
+                                            <p className="truncate text-xs text-slate-300 group-hover:text-white">{saved.title ?? saved.fileName ?? 'Saved thread'}</p>
+                                            <p className="mt-0.5 text-[10px] text-slate-600">{saved.exchangeCount ?? 0} exchange{saved.exchangeCount === 1 ? '' : 's'}{saved.updatedAt ? ` · ${new Date(saved.updatedAt).toLocaleDateString()}` : ''}</p>
+                                        </button>
+                                        {saved.webViewLink && (
+                                            <a href={saved.webViewLink} target="_blank" rel="noreferrer" className="shrink-0 p-1.5 text-slate-700 opacity-0 transition-opacity hover:text-emerald-300 group-hover:opacity-100" aria-label="Open this thread in Drive"><ExternalLink className="h-3.5 w-3.5" /></a>
+                                        )}
                                     </div>
-                                </div>
-                            )}
+                                ))}
+                                {savedThreadsLoaded && !savedThreads.length && !thread.length && (
+                                    <p className="px-2 py-3 text-[11px] leading-5 text-slate-600">No saved threads yet. The first answer creates one in Drive.</p>
+                                )}
+                                {!savedThreadsLoaded && (
+                                    <p className="px-2 py-3 text-[11px] leading-5 text-slate-600">{ready ? 'Loading threads from Drive…' : 'Threads load once the backend is reachable.'}</p>
+                                )}
+                            </div>
 
+                            <div className="shrink-0 border-t border-white/[0.07] p-2">
+                                <button
+                                    type="button"
+                                    onClick={() => { setPaletteQuery(''); setIsPaletteOpen(true); }}
+                                    className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-200"
+                                >
+                                    <Command className="h-3.5 w-3.5" /> Commands
+                                    <kbd className="ml-auto font-mono text-[9px] text-slate-600">{modKeyLabel}K</kbd>
+                                </button>
+                                <a href="/" className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-xs text-slate-500 transition-colors hover:bg-white/[0.04] hover:text-slate-200">
+                                    <ArrowLeft className="h-3.5 w-3.5" /> Dashboard
+                                </a>
+                            </div>
+                        </nav>
+                    </>
+                )}
+
+                {/* ── Editor: the chat is the whole surface ── */}
+                <div className="flex min-w-0 flex-1 flex-col">
+                    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-white/[0.07] px-2 sm:px-3">
+                        {!isRailOpen && <IconButton onClick={() => setIsRailOpen(true)} label="Show the thread rail"><PanelLeft className="h-4 w-4" /></IconButton>}
+                        <div className="min-w-0 flex-1 px-1">
+                            <p className="truncate text-xs font-semibold text-slate-200">{threadTitle}</p>
+                        </div>
+                        {conversationAutosave?.webViewLink && (
+                            <a href={conversationAutosave.webViewLink} target="_blank" rel="noreferrer" title={conversationAutosave.fileName ?? 'Open the saved transcript in Drive'} className="hidden items-center gap-1.5 rounded-md px-2 py-1.5 text-[10px] font-semibold text-cyan-300/80 transition-colors hover:bg-white/[0.05] hover:text-cyan-200 sm:inline-flex">
+                                <Cloud className="h-3.5 w-3.5" /> Saved
+                            </a>
+                        )}
+                        <div className="flex items-center gap-0.5">
+                            {WORKBENCH_TABS.map(tab => (
+                                <IconButton
+                                    key={tab.id}
+                                    onClick={() => togglePanel(tab.id)}
+                                    active={panelTab === tab.id}
+                                    label={tab.label}
+                                >
+                                    <tab.icon className="h-4 w-4" />
+                                </IconButton>
+                            ))}
+                        </div>
+                        <span className="mx-1 hidden h-5 w-px bg-white/[0.08] sm:block" />
+                        <IconButton onClick={resetThread} disabled={isAsking} label="New thread"><Plus className="h-4 w-4" /></IconButton>
+                    </header>
+
+                    <div ref={outputRef} className="min-h-0 flex-1 overflow-y-auto px-4 pb-4 pt-6 sm:px-6">
+                        {!thread.length && !isAsking && (
+                            <div className="mx-auto flex h-full max-w-2xl flex-col justify-end pb-2 pt-8">
+                                <span className="inline-flex items-center gap-2 text-[10px] font-bold uppercase tracking-[0.12em] text-emerald-300"><Sparkles className="h-3.5 w-3.5" /> Evidence-first research</span>
+                                <h2 className="mt-3 text-2xl font-bold leading-tight text-white">A second mind for the work that compounds.</h2>
+                                <p className="mt-2 max-w-xl text-sm leading-6 text-slate-400">Your portfolio, market momentum, and Drive research retrieved by meaning. Every answer keeps its market date and sources attached.</p>
+                                <div className="mt-5 grid gap-1.5 sm:grid-cols-2">
+                                    {[
+                                        'Where is momentum strongest and weakest in my current book?',
+                                        'Which holdings create the most concentration risk today?',
+                                        'Where does value accrue in AI infrastructure?',
+                                        'What is the strongest bear case?',
+                                    ].map(suggestion => (
+                                        <button key={suggestion} type="button" onClick={() => setDraft(suggestion)} className="group flex min-h-11 items-start gap-2 rounded-lg border border-white/[0.07] px-3 py-2.5 text-left text-xs leading-5 text-slate-400 transition-colors hover:border-emerald-500/25 hover:bg-emerald-500/[0.05] hover:text-white">
+                                            <ChevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-700 transition-colors group-hover:text-emerald-300" />
+                                            {suggestion}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        <div className="space-y-7">
                             {thread.map(message => (
-                                <article key={message.id} className={cn('max-w-3xl', message.role === 'user' ? 'ml-auto' : 'mr-auto')}>
-                                    <div className={cn('rounded-lg border px-4 py-3.5 sm:px-5', message.role === 'user' ? 'border-sky-500/20 bg-sky-500/[0.08]' : 'border-white/[0.08] bg-white/[0.025]')}>
-                                        <div className="mb-3 flex flex-col items-start justify-between gap-1.5 sm:flex-row sm:items-center sm:gap-3">
-                                            <span className={cn('text-[10px] font-bold uppercase tracking-[0.12em]', message.role === 'user' ? 'text-sky-300' : 'text-emerald-300')}>
-                                                {message.role === 'user' ? 'You' : 'Investment Brain'}
-                                            </span>
-                                            {message.role === 'assistant' && message.retrieval && (
-                                                <span className="text-[10px] font-medium text-slate-500">
-                                                    {message.retrieval.semanticAvailable ? `${message.retrieval.semanticHits ?? 0} semantic` : 'exact search'}
-                                                    {` + ${message.retrieval.keywordHits ?? 0} exact`}
-                                                    {message.retrieval.referenceSources ? ` / ${message.retrieval.referenceSources} framework${message.retrieval.referenceSources === 1 ? '' : 's'}` : ''}
-                                                    {message.retrieval.fullDocuments ? ` / ${message.retrieval.fullDocuments} full file${message.retrieval.fullDocuments === 1 ? '' : 's'}` : ''}
-                                                    {message.retrieval.portfolioPositions ? ` / ${message.retrieval.portfolioPositions} ${message.retrieval.marketDataAvailable ? 'live positions' : 'portfolio targets'}` : ''}
-                                                    {message.retrieval.expandedFiles ? ` · ${message.retrieval.expandedFiles} file read${message.retrieval.expandedFiles === 1 ? '' : 's'}` : ''}
-                                                </span>
+                                <article key={message.id} className="mx-auto w-full max-w-3xl">
+                                    {message.role === 'user' ? (
+                                        <div className="flex justify-end">
+                                            <p className="max-w-[85%] whitespace-pre-wrap rounded-xl rounded-br-sm border border-sky-500/20 bg-sky-500/[0.08] px-4 py-2.5 text-sm leading-6 text-slate-100">{message.content}</p>
+                                        </div>
+                                    ) : (
+                                        <div className="border-l-2 border-emerald-400/25 pl-4 sm:pl-5">
+                                            {/* Caveats change how the answer should be read, so they go above it. */}
+                                            {message.status && (
+                                                <p className="mb-3 rounded-md border border-amber-400/20 bg-amber-400/[0.05] px-3 py-2 text-xs leading-5 text-amber-200/80">{message.status}</p>
+                                            )}
+                                            <MarkdownAnswer content={message.content} />
+                                            <EvidenceList context={message.context} />
+                                            {(message.retrieval || message.timingMs) && (
+                                                <p className="mt-2.5 text-[10px] leading-4 text-slate-600">
+                                                    {[retrievalSummary(message.retrieval), message.timingMs ? formatSeconds(message.timingMs) : null].filter(Boolean).join(' · ')}
+                                                </p>
                                             )}
                                         </div>
-                                        {/* Caveats change how the answer should be read, so they go above it. */}
-                                        {message.status && (
-                                            <p className="mb-3 rounded-md border border-amber-400/20 bg-amber-400/[0.05] px-3 py-2 text-xs leading-5 text-amber-200/80">{message.status}</p>
-                                        )}
-                                        {message.role === 'assistant'
-                                            ? <MarkdownAnswer content={message.content} />
-                                            : <p className="whitespace-pre-wrap text-sm leading-6 text-slate-100">{message.content}</p>}
-                                        {message.role === 'assistant' && <EvidenceList context={message.context} />}
-                                    </div>
-                                    {message.role === 'assistant' && message.timingMs && <p className="mt-1.5 px-1 text-[10px] text-slate-600">Completed in {formatSeconds(message.timingMs)}</p>}
+                                    )}
                                 </article>
                             ))}
 
                             {isAsking && (
-                                <article className="max-w-3xl rounded-lg border border-white/[0.08] bg-white/[0.025] px-4 py-4 sm:px-5">
+                                <article className="mx-auto w-full max-w-3xl border-l-2 border-emerald-400/25 pl-4 sm:pl-5">
                                     <div className="flex items-center gap-2 text-sm text-slate-400">
                                         <LoaderCircle className="h-4 w-4 shrink-0 animate-spin text-emerald-300" />
                                         <span>Retrieving the portfolio, market, and research data this question needs.</span>
                                         <span className="ml-auto shrink-0 tabular-nums text-xs text-slate-500">{askElapsed}s</span>
                                     </div>
-                                    {notice && <p className="mt-2 text-xs leading-5 text-slate-500">{notice}</p>}
                                     {askElapsed >= 60 && (
                                         <p className="mt-2 text-xs leading-5 text-amber-200/70">
                                             Still working. This request stops at {Math.round(askTimeoutMs(fullContextSources.length) / 1000)}s, and your question is kept so you can retry.
@@ -1400,196 +1642,263 @@ export const InvestmentBrainChat: React.FC = () => {
                                 </article>
                             )}
                         </div>
+                    </div>
 
-                        <div ref={composerRef} className="border-t border-white/[0.07] bg-[#080d15]/95 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-xl sm:p-4">
-                            <div className="rounded-xl border border-white/[0.1] bg-white/[0.025] p-2 focus-within:border-emerald-500/35 focus-within:bg-white/[0.035]">
-                                <div className="flex gap-2">
-                                    <textarea
-                                        value={draft}
-                                        onChange={event => setDraft(event.target.value)}
-                                        onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendQuestion(); } }}
-                                        rows={2}
-                                        aria-label="Research question"
-                                        placeholder="Ask about a company, thesis, trend, or source..."
-                                        className="min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-5 text-white outline-none placeholder:text-slate-600"
-                                    />
-                                    <Button type="button" tone="primary" onClick={() => void sendQuestion()} disabled={!ready || !draft.trim() || isAsking} className="h-10 min-h-10 w-10 shrink-0 px-0" aria-label="Send question">
-                                        {isAsking ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                                    </Button>
-                                </div>
+                    {/* ── Composer: context is attached here, not in a distant panel ── */}
+                    <div ref={composerRef} className="shrink-0 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
+                        <div className="mx-auto w-full max-w-3xl rounded-xl border border-white/[0.1] bg-white/[0.025] focus-within:border-emerald-500/35">
+                            <div className="flex flex-wrap items-center gap-1 border-b border-white/[0.06] px-2 py-1.5">
+                                <ContextChip onClick={() => void openReferencePicker()} disabled={!ready} active={referenceSources.length > 0} tone="violet" icon={BookOpenCheck} title={referenceSources.map(source => sourceName(source)).join('\n') || 'Files used as a standing framework in every answer'}>
+                                    Reference{referenceSources.length ? ` ${referenceSources.length}` : ''}
+                                </ContextChip>
+                                <ContextChip onClick={() => void openFullContextPicker()} disabled={!ready} active={fullContextSources.length > 0} tone="cyan" icon={FileSearch} title={fullContextSources.map(source => sourceName(source)).join('\n') || 'Indexed files included in full, not by retrieval'}>
+                                    Full files{fullContextSources.length ? ` ${fullContextSources.length}` : ''}
+                                </ContextChip>
+                                <ContextChip onClick={() => void openSystemPrompt()} disabled={!ready} active={Boolean(systemPrompt)} tone="amber" icon={Sparkles} title={systemPrompt ? excerpt(systemPrompt, 240) : 'Default research instructions'}>
+                                    Prompt
+                                </ContextChip>
+                                <ContextChip onClick={() => { setPaletteQuery(''); setIsPaletteOpen(true); }} tone="slate" icon={Command} title={`All Brain commands (${modKeyLabel}K)`}>
+                                    Tools
+                                </ContextChip>
                             </div>
-                            <p className="mt-2 hidden px-1 text-[10px] text-slate-600 sm:block">Enter to send · Shift + Enter for a new line · sources are attached to every answer</p>
-                        </div>
-                    </section>
-
-                    <aside className="grid grid-cols-1 items-start gap-3 md:grid-cols-2 xl:block xl:space-y-3">
-                        <section className="rounded-xl border border-white/[0.08] bg-[#090e17]/95 p-4 shadow-xl shadow-black/10">
-                            <div className="flex items-center justify-between gap-3">
-                                <div className="flex items-center gap-2"><History className="h-4 w-4 text-emerald-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Saved threads</h2></div>
-                                <Button type="button" onClick={() => void loadSavedThreads()} disabled={!ready || isSavedThreadsLoading} className="min-h-7 px-2" aria-label="Refresh saved Brain threads">{isSavedThreadsLoading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}</Button>
-                            </div>
-                            {!savedThreadsLoaded ? (
-                                <button type="button" onClick={() => void loadSavedThreads()} disabled={!ready || isSavedThreadsLoading} className="mt-3 w-full rounded-md border border-white/[0.08] bg-white/[0.025] px-3 py-2.5 text-left text-xs text-slate-400 transition-colors hover:border-emerald-500/25 hover:text-slate-200 disabled:cursor-not-allowed disabled:text-slate-600">Load conversation history from Drive</button>
-                            ) : savedThreads.length ? (
-                                <div className="mt-3 max-h-56 space-y-1.5 overflow-y-auto pr-1">
-                                    {savedThreads.map(savedThread => (
-                                        <div key={savedThread.threadId} className={cn('flex items-center gap-2 rounded-md border px-2.5 py-2', savedThread.threadId === threadId ? 'border-emerald-500/25 bg-emerald-500/[0.06]' : 'border-white/[0.06] bg-black/15')}>
-                                            <button type="button" onClick={() => void resumeSavedThread(savedThread)} disabled={isAsking || isSavedThreadsLoading} className="min-w-0 flex-1 text-left disabled:cursor-not-allowed">
-                                                <p className="truncate text-xs font-semibold text-slate-200">{savedThread.title ?? savedThread.fileName ?? 'Saved research thread'}</p>
-                                                <p className="mt-0.5 text-[10px] text-slate-600">{savedThread.exchangeCount ?? 0} exchange{savedThread.exchangeCount === 1 ? '' : 's'}{savedThread.updatedAt ? ` / ${new Date(savedThread.updatedAt).toLocaleDateString()}` : ''}</p>
-                                            </button>
-                                            {savedThread.webViewLink && <a href={savedThread.webViewLink} target="_blank" rel="noreferrer" className="shrink-0 text-slate-600 transition-colors hover:text-emerald-300" aria-label="Open saved thread in Drive"><ExternalLink className="h-3.5 w-3.5" /></a>}
-                                        </div>
-                                    ))}
-                                </div>
-                            ) : (
-                                <p className="mt-3 text-xs leading-5 text-slate-500">No saved conversations yet. The first completed answer creates one.</p>
-                            )}
-                        </section>
-
-                        <section className="rounded-xl border border-white/[0.08] bg-[#090e17]/95 p-4 shadow-xl shadow-black/10 md:col-span-2 xl:col-auto">
-                            <div className="flex items-center justify-between gap-3">
-                                <div className="flex items-center gap-2"><Library className="h-4 w-4 text-cyan-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Library</h2></div>
-                                <Button type="button" onClick={() => void refresh()} className="min-h-7 px-2" aria-label="Refresh library status"><RefreshCw className="h-3.5 w-3.5" /></Button>
-                            </div>
-                            <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
-                                <div><dt className="text-slate-500">Sources</dt><dd className="mt-0.5 font-semibold text-white">{formatCount(counts.sources)}</dd></div>
-                                <div><dt className="text-slate-500">Passages</dt><dd className="mt-0.5 font-semibold text-white">{formatCount(embeddings.total ?? counts.chunks)}</dd></div>
-                                <div><dt className="text-slate-500">Semantic index</dt><dd className={cn('mt-0.5 font-semibold', allEmbedded ? 'text-emerald-300' : 'text-amber-300')}>{formatPercent(embeddings.coverage)}</dd></div>
-                                <div><dt className="text-slate-500">Storage</dt><dd className="mt-0.5 font-semibold text-white">{status?.storage === 'postgres_pgvector' ? 'Supabase' : 'Local'}</dd></div>
-                            </dl>
-                            {portfolioContext && (
-                                <div className="mt-4 border-t border-white/[0.07] pt-3">
-                                    <div className="flex items-center justify-between gap-3">
-                                        <div className="flex items-center gap-2"><BriefcaseBusiness className="h-3.5 w-3.5 text-cyan-300" /><span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">{portfolioModeLabel}</span></div>
-                                        <span className={cn('text-[9px] font-bold uppercase tracking-[0.08em]', portfolioContext.marketDataAvailable ? portfolioContext.fresh ? 'text-emerald-300' : 'text-amber-300' : 'text-violet-300')}>{portfolioContext.marketDataAvailable ? `As of ${portfolioContext.dataAsOf ?? 'unknown'}` : 'No market fetch'}</span>
-                                    </div>
-                                    <dl className="mt-2 grid grid-cols-4 gap-2 text-[10px]">
-                                        <div><dt className="text-slate-600">Long</dt><dd className="mt-0.5 font-semibold text-emerald-300">{formatPercent(displayedExposure?.long)}</dd></div>
-                                        <div><dt className="text-slate-600">Short</dt><dd className="mt-0.5 font-semibold text-rose-300">{formatPercent(displayedExposure?.short)}</dd></div>
-                                        <div><dt className="text-slate-600">Gross</dt><dd className="mt-0.5 font-semibold text-white">{formatPercent(displayedExposure?.gross)}</dd></div>
-                                        <div><dt className="text-slate-600">Net</dt><dd className="mt-0.5 font-semibold text-cyan-200">{formatPercent(displayedExposure?.net)}</dd></div>
-                                    </dl>
-                                </div>
-                            )}
-                            <div className="mt-4 grid grid-cols-2 gap-2">
-                                {!drive?.connected ? <Button type="button" tone="primary" onClick={() => void connectDrive()} disabled={!ready}><Cloud className="h-3.5 w-3.5" /> Connect</Button> : <Button type="button" onClick={() => void syncDrive()} disabled={!ready}><FolderSync className="h-3.5 w-3.5" /> Sync Drive</Button>}
-                                <Button type="button" tone="success" onClick={() => void embedMissing()} disabled={!ready || (embeddings.missing ?? 0) === 0}><Sparkles className="h-3.5 w-3.5" /> Embed {embeddings.missing ? formatCount(embeddings.missing) : 'Ready'}</Button>
-                            </div>
-                            {drive?.connectionState === 'needs_reconnect' && <p className="mt-2 text-xs leading-5 text-amber-300">{drive.connectionMessage ?? 'Google Drive authorization expired. Reconnect to sync new files.'}</p>}
-                            {drive?.folderUrl && <a href={drive.folderUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 transition-colors hover:text-emerald-300">Open Drive folder <ExternalLink className="h-3.5 w-3.5" /></a>}
-                            <div className="mt-4 flex items-start justify-between gap-3 border-t border-white/[0.07] pt-3">
-                                <div className="min-w-0">
-                                    <div className="flex items-center gap-2"><BookOpenCheck className="h-3.5 w-3.5 text-violet-300" /><span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">Reference layer</span></div>
-                                    <p className="mt-1 truncate text-xs text-slate-500">{referenceSources.length ? referenceSources.map(source => sourceName(source)).join(' / ') : 'No persistent framework selected'}</p>
-                                </div>
-                                <Button type="button" onClick={() => void openReferencePicker()} disabled={!ready} className="min-h-7 shrink-0 px-2 text-[9px]">Manage</Button>
-                            </div>
-                            <div className="mt-3 flex items-start justify-between gap-3 border-t border-white/[0.07] pt-3">
-                                <div className="min-w-0">
-                                    <div className="flex items-center gap-2"><FileSearch className="h-3.5 w-3.5 text-cyan-300" /><span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">Full-document context</span></div>
-                                    <p className="mt-1 truncate text-xs text-slate-500">{fullContextSources.length ? fullContextSources.map(source => sourceName(source)).join(' / ') : 'No whole files selected'}</p>
-                                </div>
-                                <Button type="button" onClick={() => void openFullContextPicker()} disabled={!ready} className="min-h-7 shrink-0 px-2 text-[9px]">Manage</Button>
-                            </div>
-                            <div className="mt-3 flex items-start justify-between gap-3 border-t border-white/[0.07] pt-3">
-                                <div className="min-w-0">
-                                    <div className="flex items-center gap-2"><Sparkles className="h-3.5 w-3.5 text-amber-300" /><span className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-400">AI system prompt</span></div>
-                                    <p className="mt-1 truncate text-xs text-slate-500">{systemPrompt ? excerpt(systemPrompt, 92) : 'Default research instructions'}</p>
-                                </div>
-                                <Button type="button" onClick={() => void openSystemPrompt()} disabled={!ready} className="min-h-7 shrink-0 px-2 text-[9px]">Edit</Button>
-                            </div>
-                        </section>
-
-                        <section className="rounded-xl border border-white/[0.08] bg-[#090e17]/95 p-4 shadow-xl shadow-black/10">
-                            <div className="flex items-center gap-2"><Search className="h-4 w-4 text-sky-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Search sources</h2></div>
-                            <div className="mt-3 flex gap-2">
-                                <input value={libraryQuery} onChange={event => setLibraryQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void searchLibrary(); }} placeholder="Search your library" className="h-9 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-sky-500/35" />
-                                <Button type="button" onClick={() => void searchLibrary()} disabled={!ready || !libraryQuery.trim() || isSearching} className="min-h-9 px-2.5" aria-label="Search library">{isSearching ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}</Button>
-                            </div>
-                            {librarySearch && (
-                                <div className="mt-3 border-t border-white/[0.07] pt-3">
-                                    <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500">{librarySearch.label} · {librarySearch.results.length}</p>
-                                    <div className="mt-2 space-y-2">
-                                        {librarySearch.results.length ? librarySearch.results.slice(0, 4).map(result => {
-                                            const link = sourceLink(result.source);
-                                            return <article key={`${result.entityType}-${result.entityId}`} className="rounded-md border border-white/[0.06] bg-black/15 px-3 py-2.5"><div className="flex items-start justify-between gap-2"><p className="min-w-0 text-xs font-semibold leading-5 text-slate-200">{sourceName(result.source, result.title)}</p>{link && <a href={link} target="_blank" rel="noreferrer" className="shrink-0 text-slate-500 hover:text-sky-300"><ArrowUpRight className="h-3.5 w-3.5" /></a>}</div><p className="mt-1 text-[11px] leading-5 text-slate-500">{excerpt(result.body, 125)}</p></article>;
-                                        }) : <p className="text-xs text-slate-500">No matching passages.</p>}
-                                    </div>
-                                </div>
-                            )}
-                        </section>
-
-                        <section className="rounded-xl border border-white/[0.08] bg-[#090e17]/95 p-4 shadow-xl shadow-black/10 md:col-span-2 xl:col-auto">
-                            <div className="flex items-center justify-between gap-3">
-                                <div className="flex items-center gap-2"><FileSearch className="h-4 w-4 text-violet-300" /><h2 className="text-[11px] font-bold uppercase tracking-[0.11em] text-slate-300">Official filing finder</h2></div>
-                                <span className="rounded border border-white/[0.08] px-1.5 py-1 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-500">SEC EDGAR</span>
-                            </div>
-                            <div className="mt-3 flex gap-2">
-                                <input
-                                    value={agentTask}
-                                    onChange={event => { setAgentTask(event.target.value); setAgentSearch(null); setAgentCandidates([]); }}
-                                    onKeyDown={event => { if (event.key === 'Enter') void findOfficialSources(); }}
-                                    aria-label="Find an official filing"
-                                    className="h-10 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-violet-500/35"
-                                    placeholder="META 2025 10-K"
+                            <div className="flex items-end gap-2 p-2">
+                                <textarea
+                                    ref={draftRef}
+                                    value={draft}
+                                    onChange={event => setDraft(event.target.value)}
+                                    onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendQuestion(); } }}
+                                    rows={2}
+                                    aria-label="Research question"
+                                    placeholder="Ask about a company, thesis, trend, or source…"
+                                    className="max-h-48 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-sm leading-6 text-white outline-none placeholder:text-slate-600"
                                 />
-                                <Button type="button" tone="primary" onClick={() => void findOfficialSources()} disabled={!ready || !agentTask.trim() || isAgentWorking} className="min-h-10 shrink-0 px-3" aria-label="Search SEC filings">
-                                    {isAgentWorking ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                                <Button type="button" tone="primary" onClick={() => void sendQuestion()} disabled={!ready || !draft.trim() || isAsking} className="h-9 min-h-9 w-9 shrink-0 px-0" aria-label="Send question">
+                                    {isAsking ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                                 </Button>
                             </div>
-
-                            {agentSearch && (
-                                <div className="mt-3 border-t border-white/[0.07] pt-3">
-                                    <div className="flex flex-wrap items-center gap-1.5">
-                                        {agentSearch.resolvedCompany?.ticker && <span className="rounded border border-violet-400/20 bg-violet-400/[0.08] px-2 py-1 font-mono text-[10px] font-bold text-violet-200">{agentSearch.resolvedCompany.ticker}</span>}
-                                        {(agentSearch.intent?.requestedForms ?? []).map(form => <span key={form} className="rounded border border-white/[0.08] px-2 py-1 text-[9px] font-bold uppercase text-slate-400">{form}</span>)}
-                                        {(agentSearch.intent?.requestedYears ?? []).map(year => <span key={year} className="rounded border border-white/[0.08] px-2 py-1 text-[9px] font-bold uppercase text-slate-400">FY {year}</span>)}
-                                        {agentSearch.intent?.requestedQuarter && <span className="rounded border border-white/[0.08] px-2 py-1 text-[9px] font-bold uppercase text-slate-400">Q{agentSearch.intent.requestedQuarter}</span>}
-                                    </div>
-                                    <p className="mt-2 text-[11px] leading-5 text-slate-500">{agentSearch.message}</p>
-                                </div>
-                            )}
-
-                            {agentCandidates.length > 0 && (
-                                <div className="mt-3 border-t border-white/[0.07] pt-3">
-                                    <div className="max-h-[420px] space-y-2 overflow-y-auto pr-1">
-                                        {agentCandidates.slice(0, 8).map(candidate => (
-                                            <article key={candidate.url} className={cn('rounded-md border bg-black/15 px-3 py-3', candidate.isBestMatch && candidate.isExactMatch ? 'border-emerald-400/25' : 'border-white/[0.06]')}>
-                                                <div className="flex items-start justify-between gap-3">
-                                                    <a href={candidate.url} target="_blank" rel="noreferrer" className="min-w-0 text-xs font-semibold leading-5 text-slate-100 transition-colors hover:text-violet-200">{candidate.title}</a>
-                                                    <Button type="button" onClick={() => void importUrl(candidate.url, candidate.title, true)} disabled={isAgentWorking} className="min-h-7 shrink-0 px-2 text-[9px]">Add</Button>
-                                                </div>
-                                                <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-slate-500">
-                                                    <span className={candidate.isExactMatch ? 'font-semibold text-emerald-300' : 'text-slate-400'}>{candidate.matchQuality ?? 'Official filing'}</span>
-                                                    {candidate.periodLabel && <span>{candidate.periodLabel}</span>}
-                                                    {candidate.filingDate && <span>Filed {candidate.filingDate}</span>}
-                                                    {candidate.isAmendment && <span>Amended</span>}
-                                                </div>
-                                                {candidate.matchReasons?.length ? <p className="mt-1 text-[10px] leading-4 text-slate-600">{candidate.matchReasons.join(' · ')}</p> : null}
-                                            </article>
-                                        ))}
-                                    </div>
-                                    <Button type="button" tone="success" onClick={() => void runAndImport()} disabled={!ready || isAgentWorking || agentCandidates.length === 0} className="mt-3 w-full"><Sparkles className="h-3.5 w-3.5" /> Import top match</Button>
-                                </div>
-                            )}
-
-                            {agentSearch && agentCandidates.length === 0 && <p className="mt-3 rounded-md border border-amber-400/15 bg-amber-400/[0.04] px-3 py-2 text-xs leading-5 text-amber-200/80">No matching SEC filing was returned. Check the company or reporting period.</p>}
-
-                            <div className="mt-4 flex gap-2 border-t border-white/[0.07] pt-3">
-                                <input value={agentUrl} onChange={event => setAgentUrl(event.target.value)} className="h-9 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-violet-500/35" placeholder="Import public URL" />
-                                <Button type="button" onClick={() => void importUrl(agentUrl)} disabled={!ready || !agentUrl.trim() || isAgentWorking} className="min-h-9 px-2.5" aria-label="Import public URL"><Plus className="h-3.5 w-3.5" /></Button>
-                            </div>
-                        </section>
-
-                        <BrainFilesByDate disabled={backendState !== 'ready'} />
-
-                        <BrainDriveCoverage disabled={backendState !== 'ready'} />
-
-                        <BrainSelfBuild disabled={backendState !== 'ready'} />
-                    </aside>
+                        </div>
+                        <p className="mx-auto mt-1.5 w-full max-w-3xl px-1 text-[10px] text-slate-600">
+                            <CornerDownLeft className="mr-1 inline h-3 w-3 align-[-2px]" />send · Shift + Enter for a new line · {modKeyLabel}K for commands
+                        </p>
+                    </div>
                 </div>
-            </main>
+
+                {/* ── Workbench: everything that is not the conversation ── */}
+                {panelTab && (
+                    <>
+                        <div className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm xl:hidden" onClick={() => setPanelTab(null)} aria-hidden="true" />
+                        <aside aria-label="Brain workbench" className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[420px] shrink-0 flex-col border-l border-white/[0.07] bg-[#080c14] xl:static xl:z-auto xl:w-[400px]">
+                            <div className="flex h-12 shrink-0 items-center gap-1 border-b border-white/[0.07] pl-2 pr-2">
+                                {WORKBENCH_TABS.map(tab => (
+                                    <button
+                                        key={tab.id}
+                                        type="button"
+                                        onClick={() => setPanelTab(tab.id)}
+                                        className={cn(
+                                            'rounded-md px-2 py-1.5 text-[10px] font-bold uppercase tracking-[0.08em] transition-colors',
+                                            panelTab === tab.id ? 'bg-white/[0.07] text-white' : 'text-slate-500 hover:text-slate-200',
+                                        )}
+                                    >
+                                        {tab.short}
+                                    </button>
+                                ))}
+                                <IconButton onClick={() => setPanelTab(null)} label="Close the workbench" className="ml-auto"><X className="h-4 w-4" /></IconButton>
+                            </div>
+
+                            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+                                {panelTab === 'library' && (
+                                    <>
+                                        <PanelSection icon={Database} tone="text-cyan-300" title="Index" action={<IconButton onClick={() => void refresh()} label="Refresh library status"><RefreshCw className="h-3.5 w-3.5" /></IconButton>}>
+                                            <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-xs">
+                                                <div><dt className="text-slate-500">Sources</dt><dd className="mt-0.5 font-semibold text-white">{formatCount(counts.sources)}</dd></div>
+                                                <div><dt className="text-slate-500">Passages</dt><dd className="mt-0.5 font-semibold text-white">{formatCount(embeddings.total ?? counts.chunks)}</dd></div>
+                                                <div><dt className="text-slate-500">Semantic index</dt><dd className={cn('mt-0.5 font-semibold', allEmbedded ? 'text-emerald-300' : 'text-amber-300')}>{formatPercent(embeddings.coverage)}</dd></div>
+                                                <div><dt className="text-slate-500">Storage</dt><dd className="mt-0.5 font-semibold text-white">{status?.storage === 'postgres_pgvector' ? 'Supabase' : 'Local'}</dd></div>
+                                            </dl>
+                                            <div className="mt-4 grid grid-cols-2 gap-2">
+                                                {!drive?.connected
+                                                    ? <Button type="button" tone="primary" onClick={() => void connectDrive()} disabled={!ready}><Cloud className="h-3.5 w-3.5" /> Connect</Button>
+                                                    : <Button type="button" onClick={() => void syncDrive()} disabled={!ready}><FolderSync className="h-3.5 w-3.5" /> Sync Drive</Button>}
+                                                <Button type="button" tone="success" onClick={() => void embedMissing()} disabled={!ready || (embeddings.missing ?? 0) === 0}><Sparkles className="h-3.5 w-3.5" /> {embeddings.missing ? `Embed ${formatCount(embeddings.missing)}` : 'All embedded'}</Button>
+                                            </div>
+                                            {drive?.connectionState === 'needs_reconnect' && <p className="mt-2 text-xs leading-5 text-amber-300">{drive.connectionMessage ?? 'Google Drive authorization expired. Reconnect to sync new files.'}</p>}
+                                            {drive?.folderUrl && <a href={drive.folderUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 transition-colors hover:text-emerald-300">Open Drive folder <ExternalLink className="h-3.5 w-3.5" /></a>}
+                                        </PanelSection>
+
+                                        {portfolioContext && (
+                                            <PanelSection icon={BriefcaseBusiness} tone="text-cyan-300" title={portfolioModeLabel} action={<span className={cn('text-[9px] font-bold uppercase tracking-[0.08em]', portfolioContext.marketDataAvailable ? portfolioContext.fresh ? 'text-emerald-300' : 'text-amber-300' : 'text-violet-300')}>{portfolioContext.marketDataAvailable ? `As of ${portfolioContext.dataAsOf ?? 'unknown'}` : 'No market fetch'}</span>}>
+                                                <dl className="grid grid-cols-4 gap-2 text-[10px]">
+                                                    <div><dt className="text-slate-600">Long</dt><dd className="mt-0.5 font-semibold text-emerald-300">{formatPercent(displayedExposure?.long)}</dd></div>
+                                                    <div><dt className="text-slate-600">Short</dt><dd className="mt-0.5 font-semibold text-rose-300">{formatPercent(displayedExposure?.short)}</dd></div>
+                                                    <div><dt className="text-slate-600">Gross</dt><dd className="mt-0.5 font-semibold text-white">{formatPercent(displayedExposure?.gross)}</dd></div>
+                                                    <div><dt className="text-slate-600">Net</dt><dd className="mt-0.5 font-semibold text-cyan-200">{formatPercent(displayedExposure?.net)}</dd></div>
+                                                </dl>
+                                            </PanelSection>
+                                        )}
+                                    </>
+                                )}
+
+                                {panelTab === 'search' && (
+                                    <PanelSection icon={Search} tone="text-sky-300" title="Search sources">
+                                        <div className="flex gap-2">
+                                            <input value={libraryQuery} onChange={event => setLibraryQuery(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void searchLibrary(); }} placeholder="Search your library" className="h-9 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-sky-500/35" />
+                                            <Button type="button" onClick={() => void searchLibrary()} disabled={!ready || !libraryQuery.trim() || isSearching} className="min-h-9 px-2.5" aria-label="Search library">{isSearching ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}</Button>
+                                        </div>
+                                        {librarySearch && (
+                                            <div className="mt-3 border-t border-white/[0.07] pt-3">
+                                                <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-slate-500">{librarySearch.label} · {librarySearch.results.length}</p>
+                                                <div className="mt-2 space-y-2">
+                                                    {librarySearch.results.length ? librarySearch.results.slice(0, 8).map(result => {
+                                                        const link = sourceLink(result.source);
+                                                        return <article key={`${result.entityType}-${result.entityId}`} className="rounded-md border border-white/[0.06] bg-black/15 px-3 py-2.5"><div className="flex items-start justify-between gap-2"><p className="min-w-0 text-xs font-semibold leading-5 text-slate-200">{sourceName(result.source, result.title)}</p>{link && <a href={link} target="_blank" rel="noreferrer" className="shrink-0 text-slate-500 hover:text-sky-300"><ArrowUpRight className="h-3.5 w-3.5" /></a>}</div><p className="mt-1 text-[11px] leading-5 text-slate-500">{excerpt(result.body, 125)}</p></article>;
+                                                    }) : <p className="text-xs text-slate-500">No matching passages.</p>}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </PanelSection>
+                                )}
+
+                                {panelTab === 'filings' && (
+                                    <PanelSection icon={FileSearch} tone="text-violet-300" title="Filing finder" action={<span className="rounded border border-white/[0.08] px-1.5 py-1 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-500">SEC EDGAR</span>}>
+                                        <div className="flex gap-2">
+                                            <input
+                                                value={agentTask}
+                                                onChange={event => { setAgentTask(event.target.value); setAgentSearch(null); setAgentCandidates([]); }}
+                                                onKeyDown={event => { if (event.key === 'Enter') void findOfficialSources(); }}
+                                                aria-label="Find an official filing"
+                                                className="h-10 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-violet-500/35"
+                                                placeholder="META 2025 10-K"
+                                            />
+                                            <Button type="button" tone="primary" onClick={() => void findOfficialSources()} disabled={!ready || !agentTask.trim() || isAgentWorking} className="min-h-10 shrink-0 px-3" aria-label="Search SEC filings">
+                                                {isAgentWorking ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                                            </Button>
+                                        </div>
+
+                                        {agentSearch && (
+                                            <div className="mt-3 border-t border-white/[0.07] pt-3">
+                                                <div className="flex flex-wrap items-center gap-1.5">
+                                                    {agentSearch.resolvedCompany?.ticker && <span className="rounded border border-violet-400/20 bg-violet-400/[0.08] px-2 py-1 font-mono text-[10px] font-bold text-violet-200">{agentSearch.resolvedCompany.ticker}</span>}
+                                                    {(agentSearch.intent?.requestedForms ?? []).map(form => <span key={form} className="rounded border border-white/[0.08] px-2 py-1 text-[9px] font-bold uppercase text-slate-400">{form}</span>)}
+                                                    {(agentSearch.intent?.requestedYears ?? []).map(year => <span key={year} className="rounded border border-white/[0.08] px-2 py-1 text-[9px] font-bold uppercase text-slate-400">FY {year}</span>)}
+                                                    {agentSearch.intent?.requestedQuarter && <span className="rounded border border-white/[0.08] px-2 py-1 text-[9px] font-bold uppercase text-slate-400">Q{agentSearch.intent.requestedQuarter}</span>}
+                                                </div>
+                                                <p className="mt-2 text-[11px] leading-5 text-slate-500">{agentSearch.message}</p>
+                                            </div>
+                                        )}
+
+                                        {agentCandidates.length > 0 && (
+                                            <div className="mt-3 border-t border-white/[0.07] pt-3">
+                                                <div className="space-y-2">
+                                                    {agentCandidates.slice(0, 8).map(candidate => (
+                                                        <article key={candidate.url} className={cn('rounded-md border bg-black/15 px-3 py-3', candidate.isBestMatch && candidate.isExactMatch ? 'border-emerald-400/25' : 'border-white/[0.06]')}>
+                                                            <div className="flex items-start justify-between gap-3">
+                                                                <a href={candidate.url} target="_blank" rel="noreferrer" className="min-w-0 text-xs font-semibold leading-5 text-slate-100 transition-colors hover:text-violet-200">{candidate.title}</a>
+                                                                <Button type="button" onClick={() => void importUrl(candidate.url, candidate.title, true)} disabled={isAgentWorking} className="min-h-7 shrink-0 px-2 text-[9px]">Add</Button>
+                                                            </div>
+                                                            <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-slate-500">
+                                                                <span className={candidate.isExactMatch ? 'font-semibold text-emerald-300' : 'text-slate-400'}>{candidate.matchQuality ?? 'Official filing'}</span>
+                                                                {candidate.periodLabel && <span>{candidate.periodLabel}</span>}
+                                                                {candidate.filingDate && <span>Filed {candidate.filingDate}</span>}
+                                                                {candidate.isAmendment && <span>Amended</span>}
+                                                            </div>
+                                                            {candidate.matchReasons?.length ? <p className="mt-1 text-[10px] leading-4 text-slate-600">{candidate.matchReasons.join(' · ')}</p> : null}
+                                                        </article>
+                                                    ))}
+                                                </div>
+                                                <Button type="button" tone="success" onClick={() => void runAndImport()} disabled={!ready || isAgentWorking || agentCandidates.length === 0} className="mt-3 w-full"><Sparkles className="h-3.5 w-3.5" /> Import top match</Button>
+                                            </div>
+                                        )}
+
+                                        {agentSearch && agentCandidates.length === 0 && <p className="mt-3 rounded-md border border-amber-400/15 bg-amber-400/[0.04] px-3 py-2 text-xs leading-5 text-amber-200/80">No matching SEC filing was returned. Check the company or reporting period.</p>}
+
+                                        <div className="mt-4 flex gap-2 border-t border-white/[0.07] pt-3">
+                                            <input value={agentUrl} onChange={event => setAgentUrl(event.target.value)} className="h-9 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-violet-500/35" placeholder="Import public URL" />
+                                            <Button type="button" onClick={() => void importUrl(agentUrl)} disabled={!ready || !agentUrl.trim() || isAgentWorking} className="min-h-9 px-2.5" aria-label="Import public URL"><Plus className="h-3.5 w-3.5" /></Button>
+                                        </div>
+                                    </PanelSection>
+                                )}
+
+                                {panelTab === 'drive' && (
+                                    <>
+                                        <BrainFilesByDate disabled={backendState !== 'ready'} />
+                                        <BrainDriveCoverage disabled={backendState !== 'ready'} />
+                                    </>
+                                )}
+
+                                {panelTab === 'code' && <BrainSelfBuild disabled={backendState !== 'ready'} />}
+                            </div>
+                        </aside>
+                    </>
+                )}
+            </div>
+
+            {/* ── Status bar: the state an editor keeps at the bottom, not in cards ── */}
+            <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-white/[0.07] bg-[#080c14] px-3 text-[10px] text-slate-500">
+                <span className="inline-flex shrink-0 items-center gap-1.5">
+                    <span className={cn('h-1.5 w-1.5 rounded-full', ready ? allEmbedded ? 'bg-emerald-400' : 'bg-amber-400' : 'bg-rose-400')} />
+                    <span className={cn('font-semibold', ready ? 'text-slate-300' : 'text-rose-300')}>{ready ? libraryState : backendState === 'checking' ? 'Checking Brain' : 'Backend offline'}</span>
+                </span>
+                <button type="button" onClick={() => setPanelTab('library')} className="hidden shrink-0 transition-colors hover:text-slate-200 sm:inline">
+                    {formatCount(counts.sources)} sources · {formatPercent(embeddings.coverage)} indexed
+                </button>
+                {portfolioContext && (
+                    <button type="button" onClick={() => setPanelTab('library')} className="hidden shrink-0 transition-colors hover:text-slate-200 md:inline">
+                        {portfolioContext.positionCount ?? 0} positions · {formatPercent(displayedExposure?.gross)} {portfolioContext.marketDataAvailable ? 'gross' : 'target gross'}
+                    </button>
+                )}
+                {conversationAutosave?.status === 'failed' || conversationAutosave?.status === 'unavailable' ? (
+                    <span className="shrink-0 text-amber-300" title={conversationAutosave.reason ?? 'Drive autosave failed'}>Autosave failed</span>
+                ) : drive?.connected ? (
+                    <span className="hidden shrink-0 lg:inline">Autosave on</span>
+                ) : null}
+                {/* Every failure in this file reports here, so it must stay readable on any width. */}
+                {notice && <span className="ml-auto truncate pl-3 text-right text-slate-400" title={notice}>{notice}</span>}
+            </footer>
+
+            {isPaletteOpen && (
+                <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/75 p-4 pt-[12vh] backdrop-blur-sm" onClick={() => setIsPaletteOpen(false)}>
+                    <section role="dialog" aria-modal="true" aria-label="Brain commands" onClick={event => event.stopPropagation()} className="flex max-h-[min(560px,calc(100vh-160px))] w-full max-w-lg flex-col overflow-hidden rounded-lg border border-white/[0.12] bg-[#0a0f18] shadow-2xl">
+                        <div className="flex items-center gap-2 border-b border-white/[0.08] px-4">
+                            <Command className="h-4 w-4 shrink-0 text-slate-500" />
+                            <input
+                                autoFocus
+                                value={paletteQuery}
+                                onChange={event => setPaletteQuery(event.target.value)}
+                                onKeyDown={event => {
+                                    if (event.key !== 'Enter') return;
+                                    const first = paletteMatches[0];
+                                    if (!first || first.disabled) return;
+                                    setIsPaletteOpen(false);
+                                    first.run();
+                                }}
+                                placeholder="Type a command…"
+                                aria-label="Search Brain commands"
+                                className="h-12 min-w-0 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-slate-600"
+                            />
+                        </div>
+                        <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+                            {paletteMatches.length ? paletteMatches.map(command => (
+                                <button
+                                    key={command.id}
+                                    type="button"
+                                    disabled={command.disabled}
+                                    onClick={() => { setIsPaletteOpen(false); command.run(); }}
+                                    className="flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+                                >
+                                    <command.icon className="h-4 w-4 shrink-0 text-slate-500" />
+                                    <span className="min-w-0 flex-1">
+                                        <span className="block truncate text-xs font-semibold text-slate-200">{command.label}</span>
+                                        {command.hint && <span className="mt-0.5 block truncate text-[10px] text-slate-600">{command.hint}</span>}
+                                    </span>
+                                    <span className="shrink-0 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-700">{command.group}</span>
+                                </button>
+                            )) : (
+                                <p className="px-3 py-6 text-center text-xs text-slate-600">No command matches that.</p>
+                            )}
+                        </div>
+                    </section>
+                </div>
+            )}
             {isReferencePickerOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
                     <section role="dialog" aria-modal="true" aria-labelledby="reference-layer-title" className="flex max-h-[min(720px,calc(100vh-32px))] w-full max-w-2xl flex-col rounded-lg border border-white/[0.12] bg-[#0a0f18] shadow-2xl">

@@ -129,7 +129,8 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     </div>
 
                     {/* Benchmark comparison strip */}
-                    <div className="mt-auto min-h-[68px] grid grid-cols-3 divide-x divide-white/[0.06] border-t border-white/[0.06] bg-white/[0.02]">
+                    <div className="mt-auto border-t border-white/[0.06] bg-white/[0.02]">
+                    <div className="min-h-[68px] grid grid-cols-3 divide-x divide-white/[0.06]">
                         {[
                             { label: 'SPY', value: vitals.benchmarkYtd, title: 'SPDR S&P 500 ETF, total return in USD' },
                             { label: 'MSCI', value: vitals.msciYtd, title: benchmarkTitle(vitals.msciBenchmark, 'iShares MSCI World ETF, in USD') },
@@ -153,6 +154,15 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                 </div>
                             );
                         })}
+                    </div>
+                    {/* The Polish benchmark is the one nobody can guess from a three-letter
+                        label: a total-return tracker quoted in PLN, which sits above the WIG20
+                        price index the press prints. A hover tooltip cannot say so on a phone. */}
+                    <p className="border-t border-white/[0.06] px-3 py-1.5 text-center text-[9px] leading-4 text-gray-600">
+                        {vitals.wigBenchmark
+                            ? `${vitals.wigBenchmark.label}: total return in ${vitals.wigBenchmark.currency}, above the WIG20 price index. SPY and MSCI in USD.`
+                            : 'SPY and MSCI in USD.'}
+                    </p>
                     </div>
                 </div>
 
