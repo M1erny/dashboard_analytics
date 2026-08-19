@@ -10,6 +10,21 @@ export interface TalebMetrics {
     Fat_Tail_Rating: string;
 }
 
+/**
+ * What a benchmark tile is actually showing. `label` is the series' real name,
+ * `currency` the currency the return is measured in, and `warning` is set when
+ * the backend had to fall back to a series it cannot describe cleanly.
+ */
+export interface BenchmarkSource {
+    ticker: string;
+    label: string;
+    basis: string;
+    quoteCurrency: string;
+    currency: string;
+    note?: string;
+    warning?: string;
+}
+
 export interface Vitals {
     beta: number;
     longOnlyBeta?: number;
@@ -37,6 +52,8 @@ export interface Vitals {
     ytdReturnPln: number;
     wigYtd: number;
     msciYtd: number;
+    wigBenchmark?: BenchmarkSource;
+    msciBenchmark?: BenchmarkSource;
     ytdLongsContrib: number;
     ytdShortsContrib: number;
     jensensAlpha: number;
