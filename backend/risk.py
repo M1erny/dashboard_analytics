@@ -113,8 +113,35 @@ PORTFOLIO_CONFIG = load_portfolio_config("main")
 # Global constants for the engine
 
 BENCHMARK = 'SPY'
-BENCHMARK_WIG = 'ETFBW20TR.WA'  # Beta ETF WIG20TR PCIF-Investment Certificates
+# Yahoo does not serve the WIG20 price index, so the Polish benchmark is a proxy.
+# WIG_BENCHMARK_TICKER lets the owner point this at a real index feed without a
+# code change; whatever it resolves to is reported alongside the number so the
+# dashboard never labels a proxy as the index itself.
+BENCHMARK_WIG = (os.environ.get('WIG_BENCHMARK_TICKER') or 'ETFBW20TR.WA').strip()
 BENCHMARK_MSCI = 'URTH'     # iShares MSCI World ETF
+
+# A benchmark has to be read in the currency it is quoted in. ETFBW20TR.WA is
+# also a portfolio position, so normalize_to_base_currency multiplies it by
+# PLNUSD=X and the "WIG20" figure silently becomes a PLN index expressed in USD
+# — index move plus the zloty's move against the dollar. This table is what lets
+# the benchmark path ask for the pre-normalisation series instead.
+BENCHMARK_QUOTE_CURRENCY = {
+    BENCHMARK: 'USD',
+    BENCHMARK_WIG: 'PLN',
+    BENCHMARK_MSCI: 'USD',
+}
+
+# Descriptions of what each benchmark series actually is, shipped to the UI so a
+# total-return ETF is never displayed under a price index's name.
+BENCHMARK_DESCRIPTIONS = {
+    'ETFBW20TR.WA': {
+        'label': 'WIG20TR',
+        'basis': 'total_return',
+        'note': ('Beta ETF WIG20TR — a total-return tracker (dividends reinvested, '
+                 'net of fund fees and tracking error), quoted in PLN. It runs '
+                 'above the WIG20 price index quoted by news sites.'),
+    },
+}
 WATCHLIST_FX = ['USDPLN=X', 'EURPLN=X', 'EURUSD=X', 'DKKEUR=X', 'JPYUSD=X'] # Pairs to track
 BASE_CURRENCY = 'USD'
 LOOKBACK_YEARS = 5.2
@@ -518,6 +545,73 @@ def normalize_to_base_currency(stock_df, fx_df, portfolio_name="main"):
             print(f"Error: FX data missing for {currency}. Calculations for {ticker} might be wrong.")
             
     return normalized_df
+
+
+def describe_benchmark(ticker, currency_used):
+    """What a benchmark series is, in the words the dashboard should use for it."""
+    described = BENCHMARK_DESCRIPTIONS.get(ticker, {})
+    quote_currency = BENCHMARK_QUOTE_CURRENCY.get(ticker, BASE_CURRENCY)
+    info = {
+        'ticker': ticker,
+        'label': described.get('label') or ticker,
+        'basis': described.get('basis', 'price'),
+        'quoteCurrency': quote_currency,
+        'currency': currency_used,
+        'note': described.get('note', ''),
+    }
+    if currency_used != quote_currency:
+        # The only way to get here is a missing pre-normalisation frame. Say so
+        # rather than printing an FX-contaminated number under a clean label.
+        info['warning'] = (
+            f"Returned in {currency_used} because the original-currency price frame "
+            f"was unavailable; it therefore includes the {quote_currency}/{currency_used} move."
+        )
+    return info
+
+
+def benchmark_quote_returns(returns_df, local_returns_df, ticker):
+    """Daily returns for a benchmark, in the currency the benchmark is quoted in.
+
+    ``returns_df`` is built from the USD-normalised price frame, which is right
+    for the portfolio and wrong for a benchmark that is also a position: a PLN
+    index converted to USD is no longer that index. ``local_returns_df`` is the
+    same frame before normalisation, so a non-USD benchmark is read from there.
+
+    Returns ``(series, currency_used)``; ``series`` is None when the ticker is
+    absent from both frames.
+    """
+    quote_currency = BENCHMARK_QUOTE_CURRENCY.get(ticker, BASE_CURRENCY)
+
+    if quote_currency != BASE_CURRENCY and local_returns_df is not None and ticker in local_returns_df.columns:
+        series = local_returns_df[ticker]
+        if series.dropna().empty:
+            series = None
+        else:
+            return series, quote_currency
+
+    if ticker in returns_df.columns:
+        # USD benchmarks are untouched by normalisation, so this is the same
+        # series either way. A non-USD one lands here only as a last resort.
+        return returns_df[ticker], BASE_CURRENCY if quote_currency != BASE_CURRENCY else quote_currency
+
+    return None, quote_currency
+
+
+def _compound_since(series, start):
+    """Compound a daily return series over [start, end of series]."""
+    if series is None:
+        return None
+    series = series.dropna()
+    if series.empty:
+        return None
+    index = series.index
+    if hasattr(index, 'tz') and index.tz is not None:
+        series = series.copy()
+        series.index = index.tz_localize(None)
+    window = series[series.index >= start]
+    if window.empty:
+        return None
+    return float((1 + window).prod() - 1)
 
 # ==========================================
 # 3. RISK CALCULATOR
@@ -1086,7 +1180,7 @@ def calculate_segmented_ytd(
 # ==========================================
 # 3. RISK CALCULATOR (ADVANCED)
 # ==========================================
-def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MARGIN_RATE, borrow_fee=BORROW_FEE, portfolio_name="main"):
+def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MARGIN_RATE, borrow_fee=BORROW_FEE, portfolio_name="main", raw_price_df=None):
     PORTFOLIO_CONFIG = get_effective_portfolio_config(portfolio_name)
     print("--- 3. Calculating Advanced Risk Metrics ---")
     
@@ -1104,6 +1198,17 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
     if returns_df.empty or len(returns_df) < 2:
         print("Error: Insufficient returns data after pct_change.")
         return None
+
+    # Benchmarks quoted outside the base currency are read from the original
+    # price frame. Without it a PLN benchmark that also happens to be a held
+    # position reports the index move times the zloty move.
+    local_returns_df = None
+    if raw_price_df is not None and not raw_price_df.empty and len(raw_price_df) >= 2:
+        local_returns_df = raw_price_df.pct_change().dropna(how='all')
+        if local_returns_df.empty:
+            local_returns_df = None
+    else:
+        print("Warning: original-currency price frame not supplied; non-USD benchmarks will carry an FX component.")
     
     if BENCHMARK not in returns_df.columns:
         print(f"Critical Error: Benchmark {BENCHMARK} data missing.")
@@ -1672,27 +1777,21 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
             print(f"Error calculating PLN return: {e}")
             ytd_return_pln = ytd_return
         
-        # WIG YTD
-        if BENCHMARK_WIG in returns_df.columns:
-            wig_ret = returns_df[BENCHMARK_WIG]
-            if hasattr(wig_ret.index, 'tz') and wig_ret.index.tz is not None:
-                wig_ret.index = wig_ret.index.tz_localize(None)
-            # Use same logic? Benchmarks are returns streams here, not prices.
-            # So just summing returns from Jan 1 is correct.
-            ytd_wig = wig_ret[wig_ret.index >= ytd_calc_start]
-            wig_ytd = (1 + ytd_wig).prod() - 1 if not ytd_wig.empty else 0
-        else:
+        # WIG YTD — in PLN, the currency WIG20 is quoted in.
+        wig_ret, wig_currency = benchmark_quote_returns(returns_df, local_returns_df, BENCHMARK_WIG)
+        wig_ytd = _compound_since(wig_ret, ytd_calc_start)
+        wig_benchmark = describe_benchmark(BENCHMARK_WIG, wig_currency)
+        if wig_ytd is None:
             wig_ytd = 0
-            
+            wig_benchmark['warning'] = f"No price data for {BENCHMARK_WIG} in the year-to-date window."
+
         # MSCI World YTD
-        if BENCHMARK_MSCI in returns_df.columns:
-            msci_ret = returns_df[BENCHMARK_MSCI]
-            if hasattr(msci_ret.index, 'tz') and msci_ret.index.tz is not None:
-                msci_ret.index = msci_ret.index.tz_localize(None)
-            ytd_msci = msci_ret[msci_ret.index >= ytd_calc_start]
-            msci_ytd = (1 + ytd_msci).prod() - 1 if not ytd_msci.empty else 0
-        else:
+        msci_ret, msci_currency = benchmark_quote_returns(returns_df, local_returns_df, BENCHMARK_MSCI)
+        msci_ytd = _compound_since(msci_ret, ytd_calc_start)
+        msci_benchmark = describe_benchmark(BENCHMARK_MSCI, msci_currency)
+        if msci_ytd is None:
             msci_ytd = 0
+            msci_benchmark['warning'] = f"No price data for {BENCHMARK_MSCI} in the year-to-date window."
             
         # Longs/Shorts Contribution was already accumulated efficiently in the main YTD loop above.
         ytd_historical_diagnostics = build_historical_diagnostics(
@@ -1730,6 +1829,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         ytd_return_pln = 0.0
         wig_ytd = 0.0
         msci_ytd = 0.0
+        wig_benchmark = describe_benchmark(BENCHMARK_WIG, BENCHMARK_QUOTE_CURRENCY.get(BENCHMARK_WIG, BASE_CURRENCY))
+        msci_benchmark = describe_benchmark(BENCHMARK_MSCI, BENCHMARK_QUOTE_CURRENCY.get(BENCHMARK_MSCI, BASE_CURRENCY))
         ytd_longs_contrib = 0.0
         ytd_shorts_contrib = 0.0
         ytd_max_drawdown = 0.0
@@ -1981,6 +2082,8 @@ def calculate_risk_metrics(price_df, volume_df=None, fx_df=None, margin_rate=MAR
         'YTD_Return_PLN': ytd_return_pln,
         'WIG_YTD': wig_ytd,
         'MSCI_YTD': msci_ytd,
+        'WIG_Benchmark': wig_benchmark,
+        'MSCI_Benchmark': msci_benchmark,
         'Period_Label': period_label,
         'YTD_Period_Info': ytd_period_info,
         'YTD_Longs_Contrib': ytd_longs_contrib,
@@ -2658,8 +2761,8 @@ def audit_data_quality(df):
         print("\n[OK] All tickers have sufficient data coverage.")
 
 if __name__ == "__main__":
-    raw_prices, fx_rates = fetch_data()
+    raw_prices, fx_rates, volume_data = fetch_data()
     usd_prices = normalize_to_base_currency(raw_prices, fx_rates)
     audit_data_quality(usd_prices)
-    metrics = calculate_risk_metrics(usd_prices)
+    metrics = calculate_risk_metrics(usd_prices, volume_data, fx_rates, raw_price_df=raw_prices)
     generate_report(metrics, usd_prices)

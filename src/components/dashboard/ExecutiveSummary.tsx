@@ -1,6 +1,6 @@
 import React from 'react';
 import { cn } from '../../lib/utils';
-import type { Vitals, HistoryPoint, StressTest, MomentumMetrics, ConvexityMetrics } from '../../utils/finance';
+import type { Vitals, HistoryPoint, StressTest, MomentumMetrics, ConvexityMetrics, BenchmarkSource } from '../../utils/finance';
 import { ConvexityWidget } from './ConvexityWidget';
 import { ResponsiveContainer, LineChart, Line, Tooltip } from 'recharts';
 import {
@@ -17,6 +17,16 @@ interface ExecutiveSummaryProps {
     momentum?: MomentumMetrics | null;
     convexity?: ConvexityMetrics | null;
 }
+
+// A benchmark tile is a comparison, so it has to say what it is compared against:
+// which series, and in which currency the return is measured.
+const benchmarkTitle = (source: BenchmarkSource | undefined, fallback: string) => {
+    if (!source) return fallback;
+    const parts = [`${source.label} (${source.ticker}), in ${source.currency}`];
+    if (source.note) parts.push(source.note);
+    if (source.warning) parts.push(`⚠ ${source.warning}`);
+    return parts.join(' — ');
+};
 
 // ─── Formatters ──────────────────────────────────────────────
 const fmt = (val: number | undefined, decimals = 2) =>
@@ -121,15 +131,15 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                     {/* Benchmark comparison strip */}
                     <div className="mt-auto min-h-[68px] grid grid-cols-3 divide-x divide-white/[0.06] border-t border-white/[0.06] bg-white/[0.02]">
                         {[
-                            { label: 'SPY', value: vitals.benchmarkYtd },
-                            { label: 'MSCI', value: vitals.msciYtd },
-                            { label: '🇵🇱 WIG20', value: vitals.wigYtd },
+                            { label: 'SPY', value: vitals.benchmarkYtd, title: 'SPDR S&P 500 ETF, total return in USD' },
+                            { label: 'MSCI', value: vitals.msciYtd, title: benchmarkTitle(vitals.msciBenchmark, 'iShares MSCI World ETF, in USD') },
+                            { label: `🇵🇱 ${vitals.wigBenchmark?.label ?? 'WIG20'}`, value: vitals.wigYtd, title: benchmarkTitle(vitals.wigBenchmark, 'Polish equity benchmark') },
                         ].map(b => {
                             const portfolioRet = vitals.ytdReturn ?? 0;
                             const bVal = b.value ?? 0;
                             const delta = portfolioRet - bVal;
                             return (
-                                <div key={b.label} className="flex flex-col items-center justify-center py-2 px-2 gap-0.5 h-full">
+                                <div key={b.label} title={b.title} className="flex flex-col items-center justify-center py-2 px-2 gap-0.5 h-full">
                                     <span className="text-[10px] text-gray-500 uppercase tracking-wider font-medium">{b.label}</span>
                                     <span className={cn("font-mono text-sm font-bold tracking-tight", returnColor(b.value))}>
                                         {fmtSigned(b.value)}

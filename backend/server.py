@@ -4022,7 +4022,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             fx_rates,
             margin_rate=margin_rate,
             borrow_fee=borrow_fee,
-            portfolio_name=portfolio
+            portfolio_name=portfolio,
+            raw_price_df=raw_prices
         )
         
         if metrics is None:
@@ -4103,6 +4104,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
                 "ytdReturnPln": to_float(metrics.get('YTD_Return_PLN')),
                 "wigYtd": to_float(metrics.get('WIG_YTD')),
                 "msciYtd": to_float(metrics.get('MSCI_YTD')),
+                "wigBenchmark": metrics.get('WIG_Benchmark'),
+                "msciBenchmark": metrics.get('MSCI_Benchmark'),
                 "ytdLongsContrib": to_float(metrics.get('YTD_Longs_Contrib')),
                 "ytdShortsContrib": to_float(metrics.get('YTD_Shorts_Contrib')),
                 "fxWatchlist": metrics.get('Fx_Watchlist', {}),

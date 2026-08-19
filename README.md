@@ -326,6 +326,8 @@ docs/self-building-brain.md
 docs/drive-ingestion-coverage.md
 docs/period-book-analytics.md
 docs/beta-correlation-and-backward-analysis.md
+docs/benchmark-currency.md
+docs/roadmap.md
 ```
 
 ## Ingestion Coverage
