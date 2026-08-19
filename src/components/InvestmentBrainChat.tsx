@@ -336,6 +336,44 @@ const request = async (url: string, options: RequestInit = {}, timeoutMs = 65000
 // waiting indicator so the countdown can never disagree with the real abort deadline.
 const askTimeoutMs = (fullDocumentCount: number) => (fullDocumentCount ? 150000 : 90000);
 
+/**
+ * `fetch` rejects with a bare `TypeError` — "Failed to fetch" in Chrome, "Load
+ * failed" in Safari — for every network-level failure alike: a dropped
+ * connection, a server process killed mid-request, a refused preflight, a phone
+ * changing network. The message names none of them, so the owner is told only
+ * that something went wrong.
+ *
+ * Probing the backend immediately afterwards separates the two cases that need
+ * different fixes: the service is still up and this one request was killed, or
+ * the service itself went away. The elapsed time separates them further — a
+ * failure at two seconds is not the same event as one at a hundred.
+ */
+const diagnoseAskFailure = async (error: unknown, elapsedMs: number, fullDocumentCount: number) => {
+    const seconds = Math.max(1, Math.round(elapsedMs / 1000));
+    const fullDocs = fullDocumentCount
+        ? ` ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context is the most expensive setting there is; try fewer.`
+        : '';
+
+    if (error instanceof DOMException && error.name === 'AbortError') {
+        return `No answer within ${seconds}s, so the request was given up on. The backend may be waking up.${fullDocs}`;
+    }
+    if (!(error instanceof TypeError)) {
+        return error instanceof Error ? error.message : 'The Brain could not complete this question.';
+    }
+
+    let backendAlive = false;
+    try {
+        backendAlive = (await request(api('/api/brain/status'), {}, 12000)).ok;
+    } catch {
+        backendAlive = false;
+    }
+
+    if (backendAlive) {
+        return `The connection dropped after ${seconds}s, but the backend is answering again now — so this one request was killed, not the service. That is usually a question too heavy or too slow for the host to hold open.${fullDocs} The Render logs will say whether it was a restart or an out-of-memory kill.`;
+    }
+    return `The backend stopped responding after ${seconds}s and is still unreachable. It has restarted, gone to sleep, or the connection was lost. Wait for it to come back, then send the question again.`;
+};
+
 const errorText = async (response: Response, fallback: string) => {
     const payload = await response.json().catch(() => null) as { detail?: string | { message?: string; reason?: string } } | null;
     if (typeof payload?.detail === 'string') return payload.detail;
@@ -876,6 +914,7 @@ export const InvestmentBrainChat: React.FC = () => {
             ? `Reading ${fullContextSources.length} full document${fullContextSources.length === 1 ? '' : 's'}, then retrieving supporting evidence...`
             : 'Searching evidence, then reading the strongest source files...');
 
+        const askStartedAt = Date.now();
         try {
             const response = await request(api('/api/brain/analyze-company'), {
                 method: 'POST',
@@ -924,9 +963,9 @@ export const InvestmentBrainChat: React.FC = () => {
             const answeredIn = payload.timings?.totalMs ? ` in ${formatSeconds(payload.timings.totalMs)}` : '';
             setNotice(`${answeredBy}${answeredIn}${liveBook}${fullDocumentCount ? ` and ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context` : readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.${saveNote}`);
         } catch (error) {
-            const text = error instanceof DOMException && error.name === 'AbortError'
-                ? 'This request took too long. The backend may be waking up; try the question again.'
-                : error instanceof Error ? error.message : 'The Brain could not complete this question.';
+            const elapsedMs = Date.now() - askStartedAt;
+            if (error instanceof TypeError) setNotice('Connection lost. Checking whether the backend is still up...');
+            const text = await diagnoseAskFailure(error, elapsedMs, fullContextSources.length);
             setThread(current => [...current, { id: messageId(), role: 'assistant', content: text, status: 'No new conclusion was generated.', failed: true }]);
             // Give the question back so it can be retried without retyping. Only when the
             // composer is still empty: the textarea stays editable during the wait.

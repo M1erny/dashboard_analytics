@@ -96,6 +96,36 @@ feature whose panel you have not opened.
   the model name — it sits permanently in the status bar now, so a missing field
   is visible rather than transient.
 
+## When a question fails
+
+`fetch` rejects with a bare `TypeError` for every network-level failure alike —
+"Failed to fetch" in Chrome, "Load failed" in Safari. A dropped connection, a
+server process killed mid-request, a refused preflight and a phone changing
+network all produce the same three words, and the owner is left with nothing to
+act on.
+
+The Brain now answers the question the message does not. On a network-level
+failure it probes `/api/brain/status` and reports which of two different problems
+it hit:
+
+- **the backend answers the probe** — the service is up, so this one request was
+  killed rather than the service. That is a question too heavy or too slow for
+  the host to hold open, and the Render logs will say whether it was a restart or
+  an out-of-memory kill.
+- **the probe fails too** — the backend restarted, went to sleep, or the
+  connection is gone. Waiting and retrying is the fix.
+
+Both messages carry the elapsed time, because a failure at two seconds and one at
+a hundred are not the same event, and both name the full-document count when one
+is set: whole files are the most expensive setting the Brain has, and the first
+thing to reduce when requests start dying.
+
+The client's own timeout is reported separately, since giving up is not the same
+as being cut off.
+
+Both paths were reproduced in a browser against a backend that accepts the
+request and then drops the connection, with and without the service surviving.
+
 ## What was checked
 
 The page was driven in a real browser against a mock backend: empty state, a full
