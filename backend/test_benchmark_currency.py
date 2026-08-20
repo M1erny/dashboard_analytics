@@ -253,6 +253,73 @@ def main():
     check("quote currency is named separately", described_pair["localCurrency"] == "PLN", str(described_pair))
     check("no warning on a clean pair", "warning" not in described_pair, str(described_pair))
 
+    # 14. The FX rate must be differenced on the benchmark's own trading days. A
+    #     rate that moves while the exchange is shut still belongs to the next
+    #     session, and differencing on a calendar grid loses exactly that move.
+    #     This is the shape of the real data: FX quotes on days the WSE does not.
+    gap_dates = pd.date_range("2026-01-02", periods=6, freq="B")
+    gap_local_prices = pd.Series([100.0, 101.0, 102.0, 103.0, 104.0, 105.0], index=gap_dates)
+    # A holiday in the middle of the week: no equity bar, but the zloty keeps moving.
+    holiday = gap_dates[3]
+    equity_dates = gap_dates.drop(holiday)
+    gap_raw = pd.DataFrame({risk.BENCHMARK_WIG: gap_local_prices.reindex(equity_dates)})
+    fx_daily = pd.Series(
+        [0.250, 0.252, 0.254, 0.230, 0.232, 0.234],  # a 9% drop on the holiday itself
+        index=gap_dates,
+    )
+    gap_fx = pd.DataFrame({"PLNUSD=X": fx_daily})
+    gap_local_returns = gap_raw.pct_change().dropna(how="all")
+    gap_usd_returns = risk.normalize_to_base_currency(gap_raw, gap_fx).pct_change().dropna(how="all")
+
+    gap_series, gap_reason = risk.benchmark_base_currency_returns(
+        gap_usd_returns, gap_local_returns, gap_fx, risk.BENCHMARK_WIG
+    )
+    gap_value = risk._compound_since(gap_series, equity_dates[0])
+    # Truth: the USD price on the first and last equity bars.
+    usd_first = gap_local_prices.loc[equity_dates[0]] * fx_daily.loc[equity_dates[0]]
+    usd_last = gap_local_prices.loc[equity_dates[-1]] * fx_daily.loc[equity_dates[-1]]
+    gap_truth = usd_last / usd_first - 1
+    check("a holiday FX move is not lost", gap_reason is None, str(gap_reason))
+    check(
+        "the base reading matches price times rate across the gap",
+        gap_value is not None and abs(gap_value - gap_truth) < 1e-12,
+        f"got {gap_value}, expected {gap_truth}",
+    )
+
+    # 15. The currency's contribution is reported, so a conversion that silently
+    #     stops being applied shows up as a zero instead of hiding.
+    _, _, gap_desc = risk._benchmark_readings(
+        gap_usd_returns, gap_local_returns, gap_fx, risk.BENCHMARK_WIG, equity_dates[0]
+    )
+    check("the FX effect is reported", "fxEffect" in gap_desc, str(gap_desc))
+    check(
+        "and it is not zero when the rate moved",
+        abs(gap_desc.get("fxEffect", 0.0)) > 0.01,
+        str(gap_desc.get("fxEffect")),
+    )
+
+    # 16. A missing FX rate must not print a benchmark of 0.00%. That is the most
+    #     reassuring number the tile can show and it would come from a calculation
+    #     that did not work. Fall back to the reading that exists, relabel it, and
+    #     say the comparison is no longer like-for-like.
+    no_fx_base, no_fx_local, no_fx_desc = risk._benchmark_readings(
+        usd_returns, local_returns, raw_prices[[risk.BENCHMARK]], risk.BENCHMARK_WIG, start
+    )
+    check(
+        "a missing rate falls back to the PLN reading",
+        abs(no_fx_base - pln_truth) < 1e-12,
+        f"got {no_fx_base}, expected {pln_truth}",
+    )
+    check("it is not zero", abs(no_fx_base) > 1e-9, str(no_fx_base))
+    check("the local reading is still reported", abs(no_fx_local - pln_truth) < 1e-12, str(no_fx_local))
+    check("the tile currency is relabelled", no_fx_desc["currency"] == "PLN", str(no_fx_desc))
+    check("no FX effect is claimed", "fxEffect" not in no_fx_desc, str(no_fx_desc))
+    check(
+        "and the mismatch is stated",
+        "not like-for-like" in (no_fx_desc.get("warning") or ""),
+        str(no_fx_desc.get("warning")),
+    )
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED:")

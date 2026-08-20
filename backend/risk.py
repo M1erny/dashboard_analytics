@@ -643,8 +643,22 @@ def benchmark_base_currency_returns(returns_df, local_returns_df, fx_df, ticker)
     if hasattr(fx_index, 'tz') and fx_index.tz is not None:
         fx_series = fx_series.copy()
         fx_series.index = fx_index.tz_localize(None)
+    # Align the rate onto the benchmark's own trading days BEFORE differencing it.
+    # Differencing on a calendar grid and then sampling measures each day's move
+    # from the previous calendar row rather than the previous trading row, which
+    # silently drops whatever the currency did while the exchange was shut.
+    #
+    # The alignment needs one row of run-up. ``local`` is already a return series,
+    # so its first row describes a move out of a session that is no longer in the
+    # index; without the last rate before it, that session's currency move is lost.
+    earlier = fx_series.index[fx_series.index < local.index[0]]
+    aligned_index = local.index if earlier.empty else earlier[-1:].append(local.index)
     fx_returns = (
-        fx_series.reindex(local.index.union(fx_series.index)).ffill().pct_change().reindex(local.index)
+        fx_series.reindex(fx_series.index.union(aligned_index))
+        .ffill()
+        .reindex(aligned_index)
+        .pct_change()
+        .reindex(local.index)
     )
     return (1 + local) * (1 + fx_returns.fillna(0.0)) - 1, None
 
@@ -663,12 +677,27 @@ def _benchmark_readings(returns_df, local_returns_df, fx_df, ticker, start):
     # whatever its label says, so report nothing rather than the wrong thing.
     local_return = _compound_since(local_series, start) if used_currency == quote_currency else None
     description['localReturn'] = local_return
+    if local_return is not None and base_return is not None and quote_currency != BASE_CURRENCY:
+        # What the currency added or removed, in points. If this is ever zero while
+        # the zloty has moved, the conversion is not being applied.
+        description['fxEffect'] = base_return - local_return
 
     if quote_currency != BASE_CURRENCY and local_return is None:
         warnings.append(
             f"The {quote_currency} reading is unavailable; only the {BASE_CURRENCY} figure is shown."
         )
-    if base_return is None:
+    if base_return is None and local_return is not None:
+        # A benchmark of 0.00% is the most reassuring number the tile can print and
+        # it comes from a calculation that did not work. Show the reading that does
+        # exist and say which currency it is in, so the comparison can be judged.
+        base_return = local_return
+        description['currency'] = quote_currency
+        description.pop('fxEffect', None)
+        warnings.append(
+            f"Shown in {quote_currency} rather than {BASE_CURRENCY} ({unavailable or 'no data'}), "
+            f"so the gap against a {BASE_CURRENCY} portfolio return is not like-for-like."
+        )
+    elif base_return is None:
         base_return = 0
         warnings.append(
             f"No {BASE_CURRENCY} reading for {ticker} in the year-to-date window ({unavailable or 'no data'})."

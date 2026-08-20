@@ -31,6 +31,25 @@ const benchmarkTitle = (source: BenchmarkSource | undefined, fallback: string) =
     return parts.join(' — ');
 };
 
+/**
+ * One line naming what the strip is measured in. The currency's own contribution
+ * is stated rather than left to be inferred from two rounded percentages: if it
+ * ever reads 0pp while the zloty has moved, the conversion has stopped being
+ * applied, and that is worth being able to see at a glance.
+ */
+const benchmarkCaption = (wig: BenchmarkSource | undefined) => {
+    if (!wig) return 'Benchmark returns in the portfolio base currency.';
+    const parts = [`All in ${wig.currency} for comparison.`];
+    const detail: string[] = [];
+    if (wig.localCurrency && wig.localCurrency !== wig.currency && typeof wig.localReturn === 'number') {
+        detail.push(`${wig.localCurrency} ${fmtSigned(wig.localReturn, 1)}`);
+    }
+    if (typeof wig.fxEffect === 'number') detail.push(`FX ${fmtSignedPp(wig.fxEffect)}`);
+    parts.push(detail.length ? `${wig.label}: ${detail.join(', ')};` : `${wig.label}:`);
+    parts.push('total return, above the WIG20 price index.');
+    return parts.join(' ');
+};
+
 /** The benchmark's return in its own currency, only when that differs from the tile's. */
 const localReading = (source: BenchmarkSource | undefined, fallback?: number | null) => {
     if (!source?.localCurrency || source.localCurrency === source.currency) return null;
@@ -177,9 +196,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                         label: a total-return tracker quoted in PLN, which sits above the WIG20
                         price index the press prints. A hover tooltip cannot say so on a phone. */}
                     <p className="border-t border-white/[0.06] px-3 py-1.5 text-center text-[9px] leading-4 text-gray-600">
-                        {vitals.wigBenchmark
-                            ? `All three in ${vitals.wigBenchmark.currency} so the pp gaps compare. ${vitals.wigBenchmark.label} is a total-return tracker — its ${vitals.wigBenchmark.localCurrency ?? 'local'} reading is below it, and it runs above the WIG20 price index.`
-                            : 'Benchmark returns in the portfolio base currency.'}
+                        {benchmarkCaption(vitals.wigBenchmark)}
                     </p>
                     </div>
                 </div>
