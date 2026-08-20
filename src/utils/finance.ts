@@ -26,6 +26,8 @@ export interface BenchmarkSource {
     localCurrency?: string;
     /** The benchmark's own return in its quote currency. */
     localReturn?: number | null;
+    /** Points the currency added to, or took off, the quote-currency return. */
+    fxEffect?: number | null;
     note?: string;
     warning?: string;
 }

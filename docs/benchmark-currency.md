@@ -116,6 +116,29 @@ ETF's *USD* return is also near +24% makes the price index and the currency effe
 easy to mistake for each other. They are two separate gaps that happened to be the
 same size.
 
+## Two things that would have hidden
+
+**The rate has to be differenced on the benchmark's own trading days.** Differencing
+it on a calendar grid and then sampling the trading days measures each day's move
+from the previous *calendar* row, not the previous *trading* row — so anything the
+currency did while the exchange was shut is dropped. Polish holidays are not many,
+but they are exactly the days a currency moves without an equity bar to attach it
+to. The alignment also needs one row of run-up: a return series' first row
+describes a move out of a session that is no longer in the index, and without the
+last rate before it that session's currency move disappears. Both are pinned by a
+test with a holiday in the middle of the week and a 9% rate move on it.
+
+**A missing FX rate must not print 0.00%.** That is the most reassuring number the
+tile can show, produced by a calculation that did not work — the same failure this
+codebase already fixed once for the stress-test beta. The reading that does exist
+is shown instead, relabelled with its actual currency, and the description says the
+gap against the portfolio is no longer like-for-like.
+
+The caption states the currency's own contribution — `FX -4.7pp` — rather than
+leaving it to be inferred from two rounded percentages on screen. It is there to be
+read as a check: if it ever says `0pp` while the zloty has moved, the conversion has
+stopped being applied.
+
 ## Tests
 
 `backend/test_benchmark_currency.py` pins:
