@@ -26,17 +26,25 @@ from drive_indexer import (
 )
 
 
+from espi_sources import POLISH_OFFICIAL_DOMAINS
+
+
 DEFAULT_AGENT_MAX_BYTES = 15 * 1024 * 1024
 DEFAULT_AGENT_DOWNLOAD_FOLDER = "Agent Downloads"
 SEC_COMPANY_TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
 SEC_SUBMISSIONS_FILE_URL = "https://data.sec.gov/submissions/{name}"
 SEC_ARCHIVES_BASE = "https://www.sec.gov/Archives/edgar/data"
+# Official or exchange-operated disclosure sources. Poland has no SEC-style API,
+# so its filings arrive from PAP's ESPI/EBI listing and the two exchange sites;
+# they are as authoritative for a Warsaw issuer as sec.gov is for a US one, and a
+# trusted import has to accept them or the Polish half of the book cannot be
+# sourced at all.
 TRUSTED_OFFICIAL_DOMAINS = {
     "sec.gov",
     "www.sec.gov",
     "data.sec.gov",
-}
+} | POLISH_OFFICIAL_DOMAINS
 COMMON_COMPANY_TICKERS = {
     "netflix": "NFLX",
     "nvidia": "NVDA",
