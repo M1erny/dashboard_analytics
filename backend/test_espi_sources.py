@@ -9,6 +9,8 @@ import os
 import sys
 from datetime import date
 
+FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import espi_sources as espi
@@ -130,6 +132,163 @@ def main():
         check(f"{domain} is trusted", domain in espi.POLISH_OFFICIAL_DOMAINS)
     for domain in ("bankier.pl", "www.biznesradar.pl", "stockwatch.pl", "example.com"):
         check(f"{domain} is not trusted", domain not in espi.POLISH_OFFICIAL_DOMAINS)
+
+    # ── Against the saved pages, so a PAP layout change fails loudly ──────────
+    listing_html = open(os.path.join(FIXTURES, "espi_listing.html"), encoding="utf-8").read()
+    rows = espi.parse_listing(listing_html)
+    check("the listing yields 30 entries", len(rows) == 30, str(len(rows)))
+    check("every entry carries the day from h2.date", all(r["date"] == "2026-08-21" for r in rows))
+    check("every entry has a node id", all(r["nodeId"].isdigit() for r in rows))
+    check("every entry has an absolute PAP url", all(r["url"].startswith("https://espiebi.pap.pl/node/") for r in rows))
+
+    by_node = {r["nodeId"]: r for r in rows}
+
+    # The badge is mixed case in the markup — the site uppercases it in CSS.
+    check("a mixed-case 'EBi' badge classifies as EBI", by_node["735228"]["source"] == "EBI", by_node["735228"]["source"])
+    check("an 'ESPI' badge classifies as ESPI", by_node["735230"]["source"] == "ESPI")
+    check("both sources appear in the page", {r["source"] for r in rows} == {"ESPI", "EBI"}, str({r["source"] for r in rows}))
+
+    # The second div.hour is legitimately empty on this periodic report.
+    wawel = by_node["735217"]
+    check("an empty report number is tolerated", wawel["number"] == "", repr(wawel["number"]))
+    check("and the time is still read", wawel["time"] == "17:07", wawel["time"])
+    check("and the issuer is the ESPI symbol", wawel["issuer"] == "WAWEL SA", str(wawel["issuer"]))
+    check("and the subject drops the issuer", wawel["subject"] == "Raport półroczny P", repr(wawel["subject"]))
+    check("a populated report number is read", by_node["735230"]["number"] == "17/2026", by_node["735230"]["number"])
+
+    # Title splitting, on the cases from the real page that break a naive split.
+    check(
+        "a subject containing its own ' - ' is not split twice",
+        by_node["735226"]["issuer"] == "SYNEKTIK S.A."
+        and by_node["735226"]["subject"].endswith("zmiana udziału w ogólnej liczbie głosów Spółki"),
+        f"{by_node['735226']['issuer']!r} | {by_node['735226']['subject']!r}",
+    )
+    check(
+        "a slash inside the issuer survives",
+        by_node["735202"]["issuer"] == "Thorium Space/Thorium Space Spółka Akcyjna",
+        str(by_node["735202"]["issuer"]),
+    )
+    check(
+        "a double space after the separator is collapsed",
+        by_node["735229"]["issuer"] == "BANCO SANTANDER S.A."
+        and by_node["735229"]["subject"].startswith("Banco Santander share capital"),
+        f"{by_node['735229']['issuer']!r} | {by_node['735229']['subject'][:40]!r}",
+    )
+    check(
+        "an issuer with no legal form is read",
+        by_node["735211"]["issuer"] == "RAFAMET",
+        str(by_node["735211"]["issuer"]),
+    )
+    check(
+        "a fund name with a code subject is read",
+        by_node["735215"]["issuer"] == "EQUES AKUMULACJI MAJĄTKU FIZ"
+        and by_node["735215"]["subject"] == "RB_FI_E_30.04.18",
+        f"{by_node['735215']['issuer']!r} | {by_node['735215']['subject']!r}",
+    )
+
+    # A layout change must raise, not return an empty list that reads as "no filings".
+    for label, broken in (
+        ("an empty document", ""),
+        ("a page with no newsList", "<html><body><p>nothing here</p></body></html>"),
+        ("a page whose entry layout changed", listing_html.replace('class="news"', 'class="newsItem"')),
+    ):
+        try:
+            espi.parse_listing(broken)
+        except espi.EspiParseError as exc:
+            check(f"{label} raises", True)
+            named = any(token in str(exc) for token in ("newsList", "li.news", "Empty document"))
+            check(f"  and names what was missing ({label})", named, str(exc)[:80])
+        else:
+            check(f"{label} raises", False, "returned instead of raising")
+
+    # ── The report page ───────────────────────────────────────────────────────
+    report_html = open(os.path.join(FIXTURES, "espi_report_periodic.html"), encoding="utf-8").read()
+    report = espi.parse_report(report_html)
+    check("the node id comes from the canonical link", report["nodeId"] == "735217", report["nodeId"])
+    check("the source field is read", report["source"] == "ESPI", report["source"])
+    check(
+        "the report type is taken from the page, not guessed from the title",
+        report["reportType"] == "formularz raportu półrocznego",
+        report["reportType"],
+    )
+    check("the full issuer name is read", report["issuerName"] == "WAWEL SPÓŁKA AKCYJNA", report["issuerName"])
+    check(
+        "the ESPI symbol is read, and is what listings use",
+        report["issuerSymbol"] == "WAWEL SA" and report["issuerSymbol"] == wawel["issuer"],
+        f"{report['issuerSymbol']!r} vs listing {wawel['issuer']!r}",
+    )
+    check("the preparation date is read", report["preparedOn"] == "2026-08-21", report["preparedOn"])
+    check("the sector is read", report["sector"].startswith("Spożywczy"), report["sector"])
+
+    names = {"WWL.WA": report["issuerName"]}
+    check(
+        "the report's own symbol joins to its ticker",
+        espi.match_ticker(report["issuerSymbol"], names) == "WWL.WA",
+        f"{report['issuerSymbol']} vs {names}",
+    )
+
+    # Attachments: three real PDFs, deduplicated across the two tables that list
+    # them, with the empty `/path` placeholder from the correction section dropped.
+    files = [a["fileName"] for a in report["attachments"]]
+    check("three attachments are found", len(files) == 3, str(files))
+    check("they are deduplicated", len(files) == len(set(files)), str(files))
+    check("all are PDFs", all(f.endswith(".pdf") for f in files), str(files))
+    check("the empty '/path' placeholder is not an attachment", "path" not in files, str(files))
+    check(
+        "attachment urls are absolute and on the trusted host",
+        all(a["url"].startswith("https://espiebi.pap.pl/download/attachment/735217/") for a in report["attachments"]),
+        str([a["url"] for a in report["attachments"]][:1]),
+    )
+
+    # Selected financials — the "wyniki" the owner asked for, without a PDF.
+    fin = report["financials"]
+    check("the units are read", fin["units"] == "w tys.", fin["units"])
+    check("both currencies are read", (fin["currency"], fin["secondaryCurrency"]) == ("PLN", "EUR"), str(fin))
+    items = {i["item"]: i for i in fin["items"]}
+    check("revenue is parsed", items["Przychody"]["current"] == 302427.0, str(items.get("Przychody")))
+    check("and its comparative", items["Przychody"]["previous"] == 328120.0)
+    check("and its EUR column", items["Przychody"]["currentSecondary"] == 71122.0)
+    check("net profit is parsed", items["Zysk netto z działalności kontynuowanej"]["current"] == 41755.0)
+    check(
+        "a negative cash flow keeps its sign",
+        items["Przepływy pieniężne netto z działalności inwestycyjnej"]["current"] == -28632.0,
+        str(items.get("Przepływy pieniężne netto z działalności inwestycyjnej")),
+    )
+    check("a decimal figure is parsed", items["Zysk (strata) na jedną akcję zwykłą (w zł / EUR)"]["current"] == 32.32)
+    check("header and footnote rows are not read as data", "WYBRANE DANE FINANSOWE" not in items, str(list(items)[:3]))
+
+    # Polish number formatting, directly.
+    for raw, expected in (("302 427,00", 302427.0), ("-28 632,00", -28632.0), ("32,32", 32.32), ("1 291 846,00", 1291846.0)):
+        check(f"{raw!r} -> {expected}", espi.parse_polish_number(raw) == expected, str(espi.parse_polish_number(raw)))
+    for raw in ("", "  ", "w tys.", "PLN", "półrocze /", "abc"):
+        check(f"{raw!r} is not a number", espi.parse_polish_number(raw) is None, str(espi.parse_polish_number(raw)))
+
+    for label, broken in (
+        ("an empty document", ""),
+        ("a page with no nDokument table", "<html><body><table><tr><td>a</td></tr></table></body></html>"),
+    ):
+        try:
+            espi.parse_report(broken)
+        except espi.EspiParseError:
+            check(f"a report page without its identity table raises ({label})", True)
+        else:
+            check(f"a report page without its identity table raises ({label})", False)
+
+    # ── The unified URL builder ───────────────────────────────────────────────
+    check("a query-only request is a search", "search=MIRBUD" in espi.search_url(query="MIRBUD"))
+    check("a query-only request sends no dates", "created=" not in espi.search_url(query="MIRBUD"))
+    window = espi.search_url(start=date(2026, 8, 21), end=date(2026, 8, 21))
+    check("a window request sends both dates", "created=2026-08-21" in window and "enddate=2026-08-21" in window, window)
+    check("and the end time, encoded", "23%3A59" in window, window)
+    both = espi.search_url(query="LPP", start=date(2026, 1, 1), end=date(2026, 8, 21), page=2)
+    check("a query and a window combine", "search=LPP" in both and "created=2026-01-01" in both and "page=2" in both, both)
+    check("a phrase is encoded", "search=CD+PROJEKT" in espi.search_url(query="CD PROJEKT"), espi.search_url(query="CD PROJEKT"))
+    try:
+        espi.search_url()
+    except ValueError:
+        check("a request with neither dates nor a query is refused", True)
+    else:
+        check("a request with neither dates nor a query is refused", False)
 
     print()
     if FAILURES:

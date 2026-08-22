@@ -25,6 +25,8 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import date
+from html.parser import HTMLParser
+from urllib.parse import urlencode
 
 PAP_BASE = "https://espiebi.pap.pl"
 PAP_SEARCH_PATH = "/wyszukiwarka"
@@ -101,6 +103,33 @@ def search_page_url(day: date, page: int = 0) -> str:
         f"{PAP_BASE}{PAP_SEARCH_PATH}"
         f"?created={stamp}&enddate={stamp}+23%3A59&page={int(page)}"
     )
+
+
+def search_url(
+    query: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    page: int = 0,
+) -> str:
+    """One builder for both shapes the listing supports.
+
+    The form takes `created`, `enddate`, `search` and `page` together, so a
+    portfolio digest (a date window) and a company lookup (a phrase) are the same
+    request with different parameters filled in. `enddate` carries a time because
+    the endpoint reads a bare date as midnight, which returns an empty day.
+    """
+    params: list[tuple[str, str]] = []
+    if start is not None:
+        params.append(("created", start.isoformat()))
+    if end is not None:
+        params.append(("enddate", f"{end.isoformat()} 23:59"))
+    clean_query = _clean(query)
+    if clean_query:
+        params.append(("search", clean_query))
+    if not params:
+        raise ValueError("A listing request needs a date window, a query, or both")
+    params.append(("page", str(int(page))))
+    return f"{PAP_BASE}{PAP_SEARCH_PATH}?{urlencode(params)}"
 
 
 def node_url(node_id: str | int) -> str:
@@ -203,3 +232,390 @@ def is_periodic_report(title: str) -> bool:
     """
     text = _fold(title)
     return any(re.search(pattern, text) for pattern in PERIODIC_REPORT_PATTERNS)
+
+
+# ─── Parsing ────────────────────────────────────────────────────────────────
+# The saved pages are malformed: two <head> elements, one of them before <html>,
+# and duplicated `colspan='2' colspan='2'` attributes. html.parser tolerates all
+# of it, which a stricter parser would not, and it costs no dependency.
+
+
+class EspiParseError(RuntimeError):
+    """A selector that the page was expected to have did not appear.
+
+    Raised rather than returning nothing, because an empty list reads as "no
+    filings" — a claim the owner would act on — where a raise reads as "the page
+    changed", which is the truth.
+    """
+
+
+def _clean(text: str) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip()
+
+
+def split_title(title: str) -> tuple[str | None, str]:
+    """An entry title is `ISSUER - SUBJECT`; split on the first separator only.
+
+    Subjects contain their own dashes — "…art. 69 ustawy o ofercie publicznej -
+    zmiana udziału…" — so splitting on the last, or on every, separator moves
+    half the subject into the issuer.
+    """
+    text = _clean(title)
+    if not text:
+        return None, ""
+    parts = text.split(" - ", 1)
+    if len(parts) == 1:
+        return None, text
+    issuer = _clean(parts[0])
+    subject = _clean(parts[1])
+    return (issuer or None), subject
+
+
+def parse_polish_number(value: str) -> float | None:
+    """`302 427,00` -> 302427.0, `-28 632,00` -> -28632.0.
+
+    Space-grouped thousands (ordinary or non-breaking) and a comma decimal mark.
+    float() would reject every one of them.
+    """
+    text = str(value or "").replace(" ", " ").strip()
+    if not text:
+        return None
+    text = text.replace(" ", "").replace(",", ".")
+    if not re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        return None
+    return float(text)
+
+
+class _TextCapture:
+    """Accumulate the text of one element, tolerating nested tags inside it."""
+
+    def __init__(self, tag: str):
+        self.tag = tag
+        self.depth = 1
+        self.parts: list[str] = []
+
+    def text(self) -> str:
+        return _clean("".join(self.parts))
+
+
+def _classes(attrs: list[tuple[str, str | None]]) -> set[str]:
+    for key, value in attrs:
+        if key == "class":
+            return set((value or "").split())
+    return set()
+
+
+def _attr(attrs: list[tuple[str, str | None]], name: str) -> str:
+    for key, value in attrs:
+        if key == name:
+            return value or ""
+    return ""
+
+
+class _ListingParser(HTMLParser):
+    """Pull `li.news` entries out of a /wyszukiwarka results page.
+
+    The day comes from `h2.date` in the page rather than from the query, which is
+    what makes `search=` mode work: a query without dates returns several
+    `div.day` blocks, and every entry under each carries that block's date.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.entries: list[dict] = []
+        self.saw_news_list = False
+        self.list_items = 0
+        self._news_list_depth = 0
+        self._day: str | None = None
+        self._entry: dict | None = None
+        self._capture: _TextCapture | None = None
+        self._field: str | None = None
+
+    # -- capture plumbing --
+    def _start_capture(self, tag: str, field: str) -> None:
+        self._capture = _TextCapture(tag)
+        self._field = field
+
+    def handle_starttag(self, tag, attrs):
+        if self._capture is not None:
+            if tag == self._capture.tag:
+                self._capture.depth += 1
+            return
+
+        classes = _classes(attrs)
+        if tag == "h2" and "date" in classes:
+            self._start_capture(tag, "day")
+        elif tag == "ul" and "newsList" in classes:
+            self.saw_news_list = True
+            self._news_list_depth = 1
+        elif tag == "ul" and self._news_list_depth:
+            self._news_list_depth += 1
+        elif tag == "li" and self._news_list_depth:
+            # Counted regardless of class. Distinguishing "quiet day" from
+            # "layout changed" needs to know whether there were items at all,
+            # and the class is the very thing a layout change would rename.
+            self.list_items += 1
+        if tag == "li" and "news" in classes:
+            self._entry = {"date": self._day, "hours": [], "badge": "", "title": "", "href": ""}
+        elif self._entry is not None and tag == "div" and "badge" in classes:
+            self._start_capture(tag, "badge")
+        elif self._entry is not None and tag == "div" and "hour" in classes:
+            self._start_capture(tag, "hour")
+        elif self._entry is not None and tag == "a":
+            self._entry["href"] = _attr(attrs, "href")
+            self._start_capture(tag, "title")
+
+    def handle_endtag(self, tag):
+        if self._capture is not None and tag == self._capture.tag:
+            self._capture.depth -= 1
+            if self._capture.depth > 0:
+                return
+            text = self._capture.text()
+            field = self._field
+            self._capture = None
+            self._field = None
+            if field == "day":
+                self._day = text or None
+                if self._entry is not None:
+                    self._entry["date"] = self._day
+            elif field == "badge" and self._entry is not None:
+                self._entry["badge"] = text
+            elif field == "hour" and self._entry is not None:
+                self._entry["hours"].append(text)
+            elif field == "title" and self._entry is not None:
+                self._entry["title"] = text
+            return
+
+        if tag == "ul" and self._news_list_depth:
+            self._news_list_depth -= 1
+        if tag == "li" and self._entry is not None:
+            self._finish_entry()
+
+    def handle_data(self, data):
+        if self._capture is not None:
+            self._capture.parts.append(data)
+
+    def _finish_entry(self) -> None:
+        entry, self._entry = self._entry, None
+        if not entry or not entry.get("href"):
+            return
+        href = entry["href"]
+        match = re.search(r"/node/(\d+)", href)
+        if not match:
+            return
+        issuer, subject = split_title(entry["title"])
+        hours = [h for h in entry["hours"]]
+        # Two `div.hour` elements: the publication time and the issuer's report
+        # number. The second is legitimately empty on periodic reports, so it is
+        # read positionally and allowed to be blank.
+        self.entries.append({
+            "date": entry.get("date"),
+            "time": hours[0] if hours else "",
+            "number": hours[1] if len(hours) > 1 else "",
+            "source": classify_source(entry["badge"]),
+            "issuer": issuer,
+            "subject": subject,
+            "title": entry["title"],
+            "nodeId": match.group(1),
+            "url": absolute_url(href),
+        })
+
+
+def parse_listing(html: str) -> list[dict]:
+    """Entries from a /wyszukiwarka page, newest first as the page presents them."""
+    text = str(html or "")
+    if not text.strip():
+        raise EspiParseError("Empty document: expected a /wyszukiwarka page")
+    parser = _ListingParser()
+    parser.feed(text)
+    parser.close()
+    if not parser.saw_news_list:
+        raise EspiParseError(
+            "Selector 'ul.newsList' not found: the listing layout changed, or this is not a results page"
+        )
+    if parser.list_items and not parser.entries:
+        # The list held items and none of them parsed. A quiet day renders an
+        # empty list, so this is a layout change, and returning [] here would
+        # read as "no filings" — a claim the owner would act on.
+        raise EspiParseError(
+            f"'ul.newsList' held {parser.list_items} items but none parsed as entries: "
+            "the 'li.news' / 'div.badge' / 'div.hour' / 'a' layout changed"
+        )
+    return parser.entries
+
+
+ATTACHMENT_PREFIX = "/download/attachment/"
+FINANCIALS_HEADING = "WYBRANE DANE FINANSOWE"
+
+
+class _ReportParser(HTMLParser):
+    """Pull the identity, type, attachments and selected financials from a node page."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.canonical = ""
+        self.fields: dict[str, str] = {}
+        self.attachments: list[dict] = []
+        self.tables: list[dict] = []
+        self._table_stack: list[dict] = []
+        self._row: list[str] | None = None
+        self._capture: _TextCapture | None = None
+        self._field: str | None = None
+        self._pending_field: str | None = None
+        self._attachment_href: str | None = None
+
+    def handle_starttag(self, tag, attrs):
+        # Hrefs are recorded even mid-capture: an attachment link lives inside a
+        # table cell whose text is being accumulated.
+        if tag == "a":
+            href = _attr(attrs, "href")
+            if ATTACHMENT_PREFIX in href:
+                self._attachment_href = href
+        if tag == "link" and _attr(attrs, "rel") == "canonical":
+            self.canonical = _attr(attrs, "href")
+
+        if self._capture is not None:
+            if tag == self._capture.tag:
+                self._capture.depth += 1
+            return
+
+        classes = _classes(attrs)
+        if tag == "div":
+            for name in ("field--name-field-report-source", "field--name-field-report-type"):
+                if name in classes:
+                    self._pending_field = name
+            if "field__item" in classes and self._pending_field:
+                self._capture = _TextCapture(tag)
+                self._field = self._pending_field
+        elif tag == "table":
+            table = {"classes": classes, "rows": []}
+            self._table_stack.append(table)
+            self.tables.append(table)
+        elif tag == "tr" and self._table_stack:
+            self._row = []
+        elif tag in ("td", "th") and self._row is not None:
+            self._capture = _TextCapture(tag)
+            self._field = "cell"
+
+    def handle_endtag(self, tag):
+        if self._capture is not None and tag == self._capture.tag:
+            self._capture.depth -= 1
+            if self._capture.depth > 0:
+                return
+            text = self._capture.text()
+            field = self._field
+            self._capture = None
+            self._field = None
+            if field == "cell" and self._row is not None:
+                self._row.append(text)
+                if self._attachment_href:
+                    self._record_attachment(self._attachment_href, text)
+                    self._attachment_href = None
+            elif field:
+                self.fields[field] = text
+                self._pending_field = None
+            return
+
+        if tag == "tr" and self._row is not None:
+            if self._table_stack:
+                self._table_stack[-1]["rows"].append(self._row)
+            self._row = None
+        elif tag == "table" and self._table_stack:
+            self._table_stack.pop()
+        # Deliberately no reset on </a>: the anchor closes before the cell that
+        # holds it, so clearing here loses every attachment. It is cleared when
+        # the cell is recorded, and overwritten by the next anchor.
+
+    def handle_data(self, data):
+        if self._capture is not None:
+            self._capture.parts.append(data)
+
+    def _record_attachment(self, href: str, label: str) -> None:
+        name = href.rsplit("/", 1)[-1]
+        # The correction section carries `/download/attachment/{node}/path` — an
+        # empty placeholder, not a file. Anything without a suffix is not a document.
+        if "." not in name:
+            return
+        url = absolute_url(href)
+        for existing in self.attachments:
+            if existing["url"] == url:
+                if label and not existing["label"]:
+                    existing["label"] = label
+                return
+        self.attachments.append({"url": url, "fileName": name, "label": label})
+
+
+def _key_value_rows(rows: list[list[str]]) -> dict[str, str]:
+    pairs = {}
+    for row in rows:
+        if len(row) == 2 and row[0]:
+            pairs[row[0]] = row[1]
+    return pairs
+
+
+def _parse_financials(tables: list[dict]) -> dict:
+    """The `WYBRANE DANE FINANSOWE` block: line items with period and comparative."""
+    for table in tables:
+        header = None
+        for row in table["rows"]:
+            if any(_clean(cell).upper() == FINANCIALS_HEADING for cell in row):
+                header = [cell for cell in (_clean(c) for c in row) if cell]
+                break
+        if header is None:
+            continue
+        currencies = [cell for cell in header if re.fullmatch(r"[A-Z]{3}", cell)]
+        units = next((cell for cell in header if cell.lower().startswith("w tys")), "")
+        items = []
+        for row in table["rows"]:
+            cells = [cell for cell in (_clean(c) for c in row) if cell]
+            if len(cells) != 5:
+                continue
+            values = [parse_polish_number(cell) for cell in cells[1:]]
+            if any(value is None for value in values):
+                continue
+            items.append({
+                "item": cells[0],
+                "current": values[0],
+                "previous": values[1],
+                "currentSecondary": values[2],
+                "previousSecondary": values[3],
+            })
+        if items:
+            return {
+                "units": units,
+                "currency": currencies[0] if currencies else "",
+                "secondaryCurrency": currencies[1] if len(currencies) > 1 else "",
+                "items": items,
+            }
+    return {"units": "", "currency": "", "secondaryCurrency": "", "items": []}
+
+
+def parse_report(html: str) -> dict:
+    """Identity, type, attachments and selected financials from a PAP node page."""
+    text = str(html or "")
+    if not text.strip():
+        raise EspiParseError("Empty document: expected a PAP node page")
+    parser = _ReportParser()
+    parser.feed(text)
+    parser.close()
+
+    identity_table = next((t for t in parser.tables if "nDokument" in t["classes"]), None)
+    if identity_table is None:
+        raise EspiParseError(
+            "Selector 'table.nDokument' not found: the report layout changed, or this is not a report page"
+        )
+    identity = _key_value_rows(identity_table["rows"])
+    node_match = re.search(r"/node/(\d+)", parser.canonical or "")
+    return {
+        "nodeId": node_match.group(1) if node_match else "",
+        "url": parser.canonical or "",
+        "source": classify_source(parser.fields.get("field--name-field-report-source", "")),
+        "reportType": parser.fields.get("field--name-field-report-type", ""),
+        "issuerName": identity.get("Nazwa emitenta", ""),
+        "issuerSymbol": identity.get("Symbol Emitenta", ""),
+        "preparedOn": identity.get("Data sporządzenia", ""),
+        "sector": identity.get("Sektor", ""),
+        "website": identity.get("adres www", ""),
+        "attachments": parser.attachments,
+        "financials": _parse_financials(parser.tables),
+    }
