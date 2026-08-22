@@ -28,6 +28,11 @@ DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 DRIVE_SCOPES = f"{DRIVE_READONLY_SCOPE} {DRIVE_FILE_SCOPE}"
 REFRESH_TOKEN_SETTING = "google_drive_refresh_token"
+# Google returns the scopes it actually granted on both the code exchange and
+# every refresh. Requesting DRIVE_SCOPES is not proof of holding them: a token
+# authorised before drive.file was requested keeps working for reads and fails
+# only at upload time, so the granted string is persisted and reported.
+GRANTED_SCOPE_SETTING = "google_drive_granted_scope"
 
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 # Native Workspace files are exported before extraction, and the export format
@@ -279,6 +284,35 @@ class GoogleDriveClient:
         except Exception:
             return None
 
+    def granted_scope(self) -> str | None:
+        if not self.store or not hasattr(self.store, "get_setting"):
+            return None
+        try:
+            return self.store.get_setting(GRANTED_SCOPE_SETTING)
+        except Exception:
+            return None
+
+    def _record_granted_scope(self, scope: Any) -> None:
+        clean = str(scope or "").strip()
+        if not clean or not self.store or not hasattr(self.store, "set_setting"):
+            return
+        try:
+            self.store.set_setting(GRANTED_SCOPE_SETTING, clean)
+        except Exception:
+            # Losing the record only costs visibility; never fail a token call for it.
+            pass
+
+    def scope_status(self) -> dict[str, Any]:
+        granted = self.granted_scope()
+        scopes = (granted or "").split()
+        return {
+            "requestedScope": DRIVE_SCOPES,
+            "grantedScope": granted,
+            # None means "Google has not told us yet", which is not the same as
+            # "read only" - the UI must not claim saving is broken on a guess.
+            "writeScope": (DRIVE_FILE_SCOPE in scopes) if granted else None,
+        }
+
     def refresh_token_source(self) -> str | None:
         if self.env_refresh_token:
             return "env"
@@ -298,7 +332,7 @@ class GoogleDriveClient:
             "connected": bool(self.refresh_token_source()),
             "tokenSource": self.refresh_token_source(),
             "scope": DRIVE_SCOPES,
-            "writeScope": DRIVE_FILE_SCOPE,
+            **self.scope_status(),
             "supportedExtensions": sorted(SUPPORTED_EXTENSIONS),
             "pdfAvailable": PdfReader is not None,
             "storageMode": "drive_metadata_extracted_text_chunks_embeddings_ready",
@@ -323,6 +357,7 @@ class GoogleDriveClient:
         refresh_token = data.get("refresh_token")
         if refresh_token and self.store and hasattr(self.store, "set_setting"):
             self.store.set_setting(REFRESH_TOKEN_SETTING, refresh_token)
+        self._record_granted_scope(data.get("scope"))
 
         return {
             "hasAccessToken": bool(data.get("access_token")),
@@ -370,6 +405,7 @@ class GoogleDriveClient:
         token = data.get("access_token")
         if not token:
             raise RuntimeError("Google token refresh did not return an access token")
+        self._record_granted_scope(data.get("scope"))
         return token
 
     def _headers(self) -> dict[str, str]:

@@ -1479,6 +1479,15 @@ async def get_drive_indexer_status():
         await _run_brain_step("Drive authorization", client.get_access_token, timeout=35)
         status["connected"] = True
         status["connectionState"] = "ready"
+        # The refresh above is the first point at which Google reports the scopes
+        # it granted, so re-read them after it rather than before.
+        status.update(client.scope_status())
+        if status.get("writeScope") is False:
+            status["connectionState"] = "read_only"
+            status["connectionMessage"] = (
+                "Google Drive is connected read-only, so the Brain can index files but cannot save "
+                "filings to it. Reconnect Drive to grant file-write permission."
+            )
     except Exception:
         # A stored token alone is not proof that Google will still authorize it.
         # Keep the raw provider error server-side and give the UI an actionable state.

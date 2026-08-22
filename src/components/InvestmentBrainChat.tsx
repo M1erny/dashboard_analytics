@@ -65,9 +65,12 @@ type DriveStatus = {
     folderUrl?: string | null;
     authConfigured: boolean;
     connected: boolean;
-    connectionState?: 'ready' | 'needs_reconnect' | 'not_configured';
+    connectionState?: 'ready' | 'needs_reconnect' | 'read_only' | 'not_configured';
     connectionMessage?: string;
-    writeScope?: boolean;
+    requestedScope?: string;
+    grantedScope?: string | null;
+    // null when Google has not reported the granted scopes yet.
+    writeScope?: boolean | null;
 };
 
 type SourceReference = {
@@ -1851,12 +1854,14 @@ export const InvestmentBrainChat: React.FC = () => {
                                                 <div><dt className="text-slate-500">Storage</dt><dd className="mt-0.5 font-semibold text-white">{status?.storage === 'postgres_pgvector' ? 'Supabase' : 'Local'}</dd></div>
                                             </dl>
                                             <div className="mt-4 grid grid-cols-2 gap-2">
-                                                {!drive?.connected
-                                                    ? <Button type="button" tone="primary" onClick={() => void connectDrive()} disabled={!ready}><Cloud className="h-3.5 w-3.5" /> Connect</Button>
+                                                {!drive?.connected || drive.connectionState === 'read_only'
+                                                    ? <Button type="button" tone="primary" onClick={() => void connectDrive()} disabled={!ready}><Cloud className="h-3.5 w-3.5" /> {drive?.connected ? 'Reconnect' : 'Connect'}</Button>
                                                     : <Button type="button" onClick={() => void syncDrive()} disabled={!ready}><FolderSync className="h-3.5 w-3.5" /> Sync Drive</Button>}
                                                 <Button type="button" tone="success" onClick={() => void embedMissing()} disabled={!ready || (embeddings.missing ?? 0) === 0}><Sparkles className="h-3.5 w-3.5" /> {embeddings.missing ? `Embed ${formatCount(embeddings.missing)}` : 'All embedded'}</Button>
                                             </div>
                                             {drive?.connectionState === 'needs_reconnect' && <p className="mt-2 text-xs leading-5 text-amber-300">{drive.connectionMessage ?? 'Google Drive authorization expired. Reconnect to sync new files.'}</p>}
+                                            {drive?.connectionState === 'read_only' && <p className="mt-2 text-xs leading-5 text-amber-300">{drive.connectionMessage ?? 'Google Drive is connected read-only, so filings cannot be saved to it. Reconnect to grant file-write permission.'}</p>}
+                                            {drive?.connected && drive.writeScope === true && <p className="mt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-emerald-400">Saving to Drive enabled</p>}
                                             {drive?.folderUrl && <a href={drive.folderUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 transition-colors hover:text-emerald-300">Open Drive folder <ExternalLink className="h-3.5 w-3.5" /></a>}
                                         </PanelSection>
 
