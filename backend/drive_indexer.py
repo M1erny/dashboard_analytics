@@ -88,6 +88,10 @@ DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_PDF_PAGES = 0
 DEFAULT_MAX_EXTRACTED_CHARS = 0
 CONVERSATION_TRANSCRIPT_PREFIX = "investment brain/conversations/"
+# Set on every file the agent import uploads, so the folder sync can tell its own
+# artifacts from documents the owner put in Drive by hand.
+AGENT_UPLOAD_PROPERTY = "investmentBrainAgentUpload"
+AGENT_DOWNLOAD_FOLDER_NAME = "agent downloads"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -115,6 +119,24 @@ def parse_drive_folder_id(value: str | None = None) -> str | None:
 def is_brain_conversation_transcript(file: dict[str, Any]) -> bool:
     relative_path = str(file.get("relativePath") or file.get("name") or "").replace("\\", "/").strip("/").casefold()
     return relative_path.startswith(CONVERSATION_TRANSCRIPT_PREFIX)
+
+
+def is_agent_managed_upload(file: dict[str, Any]) -> bool:
+    """True for artifacts the agent import wrote to Drive and already indexed.
+
+    Every agent import indexes its text directly under an agent-url identity, so
+    letting the folder sync index the same file again under a google-drive
+    identity puts the same passage in the retrieval set twice. Two signals are
+    checked because neither alone is complete: the app property is exact but only
+    present on uploads made after it was introduced, and the folder name catches
+    everything written before that.
+    """
+    properties = file.get("appProperties")
+    if isinstance(properties, dict) and str(properties.get(AGENT_UPLOAD_PROPERTY) or "").strip():
+        return True
+    relative_path = str(file.get("relativePath") or "").replace("\\", "/").strip("/").casefold()
+    segments = relative_path.split("/")[:-1]
+    return AGENT_DOWNLOAD_FOLDER_NAME in segments
 
 
 def drive_folder_url(folder_id: str | None) -> str | None:
@@ -420,7 +442,7 @@ class GoogleDriveClient:
         params = {
             "q": query,
             "pageSize": "100",
-            "fields": "nextPageToken,files(id,name,mimeType,size,md5Checksum,createdTime,modifiedTime,webViewLink)",
+            "fields": "nextPageToken,files(id,name,mimeType,size,md5Checksum,createdTime,modifiedTime,webViewLink,appProperties)",
             "supportsAllDrives": "true",
             "includeItemsFromAllDrives": "true",
         }
@@ -866,6 +888,20 @@ def index_drive_folder(
                     "reason": "Brain conversation transcript excluded from retrieval index",
                     "mimeType": file.get("mimeType"),
                     "removedSourceId": removed_source_id,
+                })
+                emit_progress(relative_path)
+                continue
+            if is_agent_managed_upload(file):
+                # Skipped, never deleted: if the agent-url source is ever missing
+                # this file is the only copy of the text, so removing it here
+                # could lose the document outright.
+                results.append({
+                    "id": file["id"],
+                    "name": file.get("name"),
+                    "relativePath": relative_path,
+                    "status": "skipped",
+                    "reason": "agent import already indexed this document",
+                    "mimeType": file.get("mimeType"),
                 })
                 emit_progress(relative_path)
                 continue

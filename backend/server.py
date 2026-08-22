@@ -1099,6 +1099,7 @@ class BrainAgentUrlImportRequest(BaseModel):
     embedAfterImport: bool = True
     embedMaxChunks: int = Field(default=60, ge=1, le=500)
     agentTask: str | None = Field(default=None, max_length=500)
+    keepOriginal: bool = True
 
 
 class BrainAgentOfficialSearchRequest(BaseModel):
@@ -1120,6 +1121,7 @@ class BrainAgentRunRequest(BaseModel):
     maxBytes: int = Field(default=DEFAULT_AGENT_MAX_BYTES, ge=1024, le=75 * 1024 * 1024)
     embedAfterImport: bool = True
     embedMaxChunks: int = Field(default=60, ge=1, le=500)
+    keepOriginal: bool = True
 
 
 class BrainCodeProposalRequest(BaseModel):
@@ -1759,6 +1761,7 @@ async def import_brain_agent_url(payload: BrainAgentUrlImportRequest):
             max_bytes=payload.maxBytes,
             trusted_only=payload.trustedOnly,
             agent_task=payload.agentTask,
+            keep_original=payload.keepOriginal,
             timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
         )
     except ValueError as e:
@@ -1861,6 +1864,7 @@ async def run_brain_research_agent(payload: BrainAgentRunRequest):
             trusted_only=True,
             agent_task=payload.task,
             source_label=best.get("source"),
+            keep_original=payload.keepOriginal,
             timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
         )
     except ValueError as e:

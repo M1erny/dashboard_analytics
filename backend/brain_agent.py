@@ -17,6 +17,7 @@ import httpx
 from brain_indexer import SUPPORTED_EXTENSIONS
 from brain_ingestion import chunk_text, normalize_text, stable_hash
 from drive_indexer import (
+    AGENT_UPLOAD_PROPERTY,
     GoogleDriveClient,
     MIME_EXTENSION_MAP,
     drive_folder_url,
@@ -155,12 +156,32 @@ def _filename_from_response(url: str, content_disposition: str | None, extension
     return _safe_filename(urlparse(url).hostname or "source", extension)
 
 
+# Formats whose extracted text loses layout a reader needs: a financial table in
+# a PDF or a spreadsheet flattens into prose, so the original is kept beside the
+# Markdown. HTML and plain text are excluded deliberately - the Markdown is
+# strictly more readable than raw markup, so a second copy would buy nothing.
+LAYOUT_BEARING_EXTENSIONS = {".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx"}
+
+
+def _filename_stem(filename: str, extension: str) -> str:
+    clean_name = PurePosixPath(filename).name
+    if extension and clean_name.lower().endswith(extension.lower()):
+        clean_name = clean_name[: -len(extension)]
+    return clean_name or "source"
+
+
 def _markdown_filename(filename: str, original_extension: str) -> str:
     """Return the Drive filename for the canonical, AI-readable source."""
-    clean_name = PurePosixPath(filename).name
-    if clean_name.lower().endswith(original_extension.lower()):
-        clean_name = clean_name[: -len(original_extension)]
-    return _safe_filename(clean_name or "source", ".md")
+    return _safe_filename(_filename_stem(filename, original_extension), ".md")
+
+
+def _original_filename(filename: str, original_extension: str) -> str:
+    """Name the preserved original so it sorts next to its Markdown twin."""
+    return _safe_filename(_filename_stem(filename, original_extension), original_extension or ".bin")
+
+
+def keeps_original_upload(extension: str) -> bool:
+    return str(extension or "").strip().lower() in LAYOUT_BEARING_EXTENSIONS
 
 
 def _markdown_body(text: str) -> str:
@@ -177,12 +198,16 @@ def _canonical_markdown_document(
     retrieved_at: str,
     extracted_text: str,
     agent_task: str | None = None,
+    original_file_url: str | None = None,
 ) -> bytes:
-    """Create the single durable Drive artifact for a web-acquired source.
+    """Create the durable, AI-readable Drive artifact for a web-acquired source.
 
-    The raw HTML/PDF/DOCX is intentionally not uploaded. The original URL and
-    source-format details stay in the Markdown front matter and database
-    metadata so the conversion remains auditable.
+    This Markdown is what the Brain indexes and retrieves from. For formats that
+    carry layout the extraction cannot (see LAYOUT_BEARING_EXTENSIONS) the
+    untouched original is uploaded beside it and linked from here, so a reader
+    who needs the real table can reach it in one click. The original URL and
+    source-format details stay in the front matter either way, so the conversion
+    remains auditable even when no copy was kept.
     """
     front_matter = {
         "title": title,
@@ -194,6 +219,8 @@ def _canonical_markdown_document(
         "original_mime_type": document.mime_type,
         "conversion": "extracted text normalized to markdown by Investment Brain",
     }
+    if original_file_url:
+        front_matter["original_file_drive_url"] = original_file_url
     if agent_task:
         front_matter["research_task"] = agent_task
 
@@ -212,6 +239,7 @@ def _canonical_markdown_document(
         f"- Resolved URL: <{document.final_url}>",
         f"- Retrieved: {retrieved_at}",
         f"- Converted from: `{document.extension.lstrip('.') or 'unknown'}` to Markdown for indexing and retrieval.",
+        *([f"- Original file kept on Drive: <{original_file_url}>"] if original_file_url else []),
         "",
         "## Extracted Content",
         "",
@@ -294,6 +322,7 @@ def import_document_into_brain(
     drive_subfolder: str = DEFAULT_AGENT_DOWNLOAD_FOLDER,
     force: bool = False,
     agent_task: str | None = None,
+    keep_original: bool = True,
 ) -> dict[str, Any]:
     indexed_at = datetime.now(timezone.utc).isoformat()
     file_hash = sha256_bytes(document.data)
@@ -318,19 +347,16 @@ def import_document_into_brain(
 
     source_title = re.sub(r"\s+", " ", (title or source_label or document.filename.rsplit(".", 1)[0])).strip()[:300]
     canonical_filename = _markdown_filename(document.filename, document.extension)
-    canonical_data = _canonical_markdown_document(
-        document,
-        title=source_title,
-        source_url=original_url,
-        retrieved_at=indexed_at,
-        extracted_text=clean_text,
-        agent_task=agent_task,
-    )
-    canonical_hash = sha256_bytes(canonical_data)
+    original_filename = _original_filename(document.filename, document.extension)
+    keeps_original = bool(keep_original and upload_to_drive and keeps_original_upload(document.extension))
 
     drive_file = None
+    original_drive_file = None
     upload_error = None
+    original_upload_error = None
     clean_drive_folder_id = parse_drive_folder_id(drive_folder_id)
+    client = None
+    target_folder_id = None
     if upload_to_drive:
         try:
             client = GoogleDriveClient(store=store)
@@ -338,6 +364,45 @@ def import_document_into_brain(
             target_folder_id = parent_id
             if parent_id and drive_subfolder:
                 target_folder_id = client.ensure_folder(parent_id, drive_subfolder)["id"]
+        except Exception as exc:
+            upload_error = str(exc)[:500]
+            raise RuntimeError(
+                "Drive upload failed. Reconnect Google Drive with file-write permission, then retry. "
+                f"Google said: {upload_error}"
+            ) from exc
+
+    # The original goes up first so the Markdown can link to it, and its failure
+    # is recorded rather than raised: the Markdown is what the Brain retrieves
+    # from, so losing the reading copy must not lose the indexed source.
+    if keeps_original:
+        try:
+            original_drive_file = client.upload_file(
+                name=original_filename,
+                data=document.data,
+                mime_type=document.mime_type or "application/octet-stream",
+                folder_id=target_folder_id,
+                description=(
+                    f"Original {document.extension.lstrip('.') or 'file'} downloaded by Investment Brain agent "
+                    f"from {document.final_url}. Kept for reading; the Markdown twin is what is indexed."
+                ),
+                app_properties={AGENT_UPLOAD_PROPERTY: "original"},
+            )
+        except Exception as exc:
+            original_upload_error = str(exc)[:500]
+
+    canonical_data = _canonical_markdown_document(
+        document,
+        title=source_title,
+        source_url=original_url,
+        retrieved_at=indexed_at,
+        extracted_text=clean_text,
+        agent_task=agent_task,
+        original_file_url=(original_drive_file or {}).get("webViewLink"),
+    )
+    canonical_hash = sha256_bytes(canonical_data)
+
+    if upload_to_drive:
+        try:
             drive_file = client.upload_file(
                 name=canonical_filename,
                 data=canonical_data,
@@ -347,14 +412,14 @@ def import_document_into_brain(
                     f"Markdown conversion created by Investment Brain agent from {document.final_url}. "
                     f"Original format: {document.extension}."
                 ),
+                app_properties={AGENT_UPLOAD_PROPERTY: "markdown"},
             )
         except Exception as exc:
             upload_error = str(exc)[:500]
-            if upload_to_drive:
-                raise RuntimeError(
-                    "Drive upload failed. Reconnect Google Drive with file-write permission, then retry. "
-                    f"Google said: {upload_error}"
-                ) from exc
+            raise RuntimeError(
+                "Drive upload failed. Reconnect Google Drive with file-write permission, then retry. "
+                f"Google said: {upload_error}"
+            ) from exc
 
     clean_tags = ["agent-import", "markdown", document.extension.lstrip(".")]
     for tag in tags or []:
@@ -386,8 +451,16 @@ def import_document_into_brain(
         "driveFolderId": clean_drive_folder_id,
         "driveSubfolder": drive_subfolder if upload_to_drive else None,
         "uploadError": upload_error,
+        "originalKept": bool(original_drive_file),
+        "originalUploadError": original_upload_error,
         **extraction_metadata,
     }
+    if original_drive_file:
+        metadata.update({
+            "originalDriveFileId": original_drive_file.get("id"),
+            "originalWebViewLink": original_drive_file.get("webViewLink"),
+            "originalDriveFileName": original_drive_file.get("name"),
+        })
     if drive_file:
         metadata.update({
             "driveFileId": drive_file.get("id"),
@@ -446,8 +519,14 @@ def import_document_into_brain(
                 "extension": document.extension,
                 "mimeType": document.mime_type,
                 "bytes": len(document.data),
+                "keptOnDrive": bool(original_drive_file),
+                "driveFileId": (original_drive_file or {}).get("id"),
+                "webViewLink": (original_drive_file or {}).get("webViewLink"),
+                "driveFileName": (original_drive_file or {}).get("name"),
+                "uploadError": original_upload_error,
             },
         },
+        "originalDriveFile": original_drive_file,
     }
 
 
@@ -1044,6 +1123,7 @@ def import_url_into_brain(
     trusted_only: bool = False,
     agent_task: str | None = None,
     source_label: str | None = None,
+    keep_original: bool = True,
 ) -> dict[str, Any]:
     document = download_public_document(
         url,
@@ -1062,4 +1142,5 @@ def import_url_into_brain(
         drive_subfolder=drive_subfolder,
         force=force,
         agent_task=agent_task,
+        keep_original=keep_original,
     )

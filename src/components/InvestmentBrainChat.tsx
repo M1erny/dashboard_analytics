@@ -1365,6 +1365,7 @@ export const InvestmentBrainChat: React.FC = () => {
                     tags: ['research-agent'],
                     trustedOnly,
                     uploadToDrive: true,
+                    keepOriginal: true,
                     embedAfterImport: true,
                     embedMaxChunks: 500,
                     agentTask: agentTask.trim() || undefined,
@@ -1375,12 +1376,23 @@ export const InvestmentBrainChat: React.FC = () => {
                 status?: string;
                 chunks?: unknown[];
                 driveFile?: { webViewLink?: string };
-                document?: { convertedToMarkdown?: boolean };
+                document?: {
+                    convertedToMarkdown?: boolean;
+                    original?: { keptOnDrive?: boolean; extension?: string; uploadError?: string | null };
+                };
             };
             setAgentUrl('');
+            const original = payload.document?.original;
+            // Name the format rather than saying "original", so it is obvious the
+            // readable file is there and not only the flattened Markdown.
+            const originalNote = original?.keptOnDrive
+                ? ` The ${(original.extension ?? '').replace('.', '').toUpperCase() || 'original'} was saved next to it.`
+                : original?.uploadError
+                    ? ' The Markdown is indexed, but saving the original file failed.'
+                    : '';
             setNotice(payload.status === 'skipped'
                 ? 'That source was already indexed and has not changed.'
-                : `Source indexed as ${payload.chunks?.length ?? 0} passages${payload.document?.convertedToMarkdown ? ' in Markdown' : ''}${payload.driveFile?.webViewLink ? ' and saved to Drive' : ''}.`);
+                : `Source indexed as ${payload.chunks?.length ?? 0} passages${payload.document?.convertedToMarkdown ? ' in Markdown' : ''}${payload.driveFile?.webViewLink ? ' and saved to Drive' : ''}.${originalNote}`);
             await refresh();
         } catch (error) {
             setNotice(error instanceof Error ? error.message : 'Source import failed.');
