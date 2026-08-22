@@ -114,7 +114,7 @@ GOOGLE_OAUTH_REDIRECT_URI=https://dashboard-eo6k.onrender.com/api/brain/drive/oa
 Optional Brain variables:
 
 ```text
-BRAIN_LLM_MODEL=gemini-3.5-flash-lite
+BRAIN_LLM_MODEL=gemini-3.7-flash
 BRAIN_LLM_THINKING_LEVEL=minimal
 BRAIN_EMBEDDING_MODEL=gemini-embedding-001
 GOOGLE_DRIVE_REFRESH_TOKEN=...
@@ -143,7 +143,7 @@ Self-build variables, required only if you want the Brain to write its own code:
 BRAIN_GITHUB_TOKEN=github_pat_...
 BRAIN_GITHUB_REPO=m1erny/dashboard_analytics
 BRAIN_GITHUB_BASE_BRANCH=main
-BRAIN_CODE_MODEL=gemini-3.5-flash
+BRAIN_CODE_MODEL=gemini-3.7-flash
 BRAIN_CODE_THINKING_LEVEL=high
 BRAIN_CODE_MAX_OUTPUT_TOKENS=32000
 BRAIN_CODE_TIMEOUT_SECONDS=240
@@ -166,13 +166,15 @@ Without `VITE_BRAIN_API_URL`, the Brain frontend can default to the hosted Rende
 
 ### Model Selection
 
-The Brain generates with **Gemini 3.5 Flash-Lite** and embeds with **gemini-embedding-001**.
+The Brain generates with **Gemini 3.7 Flash** and embeds with **gemini-embedding-001**.
 
-Flash-Lite is the deliberate default rather than a cost compromise. Retrieval does the heavy lifting before the model is called: hybrid search, deep source expansion, the pinned reference layer, and the live portfolio context all arrive pre-assembled and pre-ranked. What is left is disciplined writing over supplied evidence, and a fast model keeps the ask/answer loop short enough to iterate on.
+Retrieval does the heavy lifting before the model is called: hybrid search, deep source expansion, the pinned reference layer, and the live portfolio context all arrive pre-assembled and pre-ranked. What is left is disciplined writing over supplied evidence. 3.7 Flash brings a 1M-token input window, which is what the pinned full-document path wants, at a higher price and a higher floor on reasoning time than the Flash-Lite it replaced — see the cost note below.
 
-- `BRAIN_LLM_MODEL` selects the generation model. `gemini-3.5-flash` is the drop-in upgrade for questions that need more reasoning than speed.
-- `BRAIN_LLM_THINKING_LEVEL` accepts `minimal`, `low`, `medium`, or `high`, and applies only to `gemini-3.5*` models. An unrecognized value falls back to `minimal`. Higher levels reason longer and draw on the output allowance, so raise `BRAIN_ANALYSIS_TIMEOUT_SECONDS` alongside them.
-- `BRAIN_LLM_THINKING_BUDGET` is the older numeric-budget form, used only for non-3.5 models. It is inert while a `gemini-3.5*` model is selected.
+- `BRAIN_LLM_MODEL` selects the generation model. `gemini-3.5-flash-lite` is the cheaper, faster fallback if answer latency matters more than depth.
+- `BRAIN_LLM_THINKING_LEVEL` accepts `minimal`, `low`, `medium`, or `high`, and applies to any `gemini-3.*` model. An unrecognized value falls back to `minimal`. Higher levels reason longer and draw on the output allowance, so raise `BRAIN_ANALYSIS_TIMEOUT_SECONDS` alongside them.
+- **3.7 Flash rejects `minimal`.** The client maps a `minimal` request onto `low` for models that do not accept it, so the setting stays meaningful across the family instead of failing validation. `/api/brain/llm/status` reports both the requested level and the one actually sent.
+- `BRAIN_LLM_THINKING_BUDGET` is the older numeric-budget form, used only for pre-3.x models. It is inert while any `gemini-3.*` model is selected.
+- **Cost.** 3.7 Flash is a paid tier above Flash-Lite: $0.75 per 1M input tokens and $3.75 per 1M output through 31 December 2026, doubling to $1.50 / $7.50 on 1 January 2027. That matters most on the full-document path, where `BRAIN_FULL_CONTEXT_TOTAL_MAX_CHARS` of 800,000 is roughly 200k input tokens — about $0.15 of input for a single question. Lower that cap, or keep fewer files pinned, if the bill is the constraint.
 - If Google rejects the thinking configuration, the request is retried once without it. An unsupported model or level degrades to a plain call instead of failing the answer.
 - `BRAIN_EMBEDDING_MODEL` should be treated as fixed. Vectors from different embedding models are not comparable, so changing it invalidates the library and requires a full backfill with `force=true`.
 
