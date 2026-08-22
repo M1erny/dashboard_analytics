@@ -290,6 +290,131 @@ def main():
     else:
         check("a request with neither dates nor a query is refused", False)
 
+    # ── Fetching, paging and truncation, with the network injected out ────────
+    listing_html = open(os.path.join(FIXTURES, "espi_listing.html"), encoding="utf-8").read()
+    empty_page = '<ul class="newsList"></ul>'
+
+    calls = []
+
+    def fake_get(pages):
+        def get(url):
+            calls.append(url)
+            index = int(url.rsplit("page=", 1)[1])
+            return pages[index] if index < len(pages) else empty_page
+        return get
+
+    calls.clear()
+    one = espi.fetch_listing(query="MIRBUD", max_pages=3, get=fake_get([listing_html]))
+    check("a full page then an empty one stops paging", len(calls) == 2, str(len(calls)))
+    check("and yields that page's entries", len(one["entries"]) == 30, str(len(one["entries"])))
+    check("and is not reported truncated", one["truncated"] is False)
+
+    calls.clear()
+    capped = espi.fetch_listing(query="X", max_pages=2, get=fake_get([listing_html, listing_html]))
+    check("hitting the page cap stops there", len(calls) == 2, str(len(calls)))
+    check("and says so, rather than presenting a capped answer as complete", capped["truncated"] is True)
+
+    # The same node on two pages must not be counted twice.
+    calls.clear()
+    deduped = espi.fetch_listing(query="X", max_pages=3, get=fake_get([listing_html, listing_html, empty_page]))
+    check("repeated nodes across pages are deduplicated", len(deduped["entries"]) == 30, str(len(deduped["entries"])))
+
+    calls.clear()
+    quiet = espi.fetch_listing(query="NOBODY", max_pages=3, get=fake_get([]))
+    check("a quiet query returns nothing without raising", quiet["entries"] == [] and quiet["truncated"] is False)
+    check("and stops after one page", len(calls) == 1, str(len(calls)))
+
+    # ── The digest queries per holding and confirms the match ─────────────────
+    def digest_get(url):
+        return listing_html
+
+    result = espi.digest_for_holdings(
+        {"WWL.WA": "WAWEL SPÓŁKA AKCYJNA", "SNK.WA": "Synektik S.A."},
+        date(2026, 8, 21),
+        date(2026, 8, 21),
+        get=digest_get,
+    )
+    tickers = {e["matchedTicker"] for e in result["entries"]}
+    check("the digest matches both holdings", tickers == {"WWL.WA", "SNK.WA"}, str(tickers))
+    check("WAWEL's one filing is found", result["byTicker"].get("WWL.WA") == 1, str(result["byTicker"]))
+    check("Synektik's two filings are found", result["byTicker"].get("SNK.WA") == 2, str(result["byTicker"]))
+    check(
+        "and the other 27 issuers on the page are excluded",
+        len(result["entries"]) == 3,
+        str(len(result["entries"])),
+    )
+    check("entries are newest first", [e["time"] for e in result["entries"]] == sorted([e["time"] for e in result["entries"]], reverse=True))
+    check("the queried tickers are reported", result["queriedTickers"] == ["SNK.WA", "WWL.WA"], str(result["queriedTickers"]))
+
+    # One issuer failing must not lose the digest.
+    def flaky_get(url):
+        if "WAWEL" in url:
+            raise RuntimeError("boom")
+        return listing_html
+
+    partial = espi.digest_for_holdings(
+        {"WWL.WA": "WAWEL SPÓŁKA AKCYJNA", "SNK.WA": "Synektik S.A."},
+        date(2026, 8, 21),
+        date(2026, 8, 21),
+        get=flaky_get,
+    )
+    check("a failing issuer is reported, not swallowed", "WWL.WA" in partial["failures"], str(partial["failures"]))
+    check("and the rest of the digest survives", partial["byTicker"].get("SNK.WA") == 2, str(partial["byTicker"]))
+
+    # A holding with no resolved name is skipped rather than searched for "".
+    blank = espi.digest_for_holdings({"AAA.WA": ""}, date(2026, 8, 21), date(2026, 8, 21), get=digest_get)
+    check("a holding with no name is skipped", blank["entries"] == [] and blank["byTicker"] == {})
+
+    # ── fetch_report goes through the node URL ────────────────────────────────
+    report_html = open(os.path.join(FIXTURES, "espi_report_periodic.html"), encoding="utf-8").read()
+    seen_urls = []
+
+    def report_get(url):
+        seen_urls.append(url)
+        return report_html
+
+    fetched = espi.fetch_report(735217, get=report_get)
+    check("fetch_report requests the node permalink", seen_urls == ["https://espiebi.pap.pl/node/735217"], str(seen_urls))
+    check("and returns the parsed report", fetched["issuerSymbol"] == "WAWEL SA", fetched["issuerSymbol"])
+
+    # ── Which holdings the digest searches for, and how names are kept ────────
+    config = {
+        "LPP.WA": {"country": "POL"},
+        "CDR.WA": {"country": "POL"},
+        "NVDA": {"country": "USA"},
+        "7974.T": {"country": "JPN"},
+        "SOMETHING.WA": {"country": ""},
+    }
+    check(
+        "Polish holdings are selected by country or suffix",
+        espi.polish_tickers(config) == ["CDR.WA", "LPP.WA", "SOMETHING.WA"],
+        str(espi.polish_tickers(config)),
+    )
+    check("a US holding is not Polish", "NVDA" not in espi.polish_tickers(config))
+    check("an empty config yields nothing", espi.polish_tickers({}) == [])
+    check("a missing config yields nothing", espi.polish_tickers(None) == [])
+
+    # A recorded name must survive a provider lookup: it may have been corrected
+    # by hand, or taken from a report's own Symbol Emitenta, which beats any
+    # provider's long name.
+    merged = espi.merge_issuer_names(
+        {"LPP.WA": "LPP SA"},
+        {"LPP.WA": "LPP S.A. Group Holding", "CDR.WA": "CD Projekt S.A."},
+        ["LPP.WA", "CDR.WA"],
+    )
+    check("a cached name wins over a fresh lookup", merged["LPP.WA"] == "LPP SA", str(merged))
+    check("and a missing one is filled in", merged["CDR.WA"] == "CD Projekt S.A.", str(merged))
+    check(
+        "a ticker no longer in the book is dropped",
+        espi.merge_issuer_names({"OLD.WA": "Gone SA"}, {}, ["LPP.WA"]) == {},
+        str(espi.merge_issuer_names({"OLD.WA": "Gone SA"}, {}, ["LPP.WA"])),
+    )
+    check(
+        "a blank name is not recorded",
+        espi.merge_issuer_names({"LPP.WA": "   "}, {"LPP.WA": ""}, ["LPP.WA"]) == {},
+    )
+    check("no cache and no lookup yields nothing", espi.merge_issuer_names(None, None, ["LPP.WA"]) == {})
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED:")

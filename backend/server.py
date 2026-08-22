@@ -31,6 +31,12 @@ except ImportError as e:
     risk = None
 
 try:
+    import espi_sources
+except ImportError as e:
+    print(f"Error importing espi_sources.py: {e}")
+    espi_sources = None
+
+try:
     import book_analytics
 except ImportError as e:
     print(f"Error importing book_analytics.py: {e}")
@@ -145,6 +151,13 @@ BRAIN_SEARCH_TIMEOUT_SECONDS = _env_float("BRAIN_SEARCH_TIMEOUT_SECONDS", 18.0)
 # autosave needs ~25s of that, so the writing window stays well inside the budget.
 BRAIN_ANALYSIS_TIMEOUT_SECONDS = max(5.0, min(_env_float("BRAIN_ANALYSIS_TIMEOUT_SECONDS", 24.0), 60.0))
 BRAIN_INDEX_TIMEOUT_SECONDS = _env_float("BRAIN_INDEX_TIMEOUT_SECONDS", 240.0)
+# ESPI/EBI is scraped from PAP, so the caps are about being a good citizen of
+# someone else's site as much as about latency: a digest is one query per holding,
+# and each query is allowed a small number of pages.
+BRAIN_ESPI_TIMEOUT_SECONDS = max(5.0, min(_env_float("BRAIN_ESPI_TIMEOUT_SECONDS", 20.0), 60.0))
+BRAIN_ESPI_MAX_PAGES = max(1, min(_env_int("BRAIN_ESPI_MAX_PAGES", 3), 10))
+BRAIN_ESPI_DIGEST_MAX_DAYS = max(1, min(_env_int("BRAIN_ESPI_DIGEST_MAX_DAYS", 30), 120))
+ESPI_ISSUER_NAMES_SETTING = "brain.espi_issuer_names.v1"
 # The market-data fetch is the slowest thing an analysis can wait on: a cold yfinance
 # pull behind get_metrics. Unbounded, it can outlast whatever patience the host has for
 # an open connection, and the question dies with no response at all. Bounded, the worst
@@ -3622,6 +3635,202 @@ async def get_brain_portfolio_context(portfolio: str = "main"):
 @app.get("/api/brain/portfolio-outline")
 async def get_brain_portfolio_outline(portfolio: str = "main"):
     return _build_brain_portfolio_outline(portfolio)
+
+
+# ==========================================
+# Polish regulatory filings (ESPI/EBI via PAP)
+# ==========================================
+
+def _resolve_issuer_names_from_market(tickers: list[str]) -> dict[str, str]:
+    """Company names for tickers, from the market-data provider already in use.
+
+    Nothing here hardcodes a name. `SWM.WA` and `SPR.WA` are not names anybody
+    should be guessing at in a tool that files reports against holdings, and
+    yfinance already answers this question in risk.py.
+    """
+    if not risk:
+        return {}
+    import yfinance as yf
+
+    resolved: dict[str, str] = {}
+    for ticker in tickers:
+        try:
+            info = yf.Ticker(ticker).info or {}
+        except Exception as exc:
+            print(f"Could not resolve an issuer name for {ticker}: {_clean_public_error(exc)[:120]}")
+            continue
+        name = str(info.get("longName") or info.get("shortName") or "").strip()
+        if name:
+            resolved[ticker] = name
+    return resolved
+
+
+async def _espi_issuer_names(store: Any, portfolio: str = "main") -> dict[str, str]:
+    """ticker -> issuer name for the book's Polish holdings, cached in Supabase."""
+    config = risk.get_all_position_configs(portfolio) if risk else {}
+    tickers = espi_sources.polish_tickers(config)
+    if not tickers:
+        return {}
+
+    cached: dict[str, str] = {}
+    if hasattr(store, "get_setting"):
+        try:
+            raw = await _run_brain_step(
+                "ESPI issuer name lookup",
+                store.get_setting,
+                ESPI_ISSUER_NAMES_SETTING,
+                timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+            )
+            cached = json.loads(raw) if raw else {}
+            if not isinstance(cached, dict):
+                cached = {}
+        except Exception:
+            cached = {}
+
+    missing = [ticker for ticker in tickers if not str(cached.get(ticker) or "").strip()]
+    resolved: dict[str, str] = {}
+    if missing:
+        resolved = await run_in_threadpool(_resolve_issuer_names_from_market, missing)
+
+    names = espi_sources.merge_issuer_names(cached, resolved, tickers)
+    if names and names != cached and hasattr(store, "set_setting"):
+        try:
+            await _run_brain_step(
+                "ESPI issuer name save",
+                store.set_setting,
+                ESPI_ISSUER_NAMES_SETTING,
+                json.dumps(names, ensure_ascii=False),
+                timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            print(f"Could not cache ESPI issuer names: {_clean_public_error(exc)[:160]}")
+    return names
+
+
+@app.get("/api/brain/espi/issuers")
+async def get_espi_issuers(portfolio: str = "main"):
+    """Which holdings the digest can search for, and which still have no name."""
+    store = _brain_or_503()
+    config = risk.get_all_position_configs(portfolio) if risk else {}
+    tickers = espi_sources.polish_tickers(config)
+    names = await _espi_issuer_names(store, portfolio)
+    return {
+        "portfolio": portfolio,
+        "tickers": tickers,
+        "names": names,
+        "unresolved": [ticker for ticker in tickers if ticker not in names],
+        "setting": ESPI_ISSUER_NAMES_SETTING,
+    }
+
+
+@app.get("/api/brain/espi/digest")
+async def get_espi_digest(
+    days: int = Query(default=7, ge=1, le=BRAIN_ESPI_DIGEST_MAX_DAYS),
+    portfolio: str = "main",
+    periodicOnly: bool = False,
+):
+    """What the book's Polish issuers filed over the last `days` days."""
+    store = _brain_or_503()
+    names = await _espi_issuer_names(store, portfolio)
+    if not names:
+        return {
+            "portfolio": portfolio,
+            "days": days,
+            "entries": [],
+            "byTicker": {},
+            "queriedTickers": [],
+            "unresolved": espi_sources.polish_tickers(
+                risk.get_all_position_configs(portfolio) if risk else {}
+            ),
+            "message": "No issuer names are known yet for the Polish holdings, so there is nothing to search for.",
+        }
+
+    end = datetime.now().date()
+    start = end - timedelta(days=max(0, days - 1))
+    try:
+        result = await asyncio.wait_for(
+            run_in_threadpool(
+                espi_sources.digest_for_holdings,
+                names,
+                start,
+                end,
+                max_pages=BRAIN_ESPI_MAX_PAGES,
+                timeout=BRAIN_ESPI_TIMEOUT_SECONDS,
+            ),
+            timeout=BRAIN_ESPI_TIMEOUT_SECONDS * len(names) + 10,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="The ESPI/EBI digest did not finish in time. Try a shorter window.")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"ESPI/EBI listing failed: {_clean_public_error(exc)[:240]}")
+
+    entries = result["entries"]
+    if periodicOnly:
+        entries = [e for e in entries if espi_sources.is_periodic_report(e.get("subject") or "")]
+    return {
+        "portfolio": portfolio,
+        "days": days,
+        "from": start.isoformat(),
+        "to": end.isoformat(),
+        "source": espi_sources.PAP_BASE,
+        "periodicOnly": periodicOnly,
+        **result,
+        "entries": entries,
+    }
+
+
+@app.get("/api/brain/espi/search")
+async def get_espi_search(
+    q: str,
+    periodicOnly: bool = False,
+    pages: int = Query(default=2, ge=1, le=BRAIN_ESPI_MAX_PAGES),
+):
+    """The PAP listing's own free-text search, passed through."""
+    _brain_or_503()
+    query = re.sub(r"\s+", " ", str(q or "")).strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="A search phrase is required")
+    if len(query) > 120:
+        raise HTTPException(status_code=400, detail="Search phrase is too long")
+    try:
+        result = await asyncio.wait_for(
+            run_in_threadpool(
+                espi_sources.fetch_listing,
+                query,
+                None,
+                None,
+                pages,
+                BRAIN_ESPI_TIMEOUT_SECONDS,
+            ),
+            timeout=BRAIN_ESPI_TIMEOUT_SECONDS * pages + 10,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="The ESPI/EBI search did not finish in time.")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"ESPI/EBI search failed: {_clean_public_error(exc)[:240]}")
+
+    entries = result["entries"]
+    if periodicOnly:
+        entries = [e for e in entries if espi_sources.is_periodic_report(e.get("subject") or "")]
+    return {"query": query, "source": espi_sources.PAP_BASE, "periodicOnly": periodicOnly, **result, "entries": entries}
+
+
+@app.get("/api/brain/espi/report/{node_id}")
+async def get_espi_report(node_id: str):
+    """One report: its type, issuer identity, attachments and selected financials."""
+    _brain_or_503()
+    if not str(node_id).isdigit():
+        raise HTTPException(status_code=400, detail="A PAP node id is numeric")
+    try:
+        report = await asyncio.wait_for(
+            run_in_threadpool(espi_sources.fetch_report, node_id, BRAIN_ESPI_TIMEOUT_SECONDS),
+            timeout=BRAIN_ESPI_TIMEOUT_SECONDS + 10,
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="The ESPI/EBI report did not load in time.")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"ESPI/EBI report failed: {_clean_public_error(exc)[:240]}")
+    return report
 
 
 @app.get("/api/brain/conversations")

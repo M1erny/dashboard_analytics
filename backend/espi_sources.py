@@ -619,3 +619,158 @@ def parse_report(html: str) -> dict:
         "attachments": parser.attachments,
         "financials": _parse_financials(parser.tables),
     }
+
+
+# ─── Fetching ───────────────────────────────────────────────────────────────
+
+DEFAULT_LISTING_TIMEOUT = 20.0
+# A day carries roughly ninety filings across the whole market, three pages of
+# thirty. Walking a week of that is twenty-odd requests and would still truncate
+# silently, so a digest queries `search=` per holding instead: fewer requests,
+# each small, and nothing dropped without saying so.
+DEFAULT_MAX_PAGES = 3
+USER_AGENT = "dashboard-analytics-brain/1.0 (portfolio research; contact via repository)"
+
+
+def _get(url: str, timeout: float) -> str:
+    import httpx
+
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.get(url, headers={"User-Agent": USER_AGENT})
+        response.raise_for_status()
+        return response.text
+
+
+def fetch_listing(
+    query: str | None = None,
+    start: date | None = None,
+    end: date | None = None,
+    max_pages: int = DEFAULT_MAX_PAGES,
+    timeout: float = DEFAULT_LISTING_TIMEOUT,
+    get: object = None,
+) -> dict:
+    """Entries for one query, following pagination up to `max_pages`.
+
+    `get` is injectable so the paging and truncation logic can be tested without
+    reaching the network.
+
+    Returns the entries plus `truncated`, because a caller that cannot tell a
+    complete answer from a capped one will present a capped one as complete.
+    """
+    fetcher = get or (lambda url: _get(url, timeout))
+    pages = max(1, int(max_pages))
+    entries: list[dict] = []
+    seen: set[str] = set()
+    pages_read = 0
+    truncated = False
+    for page in range(pages):
+        url = search_url(query=query, start=start, end=end, page=page)
+        page_entries = parse_listing(fetcher(url))
+        pages_read += 1
+        # Deduplication and end-of-results are separate questions. Stopping on
+        # "no new entries" would conflate them, and a repeated page would then
+        # look like the end while the cap was the real reason.
+        for entry in page_entries:
+            if entry["nodeId"] not in seen:
+                seen.add(entry["nodeId"])
+                entries.append(entry)
+        if not page_entries:
+            break
+        if page == pages - 1:
+            # Stopped because of the cap while the page still had content, so
+            # there is probably more behind it. Say so: a caller that cannot
+            # tell a capped answer from a complete one will present it as complete.
+            truncated = True
+    return {"entries": entries, "pagesRead": pages_read, "truncated": truncated}
+
+
+def fetch_report(node_id: str | int, timeout: float = DEFAULT_LISTING_TIMEOUT, get: object = None) -> dict:
+    """One report page, parsed."""
+    url = node_url(node_id)
+    fetcher = get or (lambda u: _get(u, timeout))
+    report = parse_report(fetcher(url))
+    if not report.get("url"):
+        report["url"] = url
+    return report
+
+
+def digest_for_holdings(
+    names_by_ticker: dict[str, str],
+    start: date,
+    end: date,
+    max_pages: int = 1,
+    timeout: float = DEFAULT_LISTING_TIMEOUT,
+    get: object = None,
+) -> dict:
+    """Filings from the book's own issuers over a window.
+
+    One `search=` per holding rather than one walk of the whole market: a week of
+    every issuer's filings is twenty-odd pages and would truncate, where a per
+    holding query returns a handful. The search narrows and `match_ticker`
+    confirms, so an issuer whose name merely contains the query is dropped.
+    """
+    per_ticker: dict[str, list[dict]] = {}
+    failures: dict[str, str] = {}
+    truncated = False
+    for ticker, company in sorted((names_by_ticker or {}).items()):
+        query = _clean(company)
+        if not query:
+            continue
+        try:
+            result = fetch_listing(
+                query=query, start=start, end=end, max_pages=max_pages, timeout=timeout, get=get
+            )
+        except Exception as exc:  # one bad issuer must not lose the whole digest
+            failures[ticker] = str(exc)[:200]
+            continue
+        truncated = truncated or result["truncated"]
+        matched = []
+        for entry in result["entries"]:
+            if match_ticker(entry.get("issuer") or "", {ticker: company}) == ticker:
+                matched.append({**entry, "matchedTicker": ticker})
+        if matched:
+            per_ticker[ticker] = matched
+
+    entries = sorted(
+        (entry for rows in per_ticker.values() for entry in rows),
+        key=lambda e: (e.get("date") or "", e.get("time") or ""),
+        reverse=True,
+    )
+    return {
+        "entries": entries,
+        "byTicker": {ticker: len(rows) for ticker, rows in per_ticker.items()},
+        "queriedTickers": sorted(names_by_ticker or {}),
+        "failures": failures,
+        "truncated": truncated,
+    }
+
+
+def merge_issuer_names(cached: dict, resolved: dict, tickers: list[str]) -> dict:
+    """The issuer-name map for `tickers`, preferring a cached name over a fresh one.
+
+    A name that has already been recorded — possibly corrected by hand, or taken
+    from a report's own `Symbol Emitenta`, which is better than any provider's
+    long name — must not be overwritten by a provider lookup. Tickers outside the
+    current book are dropped so the cache cannot grow without bound.
+    """
+    wanted = [t for t in (tickers or []) if t]
+    merged: dict[str, str] = {}
+    for ticker in wanted:
+        name = _clean((cached or {}).get(ticker)) or _clean((resolved or {}).get(ticker))
+        if name:
+            merged[ticker] = name
+    return merged
+
+
+def polish_tickers(config: dict) -> list[str]:
+    """The Warsaw-listed holdings in a portfolio config.
+
+    Country rather than suffix: the suffix is a Yahoo convention and the country
+    is the portfolio's own statement about the holding.
+    """
+    tickers = []
+    for ticker, info in (config or {}).items():
+        country = str((info or {}).get("country") or "").upper()
+        if country == "POL" or str(ticker).upper().endswith(".WA"):
+            tickers.append(ticker)
+    return sorted(tickers)
