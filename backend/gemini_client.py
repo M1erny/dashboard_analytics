@@ -7,14 +7,47 @@ from typing import Any
 import httpx
 
 
-DEFAULT_GENERATION_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_GENERATION_MODEL = "gemini-3.7-flash"
 DEFAULT_EMBEDDING_MODEL = "gemini-embedding-001"
 DEFAULT_THINKING_BUDGET = 0
 DEFAULT_THINKING_LEVEL = "minimal"
 VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high"}
+
+# Gemini 3 models take `thinkingLevel`; older ones take the numeric `thinkingBudget`.
+# The gate is the family, not one release. It used to read "gemini-3.5", so selecting
+# a 3.7 model sent it the legacy budget field, ate a 400, and only then retried
+# without any thinking config — two round trips per answer and no way to see it.
+THINKING_LEVEL_MODEL_PREFIX = "gemini-3."
+# 3.7 Flash rejects MINIMAL with a validation error where 3.5 accepts it. "As little
+# thinking as possible" stays the intent; this is where the intent is mapped onto what
+# a given model will actually take.
+MODELS_WITHOUT_MINIMAL_THINKING = ("gemini-3.7",)
+LOWEST_SUPPORTED_THINKING_LEVEL = "low"
 DEFAULT_REQUEST_TIMEOUT = 45.0
 DEFAULT_EMBEDDING_TIMEOUT = 15.0
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def uses_thinking_level(model: str) -> bool:
+    """Whether this model configures reasoning by level rather than by token budget."""
+    return (model or "").strip().startswith(THINKING_LEVEL_MODEL_PREFIX)
+
+
+def resolve_thinking_level(model: str, level: str | None) -> str:
+    """The nearest reasoning level the given model will actually accept.
+
+    Levels are sent lower-case because that is what the 3.5 models are known to
+    take here. If a newer model turns out to require upper-case, the request is
+    retried without the thinking config rather than failing, so the cost of being
+    wrong in this direction is one round trip; being wrong the other way would
+    break every 3.5 caller.
+    """
+    clean = (level or "").strip().lower()
+    if clean not in VALID_THINKING_LEVELS:
+        clean = DEFAULT_THINKING_LEVEL
+    if clean == "minimal" and (model or "").strip().startswith(MODELS_WITHOUT_MINIMAL_THINKING):
+        return LOWEST_SUPPORTED_THINKING_LEVEL
+    return clean
 
 
 def load_backend_env() -> None:
@@ -108,7 +141,12 @@ class GeminiClient:
             "generationModel": self.generation_model,
             "embeddingModel": self.embedding_model,
             "thinkingBudget": self.thinking_budget,
-            "thinkingLevel": self.thinking_level if self.generation_model.startswith("gemini-3.5") else None,
+            "thinkingLevel": (
+                resolve_thinking_level(self.generation_model, self.thinking_level)
+                if uses_thinking_level(self.generation_model)
+                else None
+            ),
+            "thinkingLevelRequested": self.thinking_level,
             "requestTimeoutSeconds": self.request_timeout,
             "embeddingTimeoutSeconds": self.embedding_timeout,
             "apiKeyEnv": "GOOGLE_AI_API_KEY or GEMINI_API_KEY",
@@ -283,8 +321,10 @@ class GeminiClient:
         requested_level = (thinking_level or self.thinking_level or "").strip().lower()
         if requested_level not in VALID_THINKING_LEVELS:
             requested_level = self.thinking_level
-        if generation_model.startswith("gemini-3.5"):
-            generation_config["thinkingConfig"] = {"thinkingLevel": requested_level}
+        if uses_thinking_level(generation_model):
+            generation_config["thinkingConfig"] = {
+                "thinkingLevel": resolve_thinking_level(generation_model, requested_level)
+            }
         elif self.thinking_budget is not None:
             generation_config["thinkingConfig"] = {"thinkingBudget": self.thinking_budget}
 

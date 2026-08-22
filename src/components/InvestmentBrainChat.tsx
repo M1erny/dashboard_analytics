@@ -65,9 +65,12 @@ type DriveStatus = {
     folderUrl?: string | null;
     authConfigured: boolean;
     connected: boolean;
-    connectionState?: 'ready' | 'needs_reconnect' | 'not_configured';
+    connectionState?: 'ready' | 'needs_reconnect' | 'read_only' | 'not_configured';
     connectionMessage?: string;
-    writeScope?: boolean;
+    requestedScope?: string;
+    grantedScope?: string | null;
+    // null when Google has not reported the granted scopes yet.
+    writeScope?: boolean | null;
 };
 
 type SourceReference = {
@@ -153,6 +156,57 @@ type FullDocumentContext = {
     availableChars?: number;
     contextTruncated?: boolean;
     indexTruncated?: boolean;
+};
+
+type EspiEntry = {
+    date?: string | null;
+    time?: string;
+    number?: string;
+    source?: string;
+    issuer?: string | null;
+    subject?: string;
+    title?: string;
+    nodeId: string;
+    url: string;
+    matchedTicker?: string;
+};
+
+type EspiFinancialItem = {
+    item: string;
+    current?: number | null;
+    previous?: number | null;
+    currentSecondary?: number | null;
+    previousSecondary?: number | null;
+};
+
+type EspiReport = {
+    nodeId: string;
+    url: string;
+    source?: string;
+    reportType?: string;
+    issuerName?: string;
+    issuerSymbol?: string;
+    preparedOn?: string;
+    sector?: string;
+    attachments?: Array<{ url: string; fileName: string; label?: string }>;
+    financials?: {
+        units?: string;
+        currency?: string;
+        secondaryCurrency?: string;
+        items?: EspiFinancialItem[];
+    };
+};
+
+type EspiListing = {
+    entries?: EspiEntry[];
+    byTicker?: Record<string, number>;
+    queriedTickers?: string[];
+    unresolved?: string[];
+    failures?: Record<string, string>;
+    truncated?: boolean;
+    from?: string;
+    to?: string;
+    message?: string;
 };
 
 type RetrievalDiagnostics = {
@@ -804,6 +858,13 @@ export const InvestmentBrainChat: React.FC = () => {
     const [agentTask, setAgentTask] = useState('');
     const [agentUrl, setAgentUrl] = useState('');
     const [agentCandidates, setAgentCandidates] = useState<AgentCandidate[]>([]);
+    const [filingSource, setFilingSource] = useState<'sec' | 'espi'>('sec');
+    const [espiQuery, setEspiQuery] = useState('');
+    const [espiDays, setEspiDays] = useState(7);
+    const [espiListing, setEspiListing] = useState<EspiListing | null>(null);
+    const [isEspiLoading, setIsEspiLoading] = useState(false);
+    const [espiOpenNode, setEspiOpenNode] = useState<string | null>(null);
+    const [espiReports, setEspiReports] = useState<Record<string, EspiReport>>({});
     const [agentSearch, setAgentSearch] = useState<AgentSearchResponse | null>(null);
     const [isAgentWorking, setIsAgentWorking] = useState(false);
     const outputRef = useRef<HTMLDivElement | null>(null);
@@ -1304,6 +1365,7 @@ export const InvestmentBrainChat: React.FC = () => {
                     tags: ['research-agent'],
                     trustedOnly,
                     uploadToDrive: true,
+                    keepOriginal: true,
                     embedAfterImport: true,
                     embedMaxChunks: 500,
                     agentTask: agentTask.trim() || undefined,
@@ -1314,12 +1376,23 @@ export const InvestmentBrainChat: React.FC = () => {
                 status?: string;
                 chunks?: unknown[];
                 driveFile?: { webViewLink?: string };
-                document?: { convertedToMarkdown?: boolean };
+                document?: {
+                    convertedToMarkdown?: boolean;
+                    original?: { keptOnDrive?: boolean; extension?: string; uploadError?: string | null };
+                };
             };
             setAgentUrl('');
+            const original = payload.document?.original;
+            // Name the format rather than saying "original", so it is obvious the
+            // readable file is there and not only the flattened Markdown.
+            const originalNote = original?.keptOnDrive
+                ? ` The ${(original.extension ?? '').replace('.', '').toUpperCase() || 'original'} was saved next to it.`
+                : original?.uploadError
+                    ? ' The Markdown is indexed, but saving the original file failed.'
+                    : '';
             setNotice(payload.status === 'skipped'
                 ? 'That source was already indexed and has not changed.'
-                : `Source indexed as ${payload.chunks?.length ?? 0} passages${payload.document?.convertedToMarkdown ? ' in Markdown' : ''}${payload.driveFile?.webViewLink ? ' and saved to Drive' : ''}.`);
+                : `Source indexed as ${payload.chunks?.length ?? 0} passages${payload.document?.convertedToMarkdown ? ' in Markdown' : ''}${payload.driveFile?.webViewLink ? ' and saved to Drive' : ''}.${originalNote}`);
             await refresh();
         } catch (error) {
             setNotice(error instanceof Error ? error.message : 'Source import failed.');
@@ -1356,6 +1429,59 @@ export const InvestmentBrainChat: React.FC = () => {
             setNotice(error instanceof Error ? error.message : 'Research agent could not complete the import.');
         } finally {
             setIsAgentWorking(false);
+        }
+    };
+
+    const loadEspiDigest = async (days = espiDays) => {
+        if (!ready || isEspiLoading) return;
+        setIsEspiLoading(true);
+        setNotice(`Checking what your Polish holdings filed in the last ${days} day${days === 1 ? '' : 's'}...`);
+        try {
+            const response = await request(api(`/api/brain/espi/digest?days=${days}`), {}, 120000);
+            if (!response.ok) throw new Error(await errorText(response, 'The ESPI/EBI digest could not be loaded.'));
+            const payload = await response.json() as EspiListing;
+            setEspiListing(payload);
+            const count = payload.entries?.length ?? 0;
+            setNotice(payload.message
+                ?? `${count} filing${count === 1 ? '' : 's'} from your Polish holdings${payload.truncated ? ' (more may exist beyond the page limit)' : ''}.`);
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'The ESPI/EBI digest could not be loaded.');
+        } finally {
+            setIsEspiLoading(false);
+        }
+    };
+
+    const searchEspi = async () => {
+        const query = espiQuery.trim();
+        if (!ready || !query || isEspiLoading) return;
+        setIsEspiLoading(true);
+        setNotice(`Searching ESPI/EBI for "${query}"...`);
+        try {
+            const response = await request(api(`/api/brain/espi/search?q=${encodeURIComponent(query)}`), {}, 90000);
+            if (!response.ok) throw new Error(await errorText(response, 'The ESPI/EBI search failed.'));
+            const payload = await response.json() as EspiListing;
+            setEspiListing(payload);
+            const count = payload.entries?.length ?? 0;
+            setNotice(`${count} ESPI/EBI filing${count === 1 ? '' : 's'} for "${query}"${payload.truncated ? ' (more may exist beyond the page limit)' : ''}.`);
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'The ESPI/EBI search failed.');
+        } finally {
+            setIsEspiLoading(false);
+        }
+    };
+
+    const toggleEspiReport = async (nodeId: string) => {
+        if (espiOpenNode === nodeId) { setEspiOpenNode(null); return; }
+        setEspiOpenNode(nodeId);
+        if (espiReports[nodeId]) return;
+        try {
+            const response = await request(api(`/api/brain/espi/report/${encodeURIComponent(nodeId)}`), {}, 60000);
+            if (!response.ok) throw new Error(await errorText(response, 'This report could not be read.'));
+            const payload = await response.json() as EspiReport;
+            setEspiReports(current => ({ ...current, [nodeId]: payload }));
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'This report could not be read.');
+            setEspiOpenNode(null);
         }
     };
 
@@ -1740,12 +1866,14 @@ export const InvestmentBrainChat: React.FC = () => {
                                                 <div><dt className="text-slate-500">Storage</dt><dd className="mt-0.5 font-semibold text-white">{status?.storage === 'postgres_pgvector' ? 'Supabase' : 'Local'}</dd></div>
                                             </dl>
                                             <div className="mt-4 grid grid-cols-2 gap-2">
-                                                {!drive?.connected
-                                                    ? <Button type="button" tone="primary" onClick={() => void connectDrive()} disabled={!ready}><Cloud className="h-3.5 w-3.5" /> Connect</Button>
+                                                {!drive?.connected || drive.connectionState === 'read_only'
+                                                    ? <Button type="button" tone="primary" onClick={() => void connectDrive()} disabled={!ready}><Cloud className="h-3.5 w-3.5" /> {drive?.connected ? 'Reconnect' : 'Connect'}</Button>
                                                     : <Button type="button" onClick={() => void syncDrive()} disabled={!ready}><FolderSync className="h-3.5 w-3.5" /> Sync Drive</Button>}
                                                 <Button type="button" tone="success" onClick={() => void embedMissing()} disabled={!ready || (embeddings.missing ?? 0) === 0}><Sparkles className="h-3.5 w-3.5" /> {embeddings.missing ? `Embed ${formatCount(embeddings.missing)}` : 'All embedded'}</Button>
                                             </div>
                                             {drive?.connectionState === 'needs_reconnect' && <p className="mt-2 text-xs leading-5 text-amber-300">{drive.connectionMessage ?? 'Google Drive authorization expired. Reconnect to sync new files.'}</p>}
+                                            {drive?.connectionState === 'read_only' && <p className="mt-2 text-xs leading-5 text-amber-300">{drive.connectionMessage ?? 'Google Drive is connected read-only, so filings cannot be saved to it. Reconnect to grant file-write permission.'}</p>}
+                                            {drive?.connected && drive.writeScope === true && <p className="mt-2 text-[10px] font-medium uppercase tracking-[0.08em] text-emerald-400">Saving to Drive enabled</p>}
                                             {drive?.folderUrl && <a href={drive.folderUrl} target="_blank" rel="noreferrer" className="mt-3 inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 transition-colors hover:text-emerald-300">Open Drive folder <ExternalLink className="h-3.5 w-3.5" /></a>}
                                         </PanelSection>
 
@@ -1783,7 +1911,172 @@ export const InvestmentBrainChat: React.FC = () => {
                                 )}
 
                                 {panelTab === 'filings' && (
-                                    <PanelSection icon={FileSearch} tone="text-violet-300" title="Filing finder" action={<span className="rounded border border-white/[0.08] px-1.5 py-1 text-[9px] font-bold uppercase tracking-[0.08em] text-slate-500">SEC EDGAR</span>}>
+                                    <PanelSection
+                                        icon={FileSearch}
+                                        tone="text-violet-300"
+                                        title="Filing finder"
+                                        action={(
+                                            <div className="flex items-center gap-0.5 rounded-md border border-white/[0.08] p-0.5">
+                                                {([['sec', 'SEC'], ['espi', 'ESPI/EBI']] as const).map(([value, label]) => (
+                                                    <button
+                                                        key={value}
+                                                        type="button"
+                                                        onClick={() => setFilingSource(value)}
+                                                        className={cn(
+                                                            'rounded px-2 py-1 text-[9px] font-bold uppercase tracking-[0.08em] transition-colors',
+                                                            filingSource === value ? 'bg-violet-500/20 text-violet-200' : 'text-slate-500 hover:text-slate-300',
+                                                        )}
+                                                    >
+                                                        {label}
+                                                    </button>
+                                                ))}
+                                            </div>
+                                        )}
+                                    >
+                                    {filingSource === 'espi' ? (
+                                        <div className="space-y-3">
+                                            {/* The PAP listing is addressed by date, so the digest is what it does
+                                                natively: what the book's own issuers filed. The phrase search is the
+                                                site's own `search=` parameter. */}
+                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                {[3, 7, 30].map(days => (
+                                                    <button
+                                                        key={days}
+                                                        type="button"
+                                                        onClick={() => { setEspiDays(days); void loadEspiDigest(days); }}
+                                                        disabled={!ready || isEspiLoading}
+                                                        className={cn(
+                                                            'rounded-md border px-2 py-1.5 text-[10px] font-semibold transition-colors disabled:cursor-not-allowed disabled:text-slate-600',
+                                                            espiDays === days && espiListing?.queriedTickers
+                                                                ? 'border-violet-500/30 bg-violet-500/[0.1] text-violet-200'
+                                                                : 'border-white/[0.09] text-slate-400 hover:text-slate-200',
+                                                        )}
+                                                    >
+                                                        My book · {days}d
+                                                    </button>
+                                                ))}
+                                                {isEspiLoading && <LoaderCircle className="h-3.5 w-3.5 animate-spin text-violet-300" />}
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <input
+                                                    value={espiQuery}
+                                                    onChange={event => setEspiQuery(event.target.value)}
+                                                    onKeyDown={event => { if (event.key === 'Enter') void searchEspi(); }}
+                                                    aria-label="Search ESPI/EBI"
+                                                    placeholder="Szukaj spółki, np. LPP"
+                                                    className="h-10 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-sm text-white outline-none placeholder:text-slate-600 focus:border-violet-500/35"
+                                                />
+                                                <Button type="button" tone="primary" onClick={() => void searchEspi()} disabled={!ready || !espiQuery.trim() || isEspiLoading} className="min-h-10 shrink-0 px-3" aria-label="Search ESPI/EBI">
+                                                    <Search className="h-3.5 w-3.5" />
+                                                </Button>
+                                            </div>
+
+                                            {espiListing?.unresolved?.length ? (
+                                                <p className="rounded-md border border-amber-400/15 bg-amber-400/[0.04] px-3 py-2 text-[11px] leading-5 text-amber-200/80">
+                                                    No issuer name resolved yet for {espiListing.unresolved.join(', ')}, so those holdings are not searched. They fill in once the market data provider answers.
+                                                </p>
+                                            ) : null}
+                                            {espiListing?.failures && Object.keys(espiListing.failures).length ? (
+                                                <p className="rounded-md border border-rose-400/15 bg-rose-400/[0.04] px-3 py-2 text-[11px] leading-5 text-rose-200/80">
+                                                    {Object.keys(espiListing.failures).join(', ')} could not be queried this time.
+                                                </p>
+                                            ) : null}
+                                            {espiListing?.truncated ? (
+                                                <p className="text-[10px] leading-4 text-amber-200/70">
+                                                    Stopped at the page limit — there may be more filings than shown.
+                                                </p>
+                                            ) : null}
+
+                                            <div className="space-y-2">
+                                                {(espiListing?.entries ?? []).map(entry => {
+                                                    const report = espiReports[entry.nodeId];
+                                                    const open = espiOpenNode === entry.nodeId;
+                                                    return (
+                                                        <article key={entry.nodeId} className="rounded-md border border-white/[0.06] bg-black/15">
+                                                            <div className="px-3 py-2.5">
+                                                                <div className="flex items-start justify-between gap-2">
+                                                                    <div className="min-w-0">
+                                                                        <div className="flex flex-wrap items-center gap-1.5">
+                                                                            <span className={cn(
+                                                                                'rounded border px-1.5 py-0.5 text-[9px] font-bold tracking-[0.06em]',
+                                                                                entry.source === 'EBI' ? 'border-sky-400/25 bg-sky-400/[0.08] text-sky-200' : 'border-violet-400/25 bg-violet-400/[0.08] text-violet-200',
+                                                                            )}>{entry.source}</span>
+                                                                            {entry.matchedTicker && (
+                                                                                <span className="rounded border border-emerald-400/25 bg-emerald-400/[0.08] px-1.5 py-0.5 font-mono text-[9px] font-bold text-emerald-200">{entry.matchedTicker}</span>
+                                                                            )}
+                                                                            <span className="font-mono text-[10px] text-slate-500">{entry.date} {entry.time}</span>
+                                                                            {entry.number && <span className="font-mono text-[10px] text-slate-600">{entry.number}</span>}
+                                                                        </div>
+                                                                        <p className="mt-1 truncate text-xs font-semibold text-slate-200">{entry.issuer ?? 'Unknown issuer'}</p>
+                                                                        <p className="mt-0.5 text-[11px] leading-5 text-slate-400">{entry.subject}</p>
+                                                                    </div>
+                                                                    <div className="flex shrink-0 items-center gap-1">
+                                                                        <a href={entry.url} target="_blank" rel="noreferrer" className="p-1.5 text-slate-600 transition-colors hover:text-violet-300" aria-label="Open at PAP"><ArrowUpRight className="h-3.5 w-3.5" /></a>
+                                                                        <Button type="button" onClick={() => void toggleEspiReport(entry.nodeId)} className="min-h-7 px-2 text-[9px]">{open ? 'Hide' : 'Open'}</Button>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                            {open && (
+                                                                <div className="border-t border-white/[0.06] px-3 py-2.5">
+                                                                    {!report ? (
+                                                                        <p className="flex items-center gap-2 text-[11px] text-slate-500"><LoaderCircle className="h-3.5 w-3.5 animate-spin" /> Reading the report…</p>
+                                                                    ) : (
+                                                                        <div className="space-y-2.5">
+                                                                            <p className="text-[10px] leading-4 text-slate-500">
+                                                                                {[report.reportType, report.issuerSymbol, report.preparedOn, report.sector].filter(Boolean).join(' · ')}
+                                                                            </p>
+                                                                            {report.financials?.items?.length ? (
+                                                                                <div className="overflow-x-auto">
+                                                                                    <table className="w-full text-[10px]">
+                                                                                        <caption className="pb-1 text-left text-[10px] text-slate-500">
+                                                                                            Wybrane dane {[report.financials.units, report.financials.currency].filter(Boolean).join(' ')}
+                                                                                        </caption>
+                                                                                        <thead><tr className="text-slate-600">
+                                                                                            <th className="py-1 text-left font-semibold">Pozycja</th>
+                                                                                            <th className="whitespace-nowrap py-1 pl-2 text-right font-semibold">teraz</th>
+                                                                                            <th className="whitespace-nowrap py-1 pl-2 text-right font-semibold">poprzednio</th>
+                                                                                        </tr></thead>
+                                                                                        <tbody>
+                                                                                            {report.financials.items.slice(0, 8).map(row => (
+                                                                                                <tr key={row.item} className="border-t border-white/[0.05]">
+                                                                                                    <td className="py-1 pr-2 text-slate-300">{row.item}</td>
+                                                                                                    <td className="whitespace-nowrap py-1 pl-2 text-right font-mono tabular-nums text-slate-100">{typeof row.current === 'number' ? row.current.toLocaleString('pl-PL') : '—'}</td>
+                                                                                                    <td className="whitespace-nowrap py-1 pl-2 text-right font-mono tabular-nums text-slate-500">{typeof row.previous === 'number' ? row.previous.toLocaleString('pl-PL') : '—'}</td>
+                                                                                                </tr>
+                                                                                            ))}
+                                                                                        </tbody>
+                                                                                    </table>
+                                                                                </div>
+                                                                            ) : null}
+                                                                            {report.attachments?.length ? (
+                                                                                <div className="space-y-1.5">
+                                                                                    {report.attachments.map(file => (
+                                                                                        <div key={file.url} className="flex items-center justify-between gap-2">
+                                                                                            <a href={file.url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-[11px] text-slate-300 transition-colors hover:text-violet-200">{file.fileName}</a>
+                                                                                            <Button type="button" onClick={() => void importUrl(file.url, `${report.issuerSymbol ?? entry.issuer ?? ''} ${entry.subject}`.trim(), true)} disabled={isAgentWorking} className="min-h-7 shrink-0 px-2 text-[9px]">Add</Button>
+                                                                                        </div>
+                                                                                    ))}
+                                                                                </div>
+                                                                            ) : (
+                                                                                <p className="text-[11px] text-slate-500">No attachments on this report.</p>
+                                                                            )}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </article>
+                                                    );
+                                                })}
+                                                {espiListing && !(espiListing.entries ?? []).length && !isEspiLoading && (
+                                                    <p className="text-xs leading-5 text-slate-500">{espiListing.message ?? 'Nothing filed in this window.'}</p>
+                                                )}
+                                                {!espiListing && !isEspiLoading && (
+                                                    <p className="text-xs leading-5 text-slate-500">Pick a window to see what your Polish holdings filed, or search for a company.</p>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <>
                                         <div className="flex gap-2">
                                             <input
                                                 value={agentTask}
@@ -1839,6 +2132,8 @@ export const InvestmentBrainChat: React.FC = () => {
                                             <input value={agentUrl} onChange={event => setAgentUrl(event.target.value)} className="h-9 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-white/[0.025] px-3 text-xs text-white outline-none placeholder:text-slate-600 focus:border-violet-500/35" placeholder="Import public URL" />
                                             <Button type="button" onClick={() => void importUrl(agentUrl)} disabled={!ready || !agentUrl.trim() || isAgentWorking} className="min-h-9 px-2.5" aria-label="Import public URL"><Plus className="h-3.5 w-3.5" /></Button>
                                         </div>
+                                        </>
+                                    )}
                                     </PanelSection>
                                 )}
 

@@ -28,6 +28,11 @@ DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 DRIVE_SCOPES = f"{DRIVE_READONLY_SCOPE} {DRIVE_FILE_SCOPE}"
 REFRESH_TOKEN_SETTING = "google_drive_refresh_token"
+# Google returns the scopes it actually granted on both the code exchange and
+# every refresh. Requesting DRIVE_SCOPES is not proof of holding them: a token
+# authorised before drive.file was requested keeps working for reads and fails
+# only at upload time, so the granted string is persisted and reported.
+GRANTED_SCOPE_SETTING = "google_drive_granted_scope"
 
 FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
 # Native Workspace files are exported before extraction, and the export format
@@ -83,6 +88,10 @@ DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_PDF_PAGES = 0
 DEFAULT_MAX_EXTRACTED_CHARS = 0
 CONVERSATION_TRANSCRIPT_PREFIX = "investment brain/conversations/"
+# Set on every file the agent import uploads, so the folder sync can tell its own
+# artifacts from documents the owner put in Drive by hand.
+AGENT_UPLOAD_PROPERTY = "investmentBrainAgentUpload"
+AGENT_DOWNLOAD_FOLDER_NAME = "agent downloads"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -110,6 +119,24 @@ def parse_drive_folder_id(value: str | None = None) -> str | None:
 def is_brain_conversation_transcript(file: dict[str, Any]) -> bool:
     relative_path = str(file.get("relativePath") or file.get("name") or "").replace("\\", "/").strip("/").casefold()
     return relative_path.startswith(CONVERSATION_TRANSCRIPT_PREFIX)
+
+
+def is_agent_managed_upload(file: dict[str, Any]) -> bool:
+    """True for artifacts the agent import wrote to Drive and already indexed.
+
+    Every agent import indexes its text directly under an agent-url identity, so
+    letting the folder sync index the same file again under a google-drive
+    identity puts the same passage in the retrieval set twice. Two signals are
+    checked because neither alone is complete: the app property is exact but only
+    present on uploads made after it was introduced, and the folder name catches
+    everything written before that.
+    """
+    properties = file.get("appProperties")
+    if isinstance(properties, dict) and str(properties.get(AGENT_UPLOAD_PROPERTY) or "").strip():
+        return True
+    relative_path = str(file.get("relativePath") or "").replace("\\", "/").strip("/").casefold()
+    segments = relative_path.split("/")[:-1]
+    return AGENT_DOWNLOAD_FOLDER_NAME in segments
 
 
 def drive_folder_url(folder_id: str | None) -> str | None:
@@ -279,6 +306,35 @@ class GoogleDriveClient:
         except Exception:
             return None
 
+    def granted_scope(self) -> str | None:
+        if not self.store or not hasattr(self.store, "get_setting"):
+            return None
+        try:
+            return self.store.get_setting(GRANTED_SCOPE_SETTING)
+        except Exception:
+            return None
+
+    def _record_granted_scope(self, scope: Any) -> None:
+        clean = str(scope or "").strip()
+        if not clean or not self.store or not hasattr(self.store, "set_setting"):
+            return
+        try:
+            self.store.set_setting(GRANTED_SCOPE_SETTING, clean)
+        except Exception:
+            # Losing the record only costs visibility; never fail a token call for it.
+            pass
+
+    def scope_status(self) -> dict[str, Any]:
+        granted = self.granted_scope()
+        scopes = (granted or "").split()
+        return {
+            "requestedScope": DRIVE_SCOPES,
+            "grantedScope": granted,
+            # None means "Google has not told us yet", which is not the same as
+            # "read only" - the UI must not claim saving is broken on a guess.
+            "writeScope": (DRIVE_FILE_SCOPE in scopes) if granted else None,
+        }
+
     def refresh_token_source(self) -> str | None:
         if self.env_refresh_token:
             return "env"
@@ -298,7 +354,7 @@ class GoogleDriveClient:
             "connected": bool(self.refresh_token_source()),
             "tokenSource": self.refresh_token_source(),
             "scope": DRIVE_SCOPES,
-            "writeScope": DRIVE_FILE_SCOPE,
+            **self.scope_status(),
             "supportedExtensions": sorted(SUPPORTED_EXTENSIONS),
             "pdfAvailable": PdfReader is not None,
             "storageMode": "drive_metadata_extracted_text_chunks_embeddings_ready",
@@ -323,6 +379,7 @@ class GoogleDriveClient:
         refresh_token = data.get("refresh_token")
         if refresh_token and self.store and hasattr(self.store, "set_setting"):
             self.store.set_setting(REFRESH_TOKEN_SETTING, refresh_token)
+        self._record_granted_scope(data.get("scope"))
 
         return {
             "hasAccessToken": bool(data.get("access_token")),
@@ -370,6 +427,7 @@ class GoogleDriveClient:
         token = data.get("access_token")
         if not token:
             raise RuntimeError("Google token refresh did not return an access token")
+        self._record_granted_scope(data.get("scope"))
         return token
 
     def _headers(self) -> dict[str, str]:
@@ -384,7 +442,7 @@ class GoogleDriveClient:
         params = {
             "q": query,
             "pageSize": "100",
-            "fields": "nextPageToken,files(id,name,mimeType,size,md5Checksum,createdTime,modifiedTime,webViewLink)",
+            "fields": "nextPageToken,files(id,name,mimeType,size,md5Checksum,createdTime,modifiedTime,webViewLink,appProperties)",
             "supportsAllDrives": "true",
             "includeItemsFromAllDrives": "true",
         }
@@ -830,6 +888,20 @@ def index_drive_folder(
                     "reason": "Brain conversation transcript excluded from retrieval index",
                     "mimeType": file.get("mimeType"),
                     "removedSourceId": removed_source_id,
+                })
+                emit_progress(relative_path)
+                continue
+            if is_agent_managed_upload(file):
+                # Skipped, never deleted: if the agent-url source is ever missing
+                # this file is the only copy of the text, so removing it here
+                # could lose the document outright.
+                results.append({
+                    "id": file["id"],
+                    "name": file.get("name"),
+                    "relativePath": relative_path,
+                    "status": "skipped",
+                    "reason": "agent import already indexed this document",
+                    "mimeType": file.get("mimeType"),
                 })
                 emit_progress(relative_path)
                 continue

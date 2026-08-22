@@ -56,7 +56,7 @@ has no audit trail and no way back.
    ```text
    BRAIN_GITHUB_TOKEN=github_pat_...
    BRAIN_GITHUB_REPO=m1erny/dashboard_analytics
-   BRAIN_CODE_MODEL=gemini-3.5-flash
+   BRAIN_CODE_MODEL=gemini-3.7-flash
    BRAIN_CODE_THINKING_LEVEL=high
    ```
 3. Reload the Brain page. The Self-build panel reports `available: true` once
@@ -67,10 +67,10 @@ active guardrails, without calling GitHub.
 
 ## The model matters more than anything else here
 
-Brain answers run on `gemini-3.5-flash-lite` with minimal thinking, which is the
+Brain answers run on `gemini-3.7-flash` with the lowest thinking level it accepts, which is the
 right trade for retrieval-grounded prose. Writing TypeScript that compiles on the
 first try is a different job. `BRAIN_CODE_MODEL` is therefore separate and
-defaults to `gemini-3.5-flash` with `thinkingLevel: high`. Point it at the
+defaults to `gemini-3.7-flash` with `thinkingLevel: high`. Point it at the
 strongest coding model your key can reach.
 
 Expect roughly this, and calibrate:
