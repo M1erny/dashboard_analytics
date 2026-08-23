@@ -229,6 +229,44 @@ type EspiReport = {
     };
 };
 
+type EspiDiagnosis = {
+    query?: string;
+    // Three outcomes: PAP answered with the listing, PAP refused it, or the
+    // request never got there at all. The third is not evidence about PAP.
+    access?: 'ok' | 'challenged' | 'wrong_page' | 'unreachable';
+    reached?: boolean;
+    blocked?: boolean;
+    verdict?: string;
+    listing?: {
+        status?: number;
+        finalUrl?: string;
+        redirected?: boolean;
+        contentType?: string;
+        server?: string;
+        setCookieNames?: string[];
+        userAgentSent?: string;
+        bytes?: number;
+        title?: string;
+        isResultsPage?: boolean;
+        challengeMarker?: string | null;
+        snippet?: string;
+        reached?: boolean;
+        error?: string;
+    };
+    feeds?: Array<{
+        name: string;
+        path: string;
+        status?: number;
+        contentType?: string;
+        bytes?: number;
+        structured?: boolean;
+        challengeMarker?: string | null;
+        title?: string;
+        error?: string;
+    }>;
+    structuredFeeds?: Array<{ name: string; path: string }>;
+};
+
 type EspiIssuerCandidate = {
     name: string;
     filings: number;
@@ -988,6 +1026,8 @@ export const InvestmentBrainChat: React.FC = () => {
     const [assignQuery, setAssignQuery] = useState('');
     const [assignCandidates, setAssignCandidates] = useState<EspiIssuerCandidate[] | null>(null);
     const [isAssignBusy, setIsAssignBusy] = useState(false);
+    const [espiDiagnosis, setEspiDiagnosis] = useState<EspiDiagnosis | null>(null);
+    const [isDiagnosing, setIsDiagnosing] = useState(false);
     const [catalogue, setCatalogue] = useState<ModelCatalogue | null>(null);
     const [isCatalogueLoading, setIsCatalogueLoading] = useState(false);
     // A question can be routed to the important tier without changing the saved
@@ -1675,6 +1715,25 @@ export const InvestmentBrainChat: React.FC = () => {
         }
     };
 
+    const diagnoseEspi = async () => {
+        if (isDiagnosing) return;
+        setIsDiagnosing(true);
+        setEspiDiagnosis(null);
+        setNotice('Asking the server what PAP actually returns to it...');
+        try {
+            // Probing several candidate endpoints, so this is slower than a search.
+            const response = await request(api('/api/brain/espi/diagnose'), {}, 180000);
+            if (!response.ok) throw new Error(await errorText(response, 'The check could not run.'));
+            const payload = await response.json() as EspiDiagnosis;
+            setEspiDiagnosis(payload);
+            setNotice(payload.verdict ?? 'Check complete.');
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'The check could not run.');
+        } finally {
+            setIsDiagnosing(false);
+        }
+    };
+
     const loadEspiIssuers = useCallback(async () => {
         try {
             const response = await request(api('/api/brain/espi/issuers'), {}, 25000);
@@ -2278,6 +2337,80 @@ export const InvestmentBrainChat: React.FC = () => {
                                                     <Search className="h-3.5 w-3.5" />
                                                 </Button>
                                             </div>
+
+                                            {/* PAP sits behind bot protection, and a page saved in a browser can
+                                                never show why the server's own request failed. This reports the
+                                                server's view, and probes for a data feed that would need no scraping. */}
+                                            <div className="flex items-center gap-2">
+                                                <Button type="button" onClick={() => void diagnoseEspi()} disabled={!ready || isDiagnosing} className="min-h-8 px-2 text-[10px]">
+                                                    {isDiagnosing ? <LoaderCircle className="h-3 w-3 animate-spin" /> : <Cpu className="h-3 w-3" />} Check PAP access
+                                                </Button>
+                                                {espiDiagnosis && (
+                                                    <span className={cn(
+                                                        'text-[10px] font-semibold',
+                                                        espiDiagnosis.access === 'ok' ? 'text-emerald-300'
+                                                            : espiDiagnosis.access === 'unreachable' ? 'text-amber-300'
+                                                                : 'text-rose-300',
+                                                    )}>
+                                                        {espiDiagnosis.access === 'ok' ? 'Server can reach PAP'
+                                                            : espiDiagnosis.access === 'challenged' ? 'Bot protection blocked it'
+                                                                : espiDiagnosis.access === 'wrong_page' ? 'Wrong page returned'
+                                                                    : 'Never reached PAP'}
+                                                    </span>
+                                                )}
+                                            </div>
+
+                                            {espiDiagnosis && (
+                                                <div className="space-y-2 rounded-md border border-white/[0.08] bg-black/25 p-3 text-[10px] leading-4 text-slate-400">
+                                                    <p className="text-[11px] font-semibold text-white">{espiDiagnosis.verdict}</p>
+                                                    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">
+                                                        <dt className="text-slate-600">HTTP</dt>
+                                                        <dd className="text-slate-300">{espiDiagnosis.listing?.reached ? espiDiagnosis.listing?.status : (espiDiagnosis.listing?.error ?? 'no response')}</dd>
+                                                        <dt className="text-slate-600">Title</dt>
+                                                        <dd className="truncate text-slate-300" title={espiDiagnosis.listing?.title}>{espiDiagnosis.listing?.title || '—'}</dd>
+                                                        <dt className="text-slate-600">Results page</dt>
+                                                        <dd className={espiDiagnosis.listing?.isResultsPage ? 'text-emerald-300' : 'text-rose-300'}>{espiDiagnosis.listing?.isResultsPage ? 'yes' : 'no'}</dd>
+                                                        {espiDiagnosis.listing?.challengeMarker && (<>
+                                                            <dt className="text-slate-600">Challenge</dt>
+                                                            <dd className="text-rose-300">{espiDiagnosis.listing.challengeMarker}</dd>
+                                                        </>)}
+                                                        {espiDiagnosis.listing?.server && (<>
+                                                            <dt className="text-slate-600">Server</dt>
+                                                            <dd className="text-slate-300">{espiDiagnosis.listing.server}</dd>
+                                                        </>)}
+                                                        {espiDiagnosis.listing?.redirected && (<>
+                                                            <dt className="text-slate-600">Redirected to</dt>
+                                                            <dd className="truncate text-amber-300" title={espiDiagnosis.listing.finalUrl}>{espiDiagnosis.listing.finalUrl}</dd>
+                                                        </>)}
+                                                        {(espiDiagnosis.listing?.setCookieNames?.length ?? 0) > 0 && (<>
+                                                            <dt className="text-slate-600">Cookies</dt>
+                                                            <dd className="truncate text-slate-300">{espiDiagnosis.listing!.setCookieNames!.join(', ')}</dd>
+                                                        </>)}
+                                                    </dl>
+                                                    {espiDiagnosis.listing?.snippet && (
+                                                        <p className="rounded border border-white/[0.06] bg-black/30 p-2 font-mono text-[9px] leading-4 text-slate-500">{espiDiagnosis.listing.snippet}</p>
+                                                    )}
+                                                    {/* A structured endpoint would remove the scraping and the bot check together. */}
+                                                    {espiDiagnosis.feeds?.length ? (
+                                                        <div>
+                                                            <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500">
+                                                                Data feeds probed{espiDiagnosis.structuredFeeds?.length ? ` — ${espiDiagnosis.structuredFeeds.length} structured` : ' — none structured'}
+                                                            </p>
+                                                            <ul className="space-y-0.5">
+                                                                {espiDiagnosis.feeds.map(feed => (
+                                                                    <li key={feed.name} className="flex items-center gap-2">
+                                                                        <span className="w-36 shrink-0 truncate font-mono text-[9px] text-slate-500">{feed.path}</span>
+                                                                        <span className={cn('w-8 shrink-0', feed.status === 200 ? 'text-emerald-300' : 'text-slate-600')}>{feed.status ?? '—'}</span>
+                                                                        <span className={cn('min-w-0 flex-1 truncate', feed.structured ? 'text-emerald-300' : 'text-slate-600')}>
+                                                                            {feed.structured ? feed.contentType : (feed.contentType || feed.error || '')}
+                                                                        </span>
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                        </div>
+                                                    ) : null}
+                                                </div>
+                                            )}
 
                                             {espiCacheError && (
                                                 <p className="rounded-md border border-rose-400/15 bg-rose-400/[0.04] px-3 py-2 text-[11px] leading-5 text-rose-200/80">

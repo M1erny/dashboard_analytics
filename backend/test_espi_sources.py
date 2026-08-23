@@ -495,6 +495,40 @@ def main():
         espi.candidate_starts_with_root("XTB", "XTB.WA"),
     )
 
+    print("A page that never arrived says so, instead of blaming the layout")
+    challenge = (
+        "<html><head><title>Request unsuccessful. Incapsula incident ID: 42</title></head>"
+        "<body>Request unsuccessful.</body></html>"
+    )
+    fingerprint = espi.page_fingerprint(challenge)
+    check("an interstitial is recognised", fingerprint["challengeMarker"] == "Request unsuccessful", str(fingerprint))
+    check("and is not mistaken for a results page", fingerprint["isResultsPage"] is False)
+    check("its text is captured for the report", "Incapsula" in fingerprint["snippet"], fingerprint["snippet"])
+
+    # A real results page must never be called an interstitial, even though the
+    # live site injects Imperva's own script into pages that did arrive.
+    served = espi.page_fingerprint(search_html)
+    check("a page that did arrive is a results page", served["isResultsPage"] is True)
+    check("its title is read", served["title"] == "Serwis Espi/Ebi", served["title"])
+
+    try:
+        espi.fetch_listing(query="XTB", max_pages=1, get=lambda url: challenge)
+        check("fetching through an interstitial raises", False)
+    except espi.EspiParseError as error:
+        message = str(error)
+        check("fetching through an interstitial raises", True)
+        check("the error names bot protection, not the layout", "bot-protection" in message, message)
+        check("and never claims the layout changed", "layout changed" not in message, message)
+
+    # A page that is neither a results page nor a known interstitial still has to
+    # report what it was, or the next failure is another round of guessing.
+    try:
+        espi.fetch_listing(query="XTB", max_pages=1, get=lambda url: "<html><title>Nope</title><body>x</body></html>")
+        check("an unknown page raises", False)
+    except espi.EspiParseError as error:
+        check("an unknown page raises", True)
+        check("and reports what it received", "'Nope'" in str(error) or "Nope" in str(error), str(error))
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED:")
