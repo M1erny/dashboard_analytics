@@ -670,6 +670,85 @@ question — *"Analyze my portfolio performance, construction, risk etc like mun
 buffet"* — does request market data, so that an empty snapshot for it can only ever
 be a failed fetch and never a missed intent.
 
+## Polish Filings: The Issuer Name Map
+
+The Warsaw holdings are searched by *name*, because PAP's `search=` is free text
+over filing titles of the form `ISSUER - SUBJECT`. `backend/portfolios/main.json`
+carries no company names — a position is weight, type, currency, country and
+sector — so the map from `LPP.WA` to a name PAP recognises has to come from
+somewhere else, and it lives in `brain_settings` under
+`brain.espi_issuer_names.v1` as a flat `ticker -> name` object.
+
+**The stored name should be PAP's own spelling, not a provider's long form.**
+`issuer_matches` accepts equality after normalisation or a prefix of at least four
+characters. A provider name like `X-Trade Brokers Dom Maklerski S.A.` normalises to
+`xtradebrokersdommaklerski`, which cannot match a filing from `XTB`: not equal, and
+the three-character side is below the prefix floor. So the provider is a seed, and a
+name picked out of a real filing is the better answer, not the fallback.
+
+**Resolution is a background job, never part of a request.** Ten serial
+`yf.Ticker().info` calls used to run inside `GET /api/brain/espi/digest` with no
+deadline at all. The browser gave up at 120 seconds and the partial map that would
+have been cached went with the abandoned response, so nothing was ever stored and
+the next open repeated the whole crawl. `_run_espi_issuer_lookup_job` now resolves
+one ticker at a time and persists each name as it arrives — a free-tier instance
+can be stopped mid-job, and a batch that only saves at the end saves nothing.
+
+**A failed read must never cause a write.** `_read_issuer_state` returns the map,
+its provenance, and *why the read failed if it did*. Treating a failed read as an
+empty map was a live data-loss path: one slow Supabase call, a provider that
+answered for two of nine, and the write would replace nine hand-picked names with
+two. Both the job and the `PUT` refuse to write when the read did not succeed.
+
+**Provenance sits beside the map, not in it,** under
+`brain.espi_issuer_meta.v1`: `source` (`provider` / `picked`), `at`, `attempts`,
+`lastError`, `verifiedCount`, `verifiedAt`. That keeps the name map a flat dict so
+`merge_issuer_names` and `digest_for_holdings` need no migration, and it carries
+the retry cooldown — measured in hours, because a provider that cannot name a
+ticker is usually blocked for this host rather than briefly unlucky.
+
+**Assigning a name reports what PAP does with it, in distinct issuers.**
+`_verify_issuer_name` returns `matchedIssuers` as *distinct PAP string → count*
+plus `ambiguous`, because a bare count hides the failure that matters: the
+four-character prefix rule means `BUDIMEX` matches filings from both `BUDIMEX SA`
+and `BUDIMEX NIERUCHOMOŚCI SA`, and "2 filings matched" would read as clean while
+half the rows belonged to another company. The name is stored anyway — the owner
+knows the company and a recent window does not — but never without the evidence.
+
+**The ticker root is a hint about spelling, not about identity.**
+`candidate_starts_with_root` tests only whether an issuer name begins with the
+ticker root, and the label says exactly that. `SPR.WA` is Spyrosoft, but `SPRINT
+S.A.` also begins with `SPR` and was a real GPW issuer; a marker reading "matches
+the ticker" would be confidently wrong beside a one-click control. Candidates are
+ordered by filing count, never by name proximity, and nothing is ever preselected.
+
+**Coverage is reported on every response, not only when nothing resolved.**
+`unresolved` used to appear solely on the all-empty early return, so six of nine
+searching looked identical to nine of nine and three holdings went unsearched in
+silence. The digest now always carries `unresolved`, `excluded`, `names` and
+`issuerMeta`, and `byTicker` holds an explicit zero for every ticker actually
+queried — otherwise a wrong stored name is indistinguishable from a quiet week.
+
+**An index tracker is excluded, not called unresolved.** `ETFBW20TR.WA` carries
+`sector: "Index/ETF"`, and a tracker has no statutory disclosures of its own to
+look for. Reading `sector` here mirrors `polish_tickers` reading `country`: both
+are the portfolio's own structural statement about a holding. This does not extend
+to checking candidate names against sector — `BFT.WA` is booked as `Financials`
+while Benefit Systems is consumer services, because those labels are exposure
+buckets rather than a taxonomy, and a checker built on them would reject correct
+picks.
+
+**The digest stops short rather than losing finished work.**
+`digest_for_holdings` takes a deadline checked between issuers and reports the ones
+it never reached as `failures`, with `deadlineHit` set. The server budget is held
+below the browser's, because a 504 that discards eight successful issuer queries
+because the ninth was slow is the same pathology as the abandoned name lookup.
+
+`backend/test_espi_issuers.py` pins the data-loss guard, per-name persistence, the
+cooldown, the ambiguity report, the ticker-as-name rejection (an exact comparison,
+never a length floor — `LPP` is a real three-character issuer name identical to its
+own ticker root), and the deadline behaviour.
+
 ## Principle
 
 The brain should never be just a chatbot. It should be a durable investing memory system:

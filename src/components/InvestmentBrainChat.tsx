@@ -229,13 +229,71 @@ type EspiReport = {
     };
 };
 
+type EspiIssuerCandidate = {
+    name: string;
+    filings: number;
+    latestDate?: string;
+    sampleSubject?: string;
+    sampleNodeId?: string;
+    sampleUrl?: string;
+    startsWithRoot?: boolean;
+};
+
+type EspiIssuerMeta = {
+    source?: 'provider' | 'picked' | 'report';
+    at?: string;
+    attempts?: number;
+    lastError?: string;
+    verifiedCount?: number | null;
+    verifiedAt?: string;
+    verifyError?: string;
+};
+
+type EspiIssuerJob = {
+    running?: boolean;
+    requested?: number;
+    resolved?: number;
+    message?: string;
+};
+
+type EspiVerification = {
+    checked?: boolean;
+    error?: string;
+    filings?: number;
+    matchedIssuers?: Record<string, number>;
+    ambiguous?: boolean;
+    canonical?: string | null;
+    latestDate?: string | null;
+    shortName?: boolean;
+    cleared?: boolean;
+};
+
+type EspiIssuerState = {
+    tickers?: string[];
+    names?: Record<string, string>;
+    unresolved?: string[];
+    excluded?: string[];
+    meta?: Record<string, EspiIssuerMeta>;
+    cacheError?: string | null;
+    job?: EspiIssuerJob;
+    verification?: Record<string, EspiVerification>;
+};
+
 type EspiListing = {
     entries?: EspiEntry[];
     byTicker?: Record<string, number>;
     queriedTickers?: string[];
     unresolved?: string[];
+    excluded?: string[];
+    names?: Record<string, string>;
+    issuerMeta?: Record<string, EspiIssuerMeta>;
+    cacheError?: string | null;
+    job?: EspiIssuerJob;
     failures?: Record<string, string>;
     truncated?: boolean;
+    deadlineHit?: boolean;
+    candidates?: EspiIssuerCandidate[];
+    forTicker?: string | null;
     from?: string;
     to?: string;
     message?: string;
@@ -735,6 +793,20 @@ const WORKBENCH_TABS: Array<{ id: WorkbenchTab; label: string; short: string; ic
     { id: 'code', label: 'Self-build proposals', short: 'Code', icon: GitBranch },
 ];
 
+function describeIssuerVerification(ticker: string, name: string, checked?: EspiVerification): string {
+    if (!name) return `${ticker} has no issuer name again, so it will not be searched.`;
+    if (!checked?.checked) return `Saved ${name} as ${ticker}, unverified — ${checked?.error ?? 'PAP could not be searched'}.`;
+    if (checked.ambiguous) {
+        const names = Object.keys(checked.matchedIssuers ?? {}).join(', ');
+        // More than one issuer answering to the name is the case where a filing
+        // could be attributed to the wrong holding, so it is never smoothed over.
+        return `Careful: "${name}" matches more than one issuer in PAP — ${names}. Pick the exact one.`;
+    }
+    if (!checked.filings) return `Saved ${name} as ${ticker}, but PAP has no recent filing under that name. Check the spelling.`;
+    const short = checked.shortName ? ' It is short enough to match other issuers that start the same way.' : '';
+    return `Saved ${checked.canonical ?? name} as ${ticker} — ${checked.filings} recent filing${checked.filings === 1 ? '' : 's'}.${short}`;
+}
+
 const TIER_COPY: Record<ModelTier, { title: string; blurb: string }> = {
     standard: { title: 'Chat', blurb: 'Every ordinary question. Answered while you wait, so it favours speed.' },
     important: { title: 'Important tasks', blurb: 'Deep questions and self-build code proposals. Allowed to think longer.' },
@@ -905,6 +977,14 @@ export const InvestmentBrainChat: React.FC = () => {
     const [isEspiLoading, setIsEspiLoading] = useState(false);
     const [espiOpenNode, setEspiOpenNode] = useState<string | null>(null);
     const [espiReports, setEspiReports] = useState<Record<string, EspiReport>>({});
+    const [espiIssuers, setEspiIssuers] = useState<EspiIssuerState | null>(null);
+    // Which unresolved holding the assign flow is open for, and the phrase being
+    // searched for it. Pre-filled with the ticker root, which is a real name for
+    // some Warsaw tickers and an abbreviation for others.
+    const [assignTicker, setAssignTicker] = useState<string | null>(null);
+    const [assignQuery, setAssignQuery] = useState('');
+    const [assignCandidates, setAssignCandidates] = useState<EspiIssuerCandidate[] | null>(null);
+    const [isAssignBusy, setIsAssignBusy] = useState(false);
     const [catalogue, setCatalogue] = useState<ModelCatalogue | null>(null);
     const [isCatalogueLoading, setIsCatalogueLoading] = useState(false);
     // A question can be routed to the important tier without changing the saved
@@ -1006,6 +1086,14 @@ export const InvestmentBrainChat: React.FC = () => {
     const libraryState = !ready ? 'Offline' : !drive?.connected ? 'Drive needs access' : !allEmbedded ? 'Embedding pending' : 'Library ready';
     // The panel's own copy is fresher once a save lands, but the status payload is
     // what is available before the panel has ever been opened.
+    // One source of truth for coverage: the issuers endpoint fills it when the
+    // panel opens, a digest run refreshes it, and an assign updates it in place.
+    const espiNames = espiIssuers?.names ?? espiListing?.names;
+    const espiUnresolved = espiIssuers?.unresolved ?? espiListing?.unresolved ?? [];
+    const espiExcluded = espiIssuers?.excluded ?? espiListing?.excluded ?? [];
+    const espiIssuerMeta = espiIssuers?.meta ?? espiListing?.issuerMeta;
+    const espiIssuerJob = espiIssuers?.job ?? espiListing?.job;
+    const espiCacheError = espiIssuers?.cacheError ?? espiListing?.cacheError ?? null;
     const routing = catalogue?.routing ?? status?.llm?.routing;
     const importantModelLabel = routing?.important?.model;
     const activeModelLabel = (deepMode ? routing?.important?.model : routing?.standard?.model) ?? status?.llm?.generationModel;
@@ -1541,6 +1629,17 @@ export const InvestmentBrainChat: React.FC = () => {
             if (!response.ok) throw new Error(await errorText(response, 'The ESPI/EBI digest could not be loaded.'));
             const payload = await response.json() as EspiListing;
             setEspiListing(payload);
+            // The digest carries the same coverage fields, and having just run it
+            // they are newer than whatever the issuers endpoint last returned.
+            setEspiIssuers(current => ({
+                ...(current ?? {}),
+                names: payload.names ?? current?.names,
+                unresolved: payload.unresolved ?? current?.unresolved,
+                excluded: payload.excluded ?? current?.excluded,
+                meta: payload.issuerMeta ?? current?.meta,
+                job: payload.job ?? current?.job,
+                cacheError: payload.cacheError ?? null,
+            }));
             const count = payload.entries?.length ?? 0;
             setNotice(payload.message
                 ?? `${count} filing${count === 1 ? '' : 's'} from your Polish holdings${payload.truncated ? ' (more may exist beyond the page limit)' : ''}.`);
@@ -1568,6 +1667,77 @@ export const InvestmentBrainChat: React.FC = () => {
         } finally {
             setIsEspiLoading(false);
         }
+    };
+
+    const loadEspiIssuers = useCallback(async () => {
+        try {
+            const response = await request(api('/api/brain/espi/issuers'), {}, 25000);
+            if (!response.ok) return;
+            setEspiIssuers(await response.json() as EspiIssuerState);
+        } catch {
+            // Coverage detail is a nicety; the panel still works without it.
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const findIssuerCandidates = async (ticker: string, phrase: string) => {
+        const query = phrase.trim();
+        if (!query || isAssignBusy) return;
+        setIsAssignBusy(true);
+        setAssignCandidates(null);
+        setNotice(`Looking for "${query}" in PAP filings...`);
+        try {
+            const response = await request(
+                api(`/api/brain/espi/search?q=${encodeURIComponent(query)}&forTicker=${encodeURIComponent(ticker)}`),
+                {},
+                90000,
+            );
+            if (!response.ok) throw new Error(await errorText(response, 'PAP could not be searched.'));
+            const payload = await response.json() as EspiListing;
+            const candidates = payload.candidates ?? [];
+            setAssignCandidates(candidates);
+            setNotice(candidates.length
+                ? `${candidates.length} issuer${candidates.length === 1 ? '' : 's'} filed under "${query}". Pick the one that is ${ticker}.`
+                : `PAP has no recent filing matching "${query}". Try the company's name.`);
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'PAP could not be searched.');
+        } finally {
+            setIsAssignBusy(false);
+        }
+    };
+
+    const assignIssuerName = async (ticker: string, name: string) => {
+        if (isAssignBusy) return;
+        setIsAssignBusy(true);
+        setNotice(name ? `Saving ${name} as ${ticker}...` : `Clearing the name for ${ticker}...`);
+        try {
+            const response = await request(api('/api/brain/espi/issuers'), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ names: { [ticker]: name } }),
+            }, 90000);
+            if (!response.ok) throw new Error(await errorText(response, 'The issuer name could not be saved.'));
+            const payload = await response.json() as EspiIssuerState;
+            setEspiIssuers(current => ({ ...(current ?? {}), ...payload }));
+            const checked = payload.verification?.[ticker];
+            setNotice(describeIssuerVerification(ticker, name, checked));
+            if (!name || !checked?.ambiguous) {
+                setAssignTicker(null);
+                setAssignCandidates(null);
+            }
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'The issuer name could not be saved.');
+        } finally {
+            setIsAssignBusy(false);
+        }
+    };
+
+    const openAssign = (ticker: string) => {
+        setAssignTicker(ticker);
+        setAssignCandidates(null);
+        // The root is the obvious first guess and is right for some tickers; the
+        // box stays editable because for the rest it is only an abbreviation.
+        setAssignQuery(ticker.split('.')[0]);
     };
 
     const toggleEspiReport = async (nodeId: string) => {
@@ -1646,6 +1816,15 @@ export const InvestmentBrainChat: React.FC = () => {
     const [paletteQuery, setPaletteQuery] = useState('');
 
     const togglePanel = (tab: WorkbenchTab) => setPanelTab(current => (current === tab ? null : tab));
+
+    // Coverage is read when the ESPI source is actually selected, and it is what
+    // starts the background name lookup - so opening the panel is the trigger,
+    // not loading the page.
+    useEffect(() => {
+        if (panelTab !== 'filings' || filingSource !== 'espi' || !ready || espiIssuers) return;
+        void loadEspiIssuers();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [panelTab, filingSource, ready, espiIssuers]);
 
     // Listing models costs a Google round trip, so it waits until the panel that
     // needs it is actually open rather than spending it on every page load.
@@ -2093,11 +2272,116 @@ export const InvestmentBrainChat: React.FC = () => {
                                                 </Button>
                                             </div>
 
-                                            {espiListing?.unresolved?.length ? (
-                                                <p className="rounded-md border border-amber-400/15 bg-amber-400/[0.04] px-3 py-2 text-[11px] leading-5 text-amber-200/80">
-                                                    No issuer name resolved yet for {espiListing.unresolved.join(', ')}, so those holdings are not searched. They fill in once the market data provider answers.
+                                            {espiCacheError && (
+                                                <p className="rounded-md border border-rose-400/15 bg-rose-400/[0.04] px-3 py-2 text-[11px] leading-5 text-rose-200/80">
+                                                    The stored issuer names could not be read, so nothing was changed: {espiCacheError}
                                                 </p>
-                                            ) : null}
+                                            )}
+
+                                            {espiUnresolved.length > 0 && (
+                                                <div className="space-y-2 rounded-md border border-amber-400/15 bg-amber-400/[0.04] p-3">
+                                                    <p className="text-[11px] leading-5 text-amber-200/80">
+                                                        {espiUnresolved.length} holding{espiUnresolved.length === 1 ? '' : 's'} {espiUnresolved.length === 1 ? 'is' : 'are'} <strong className="font-semibold">not searched</strong>, because {espiUnresolved.length === 1 ? 'it has' : 'they have'} no issuer name yet. Assign one from a real PAP filing.
+                                                        {espiIssuerJob?.running ? ' A lookup is running in the background.' : espiIssuerJob?.message && espiIssuerJob.message !== 'Idle' ? ` Last lookup: ${espiIssuerJob.message}` : ''}
+                                                    </p>
+                                                    <div className="flex flex-wrap gap-1.5">
+                                                        {espiUnresolved.map(ticker => (
+                                                            <button
+                                                                key={ticker}
+                                                                type="button"
+                                                                onClick={() => openAssign(ticker)}
+                                                                className={cn(
+                                                                    'rounded border px-2 py-1 text-[10px] font-bold uppercase tracking-[0.06em] transition-colors',
+                                                                    assignTicker === ticker
+                                                                        ? 'border-amber-400/40 bg-amber-400/[0.12] text-amber-100'
+                                                                        : 'border-white/[0.1] text-amber-200/70 hover:text-amber-100',
+                                                                )}
+                                                            >
+                                                                {ticker}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+
+                                                    {assignTicker && (
+                                                        <div className="space-y-2 border-t border-amber-400/15 pt-2">
+                                                            <div className="flex gap-2">
+                                                                <input
+                                                                    value={assignQuery}
+                                                                    onChange={event => setAssignQuery(event.target.value)}
+                                                                    onKeyDown={event => { if (event.key === 'Enter') void findIssuerCandidates(assignTicker, assignQuery); }}
+                                                                    aria-label={`Search PAP for ${assignTicker}`}
+                                                                    placeholder="Nazwa spółki, np. Budimex"
+                                                                    className="h-9 min-w-0 flex-1 rounded-md border border-white/[0.09] bg-black/25 px-2.5 text-xs text-white outline-none placeholder:text-slate-600 focus:border-amber-400/40"
+                                                                />
+                                                                <Button type="button" onClick={() => void findIssuerCandidates(assignTicker, assignQuery)} disabled={!assignQuery.trim() || isAssignBusy} className="min-h-9 shrink-0 px-2.5">
+                                                                    {isAssignBusy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+                                                                </Button>
+                                                            </div>
+                                                            {assignCandidates?.length === 0 && (
+                                                                <p className="text-[10px] leading-4 text-amber-200/60">
+                                                                    PAP has no recent filing matching that phrase. The ticker root is only an abbreviation for some holdings — try the company's name.
+                                                                </p>
+                                                            )}
+                                                            {/* Every option is a string PAP itself used, shown with the filing
+                                                                it came from, so the choice is a recognition rather than a guess. */}
+                                                            {(assignCandidates ?? []).map(candidate => (
+                                                                <div key={candidate.name} className="rounded border border-white/[0.08] bg-black/20 p-2">
+                                                                    <div className="flex items-start gap-2">
+                                                                        <div className="min-w-0 flex-1">
+                                                                            <p className="truncate text-[11px] font-semibold text-white">{candidate.name}</p>
+                                                                            <p className="mt-0.5 text-[10px] text-slate-500">
+                                                                                {candidate.filings} filing{candidate.filings === 1 ? '' : 's'}
+                                                                                {candidate.latestDate ? ` · latest ${candidate.latestDate}` : ''}
+                                                                                {candidate.startsWithRoot ? ` · starts with ${assignTicker.split('.')[0]}` : ''}
+                                                                            </p>
+                                                                        </div>
+                                                                        <Button type="button" tone="primary" onClick={() => void assignIssuerName(assignTicker, candidate.name)} disabled={isAssignBusy} className="min-h-7 shrink-0 px-2 text-[9px]">
+                                                                            Use
+                                                                        </Button>
+                                                                    </div>
+                                                                    {candidate.sampleSubject && (
+                                                                        <a href={candidate.sampleUrl} target="_blank" rel="noreferrer" className="mt-1 block truncate text-[10px] text-slate-500 transition-colors hover:text-emerald-300" title={candidate.sampleSubject}>
+                                                                            {candidate.sampleSubject}
+                                                                        </a>
+                                                                    )}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
+
+                                            {espiNames && Object.keys(espiNames).length > 0 && (
+                                                <details className="rounded-md border border-white/[0.07] px-3 py-2">
+                                                    <summary className="cursor-pointer text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500">Searched as ({Object.keys(espiNames).length})</summary>
+                                                    <ul className="mt-2 space-y-1">
+                                                        {Object.entries(espiNames).map(([ticker, name]) => {
+                                                            const meta = espiIssuerMeta?.[ticker];
+                                                            const count = espiListing?.byTicker?.[ticker];
+                                                            return (
+                                                                <li key={ticker} className="flex items-center gap-2 text-[10px]">
+                                                                    <span className="w-20 shrink-0 font-bold text-slate-400">{ticker}</span>
+                                                                    <span className="min-w-0 flex-1 truncate text-slate-300" title={name}>{name}</span>
+                                                                    {/* A stored name that has never matched anything looks exactly
+                                                                        like a quiet week unless the count is stated. */}
+                                                                    <span className={cn('shrink-0', count === 0 ? 'text-amber-300/70' : 'text-slate-600')}>
+                                                                        {count === undefined ? (meta?.source === 'picked' ? 'picked' : 'auto') : `${count} filed`}
+                                                                    </span>
+                                                                    <button type="button" onClick={() => void assignIssuerName(ticker, '')} disabled={isAssignBusy} className="shrink-0 text-slate-600 transition-colors hover:text-rose-300" aria-label={`Clear the issuer name for ${ticker}`}>
+                                                                        <X className="h-3 w-3" />
+                                                                    </button>
+                                                                </li>
+                                                            );
+                                                        })}
+                                                    </ul>
+                                                </details>
+                                            )}
+
+                                            {espiExcluded.length > 0 && (
+                                                <p className="text-[10px] leading-4 text-slate-600">
+                                                    {espiExcluded.join(', ')} {espiExcluded.length === 1 ? 'is an index tracker' : 'are index trackers'}, so {espiExcluded.length === 1 ? 'it files' : 'they file'} no reports of {espiExcluded.length === 1 ? 'its' : 'their'} own and {espiExcluded.length === 1 ? 'is' : 'are'} not counted above.
+                                                </p>
+                                            )}
                                             {espiListing?.failures && Object.keys(espiListing.failures).length ? (
                                                 <p className="rounded-md border border-rose-400/15 bg-rose-400/[0.04] px-3 py-2 text-[11px] leading-5 text-rose-200/80">
                                                     {Object.keys(espiListing.failures).join(', ')} could not be queried this time.
@@ -2106,6 +2390,11 @@ export const InvestmentBrainChat: React.FC = () => {
                                             {espiListing?.truncated ? (
                                                 <p className="text-[10px] leading-4 text-amber-200/70">
                                                     Stopped at the page limit — there may be more filings than shown.
+                                                </p>
+                                            ) : null}
+                                            {espiListing?.deadlineHit ? (
+                                                <p className="text-[10px] leading-4 text-amber-200/70">
+                                                    The digest ran out of time, so some holdings were not queried. What is shown is complete for the ones listed above.
                                                 </p>
                                             ) : null}
 
@@ -2147,6 +2436,27 @@ export const InvestmentBrainChat: React.FC = () => {
                                                                             <p className="text-[10px] leading-4 text-slate-500">
                                                                                 {[report.reportType, report.issuerSymbol, report.preparedOn, report.sector].filter(Boolean).join(' · ')}
                                                                             </p>
+                                                                            {/* The report page states `Symbol Emitenta`, which is the exact
+                                                                                string listings use - a better name than any provider's
+                                                                                long form. Assigning it stays a deliberate act: adopting it
+                                                                                automatically would attach whichever report happened to be
+                                                                                open to a holding, which is the misattribution we guard. */}
+                                                                            {report.issuerSymbol && espiUnresolved.length > 0 && (
+                                                                                <div className="flex flex-wrap items-center gap-1.5">
+                                                                                    <span className="text-[10px] text-slate-500">Use "{report.issuerSymbol}" as</span>
+                                                                                    {espiUnresolved.map(ticker => (
+                                                                                        <button
+                                                                                            key={ticker}
+                                                                                            type="button"
+                                                                                            onClick={() => void assignIssuerName(ticker, report.issuerSymbol!)}
+                                                                                            disabled={isAssignBusy}
+                                                                                            className="rounded border border-white/[0.1] px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.06em] text-amber-200/70 transition-colors hover:text-amber-100 disabled:text-slate-600"
+                                                                                        >
+                                                                                            {ticker}
+                                                                                        </button>
+                                                                                    ))}
+                                                                                </div>
+                                                                            )}
                                                                             {report.financials?.items?.length ? (
                                                                                 <div className="overflow-x-auto">
                                                                                     <table className="w-full text-[10px]">

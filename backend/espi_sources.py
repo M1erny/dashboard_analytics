@@ -23,6 +23,7 @@ two names denote the same issuer.
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from datetime import date
 from html.parser import HTMLParser
@@ -701,6 +702,8 @@ def digest_for_holdings(
     max_pages: int = 1,
     timeout: float = DEFAULT_LISTING_TIMEOUT,
     get: object = None,
+    deadline_seconds: float | None = None,
+    now: object = None,
 ) -> dict:
     """Filings from the book's own issuers over a window.
 
@@ -709,13 +712,22 @@ def digest_for_holdings(
     holding query returns a handful. The search narrows and `match_ticker`
     confirms, so an issuer whose name merely contains the query is dropped.
     """
+    clock = now or time.monotonic
+    started = clock()
     per_ticker: dict[str, list[dict]] = {}
     failures: dict[str, str] = {}
     truncated = False
+    queried: list[str] = []
     for ticker, company in sorted((names_by_ticker or {}).items()):
         query = _clean(company)
         if not query:
             continue
+        if deadline_seconds is not None and (clock() - started) >= float(deadline_seconds):
+            # Stop short and say which issuers were never asked, rather than let
+            # the whole digest be abandoned and every completed query discarded.
+            failures[ticker] = "not queried: the digest ran out of time"
+            continue
+        queried.append(ticker)
         try:
             result = fetch_listing(
                 query=query, start=start, end=end, max_pages=max_pages, timeout=timeout, get=get
@@ -739,10 +751,78 @@ def digest_for_holdings(
     return {
         "entries": entries,
         "byTicker": {ticker: len(rows) for ticker, rows in per_ticker.items()},
-        "queriedTickers": sorted(names_by_ticker or {}),
+        # The tickers actually asked about, so a caller can tell "nothing filed"
+        # from "we never got to it".
+        "queriedTickers": sorted(queried),
         "failures": failures,
         "truncated": truncated,
+        "deadlineHit": bool(
+            deadline_seconds is not None
+            and any(reason.startswith("not queried") for reason in failures.values())
+        ),
     }
+
+
+def issuer_candidates(entries: list[dict]) -> list[dict]:
+    """Distinct issuers in a listing, with a filing to recognise each one by.
+
+    The raw PAP string is what is returned, not its normalised form: the stored
+    name has to be the string `match_ticker` will later compare filings against,
+    and `normalise_issuer_name` output would match nothing.
+    """
+    grouped: dict[str, dict] = {}
+    for entry in entries or []:
+        issuer = _clean(entry.get("issuer"))
+        if not issuer:
+            continue
+        entry_date = str(entry.get("date") or "")
+        candidate = grouped.get(issuer)
+        if candidate is None:
+            grouped[issuer] = {
+                "name": issuer,
+                "filings": 1,
+                "latestDate": entry_date,
+                "sampleSubject": _clean(entry.get("subject")),
+                "sampleNodeId": entry.get("nodeId"),
+                "sampleUrl": entry.get("url"),
+            }
+            continue
+        candidate["filings"] += 1
+        if entry_date and entry_date > str(candidate.get("latestDate") or ""):
+            candidate.update({
+                "latestDate": entry_date,
+                "sampleSubject": _clean(entry.get("subject")),
+                "sampleNodeId": entry.get("nodeId"),
+                "sampleUrl": entry.get("url"),
+            })
+
+    # Most-filed first: a count is evidence, whereas name proximity to a ticker is
+    # a hint that would rank a wrong company above a right one.
+    return sorted(grouped.values(), key=lambda item: (-item["filings"], item["name"]))
+
+
+def ticker_root(ticker: str) -> str:
+    """The part of a Yahoo ticker worth typing into a search box."""
+    return str(ticker or "").strip().upper().split(".")[0]
+
+
+def candidate_starts_with_root(candidate_name: str, ticker: str) -> bool:
+    """Whether this issuer's name literally begins with the ticker root.
+
+    That is all it claims, and the label shown to the owner must say the same
+    thing ("starts with SPR"), never "matches the ticker". The distinction is not
+    pedantry: SPR.WA is Spyrosoft, but `SPRINT S.A.` also begins with SPR and was
+    a real GPW issuer, so a mark reading "matches" would be confidently wrong next
+    to a one-click control. It stays a prefix test for the same reason - a
+    subsequence test would reach BDX/BUDIMEX and BFT/BENEFIT and produce many more
+    such near misses, and a wrong issuer on a regulatory filing is the worst
+    outcome available here.
+    """
+    root = _fold(ticker_root(ticker))
+    name = normalise_issuer_name(candidate_name)
+    if not root or not name or len(root) < 2:
+        return False
+    return name.startswith(root)
 
 
 def merge_issuer_names(cached: dict, resolved: dict, tickers: list[str]) -> dict:
