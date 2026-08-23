@@ -23,9 +23,35 @@ THINKING_LEVEL_MODEL_PREFIX = "gemini-3."
 # a given model will actually take.
 MODELS_WITHOUT_MINIMAL_THINKING = ("gemini-3.7",)
 LOWEST_SUPPORTED_THINKING_LEVEL = "low"
+# Two tiers, because the two kinds of work want opposite things. A chat answer is
+# read while you wait, so it optimises for latency; a task whose output is acted
+# on - a code proposal, a full-document analysis - is worth thinking about for
+# longer. Tiers name that trade-off so the routing is a setting, not a guess made
+# at each call site.
+STANDARD_TIER = "standard"
+IMPORTANT_TIER = "important"
+TASK_TIERS = (STANDARD_TIER, IMPORTANT_TIER)
+DEFAULT_IMPORTANT_THINKING_LEVEL = "high"
+# The model id is interpolated into the request path, so it is validated rather
+# than trusted: it now comes from a saved user choice, not only from the
+# environment, and a value containing a slash would redirect the call elsewhere.
+MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
+MODEL_LIST_PAGE_SIZE = 200
+MAX_MODEL_LIST_PAGES = 5
+DEFAULT_MODEL_LIST_TIMEOUT = 20.0
 DEFAULT_REQUEST_TIMEOUT = 45.0
 DEFAULT_EMBEDDING_TIMEOUT = 15.0
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def clean_model_id(value: str | None, *, label: str = "model") -> str:
+    """Return a model id safe to place in a request path, or raise ValueError."""
+    clean = str(value or "").strip()
+    if clean.startswith("models/"):
+        clean = clean[len("models/"):]
+    if not MODEL_ID_PATTERN.fullmatch(clean):
+        raise ValueError(f"{label} is not a valid Gemini model id: {clean[:80]!r}")
+    return clean
 
 
 def uses_thinking_level(model: str) -> bool:
@@ -120,6 +146,16 @@ class GeminiClient:
             or os.environ.get("BRAIN_EMBEDDING_MODEL")
             or DEFAULT_EMBEDDING_MODEL
         )
+        # An unset important model means "same model, thinking harder", which is
+        # the only honest default: guessing the name of a larger model that may
+        # not exist for this key would fail at the first important question.
+        self.important_model = (os.environ.get("BRAIN_LLM_IMPORTANT_MODEL") or self.generation_model).strip()
+        configured_important_level = os.environ.get("BRAIN_LLM_IMPORTANT_THINKING_LEVEL", "").strip().lower()
+        self.important_thinking_level = (
+            configured_important_level
+            if configured_important_level in VALID_THINKING_LEVELS
+            else DEFAULT_IMPORTANT_THINKING_LEVEL
+        )
         self.thinking_budget = _env_int("BRAIN_LLM_THINKING_BUDGET", DEFAULT_THINKING_BUDGET)
         configured_thinking_level = os.environ.get("BRAIN_LLM_THINKING_LEVEL", "").strip().lower()
         self.thinking_level = (
@@ -134,6 +170,72 @@ class GeminiClient:
     def configured(self) -> bool:
         return bool(self.api_key)
 
+    def routing_defaults(self) -> dict[str, dict[str, str]]:
+        """The tier routing that environment and built-in defaults alone produce.
+
+        A saved choice made in the dashboard layers on top of this; keeping the
+        two separate is what lets the status say where a model came from.
+        """
+        return {
+            STANDARD_TIER: {
+                "model": self.generation_model,
+                "thinkingLevel": resolve_thinking_level(self.generation_model, self.thinking_level),
+            },
+            IMPORTANT_TIER: {
+                "model": self.important_model,
+                "thinkingLevel": resolve_thinking_level(self.important_model, self.important_thinking_level),
+            },
+        }
+
+    def list_models(self, *, timeout_seconds: float | None = None) -> list[dict[str, Any]]:
+        """Every model this key can generate with, straight from Google.
+
+        The catalogue is not hardcoded on purpose. Model names change faster than
+        this file does, and a stale list offered as a picker would let the owner
+        select a model that 404s on the first question.
+        """
+        api_key = self._require_key()
+        timeout = timeout_seconds or DEFAULT_MODEL_LIST_TIMEOUT
+        models: list[dict[str, Any]] = []
+        page_token: str | None = None
+        with httpx.Client(timeout=timeout) as client:
+            for _ in range(MAX_MODEL_LIST_PAGES):
+                params: dict[str, Any] = {"key": api_key, "pageSize": MODEL_LIST_PAGE_SIZE}
+                if page_token:
+                    params["pageToken"] = page_token
+                try:
+                    response = client.get(f"{GEMINI_API_BASE}/models", params=params)
+                except httpx.TimeoutException as exc:
+                    raise RuntimeError(f"Listing Gemini models timed out after {timeout:.0f}s") from exc
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise RuntimeError(_safe_provider_error(exc)) from exc
+                data = response.json()
+                for item in data.get("models") or []:
+                    if not isinstance(item, dict):
+                        continue
+                    methods = item.get("supportedGenerationMethods") or []
+                    if "generateContent" not in methods:
+                        continue
+                    try:
+                        model_id = clean_model_id(item.get("name"))
+                    except ValueError:
+                        continue
+                    models.append({
+                        "id": model_id,
+                        "label": str(item.get("displayName") or model_id),
+                        "description": str(item.get("description") or "")[:400],
+                        "inputTokenLimit": item.get("inputTokenLimit"),
+                        "outputTokenLimit": item.get("outputTokenLimit"),
+                        "usesThinkingLevel": uses_thinking_level(model_id),
+                    })
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+        models.sort(key=lambda item: item["id"])
+        return models
+
     def status(self) -> dict[str, Any]:
         return {
             "provider": "google_ai_studio",
@@ -147,6 +249,10 @@ class GeminiClient:
                 else None
             ),
             "thinkingLevelRequested": self.thinking_level,
+            "importantModel": self.important_model,
+            "importantThinkingLevel": resolve_thinking_level(
+                self.important_model, self.important_thinking_level
+            ),
             "requestTimeoutSeconds": self.request_timeout,
             "embeddingTimeoutSeconds": self.embedding_timeout,
             "apiKeyEnv": "GOOGLE_AI_API_KEY or GEMINI_API_KEY",
@@ -239,6 +345,8 @@ class GeminiClient:
         temperature: float = 0.25,
         max_output_tokens: int = 900,
         timeout_seconds: float | None = None,
+        model: str | None = None,
+        thinking_level: str | None = None,
     ) -> str:
         return self._generate(
             prompt,
@@ -246,6 +354,8 @@ class GeminiClient:
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             timeout_seconds=timeout_seconds,
+            model=model,
+            thinking_level=thinking_level,
         )
 
     def generate_json(
@@ -308,7 +418,7 @@ class GeminiClient:
         if not clean_prompt:
             raise ValueError("Cannot generate from empty prompt")
 
-        generation_model = (model or self.generation_model).strip()
+        generation_model = clean_model_id(model or self.generation_model)
         url = f"{GEMINI_API_BASE}/models/{generation_model}:generateContent"
         generation_config: dict[str, Any] = {
             "temperature": temperature,
