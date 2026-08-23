@@ -23,6 +23,7 @@ two names denote the same issuer.
 from __future__ import annotations
 
 import re
+import time
 import unicodedata
 from datetime import date
 from html.parser import HTMLParser
@@ -312,6 +313,13 @@ def _attr(attrs: list[tuple[str, str | None]], name: str) -> str:
     return ""
 
 
+# A results page carries these whether or not it found anything. They are what
+# lets "PAP found nothing" be told apart from "the page we got is not a results
+# page at all" - the empty search renders no `ul.newsList` whatsoever, so the
+# absence of the list cannot carry that distinction on its own.
+SEARCH_PAGE_MARKERS = ("view-id-wszukiwarka", "path-wyszukiwarka")
+
+
 class _ListingParser(HTMLParser):
     """Pull `li.news` entries out of a /wyszukiwarka results page.
 
@@ -324,6 +332,7 @@ class _ListingParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.entries: list[dict] = []
         self.saw_news_list = False
+        self.saw_search_page = False
         self.list_items = 0
         self._news_list_depth = 0
         self._day: str | None = None
@@ -343,6 +352,8 @@ class _ListingParser(HTMLParser):
             return
 
         classes = _classes(attrs)
+        if not self.saw_search_page and classes.intersection(SEARCH_PAGE_MARKERS):
+            self.saw_search_page = True
         if tag == "h2" and "date" in classes:
             self._start_capture(tag, "day")
         elif tag == "ul" and "newsList" in classes:
@@ -430,8 +441,15 @@ def parse_listing(html: str) -> list[dict]:
     parser.feed(text)
     parser.close()
     if not parser.saw_news_list:
+        if parser.saw_search_page:
+            # A search that matches nothing renders the form and no list at all.
+            # Raising here reported "the layout changed" for the ordinary case of
+            # a phrase with no filings, which sent the owner hunting a bug in the
+            # parser instead of correcting their query.
+            return []
         raise EspiParseError(
-            "Selector 'ul.newsList' not found: the listing layout changed, or this is not a results page"
+            "Selector 'ul.newsList' not found and this is not a /wyszukiwarka results page: "
+            "the layout changed, or the request was redirected"
         )
     if parser.list_items and not parser.entries:
         # The list held items and none of them parsed. A quiet day renders an
@@ -659,29 +677,51 @@ def fetch_listing(
     """
     fetcher = get or (lambda url: _get(url, timeout))
     pages = max(1, int(max_pages))
-    entries: list[dict] = []
-    seen: set[str] = set()
-    pages_read = 0
-    truncated = False
-    for page in range(pages):
-        url = search_url(query=query, start=start, end=end, page=page)
-        page_entries = parse_listing(fetcher(url))
-        pages_read += 1
-        # Deduplication and end-of-results are separate questions. Stopping on
-        # "no new entries" would conflate them, and a repeated page would then
-        # look like the end while the cap was the real reason.
-        for entry in page_entries:
-            if entry["nodeId"] not in seen:
-                seen.add(entry["nodeId"])
-                entries.append(entry)
-        if not page_entries:
-            break
-        if page == pages - 1:
-            # Stopped because of the cap while the page still had content, so
-            # there is probably more behind it. Say so: a caller that cannot
-            # tell a capped answer from a complete one will present it as complete.
-            truncated = True
-    return {"entries": entries, "pagesRead": pages_read, "truncated": truncated}
+
+    def collect(phrase: str | None) -> tuple[list[dict], int, bool]:
+        entries: list[dict] = []
+        seen: set[str] = set()
+        pages_read = 0
+        truncated = False
+        for page in range(pages):
+            url = search_url(query=phrase, start=start, end=end, page=page)
+            page_entries = parse_listing(fetcher(url))
+            pages_read += 1
+            # Deduplication and end-of-results are separate questions. Stopping on
+            # "no new entries" would conflate them, and a repeated page would then
+            # look like the end while the cap was the real reason.
+            for entry in page_entries:
+                if entry["nodeId"] not in seen:
+                    seen.add(entry["nodeId"])
+                    entries.append(entry)
+            if not page_entries:
+                break
+            if page == pages - 1:
+                # Stopped because of the cap while the page still had content, so
+                # there is probably more behind it. Say so: a caller that cannot
+                # tell a capped answer from a complete one will present it as complete.
+                truncated = True
+        return entries, pages_read, truncated
+
+    entries, pages_read, truncated = collect(query)
+
+    # PAP's search appears to match case-sensitively: `search=xtb` returns nothing
+    # while `search=XTB` returns six pages, and ESPI titles carry issuer names in
+    # the form the issuer files under. So one retry in upper case, and only when
+    # the first attempt found nothing - it can add hits, never remove them.
+    retried_query = None
+    clean_query = _clean(query)
+    if not entries and clean_query and clean_query != clean_query.upper():
+        retried_query = clean_query.upper()
+        entries, retry_pages, truncated = collect(retried_query)
+        pages_read += retry_pages
+
+    return {
+        "entries": entries,
+        "pagesRead": pages_read,
+        "truncated": truncated,
+        "retriedQuery": retried_query if entries else None,
+    }
 
 
 def fetch_report(node_id: str | int, timeout: float = DEFAULT_LISTING_TIMEOUT, get: object = None) -> dict:
@@ -701,6 +741,8 @@ def digest_for_holdings(
     max_pages: int = 1,
     timeout: float = DEFAULT_LISTING_TIMEOUT,
     get: object = None,
+    deadline_seconds: float | None = None,
+    now: object = None,
 ) -> dict:
     """Filings from the book's own issuers over a window.
 
@@ -709,13 +751,22 @@ def digest_for_holdings(
     holding query returns a handful. The search narrows and `match_ticker`
     confirms, so an issuer whose name merely contains the query is dropped.
     """
+    clock = now or time.monotonic
+    started = clock()
     per_ticker: dict[str, list[dict]] = {}
     failures: dict[str, str] = {}
     truncated = False
+    queried: list[str] = []
     for ticker, company in sorted((names_by_ticker or {}).items()):
         query = _clean(company)
         if not query:
             continue
+        if deadline_seconds is not None and (clock() - started) >= float(deadline_seconds):
+            # Stop short and say which issuers were never asked, rather than let
+            # the whole digest be abandoned and every completed query discarded.
+            failures[ticker] = "not queried: the digest ran out of time"
+            continue
+        queried.append(ticker)
         try:
             result = fetch_listing(
                 query=query, start=start, end=end, max_pages=max_pages, timeout=timeout, get=get
@@ -739,10 +790,78 @@ def digest_for_holdings(
     return {
         "entries": entries,
         "byTicker": {ticker: len(rows) for ticker, rows in per_ticker.items()},
-        "queriedTickers": sorted(names_by_ticker or {}),
+        # The tickers actually asked about, so a caller can tell "nothing filed"
+        # from "we never got to it".
+        "queriedTickers": sorted(queried),
         "failures": failures,
         "truncated": truncated,
+        "deadlineHit": bool(
+            deadline_seconds is not None
+            and any(reason.startswith("not queried") for reason in failures.values())
+        ),
     }
+
+
+def issuer_candidates(entries: list[dict]) -> list[dict]:
+    """Distinct issuers in a listing, with a filing to recognise each one by.
+
+    The raw PAP string is what is returned, not its normalised form: the stored
+    name has to be the string `match_ticker` will later compare filings against,
+    and `normalise_issuer_name` output would match nothing.
+    """
+    grouped: dict[str, dict] = {}
+    for entry in entries or []:
+        issuer = _clean(entry.get("issuer"))
+        if not issuer:
+            continue
+        entry_date = str(entry.get("date") or "")
+        candidate = grouped.get(issuer)
+        if candidate is None:
+            grouped[issuer] = {
+                "name": issuer,
+                "filings": 1,
+                "latestDate": entry_date,
+                "sampleSubject": _clean(entry.get("subject")),
+                "sampleNodeId": entry.get("nodeId"),
+                "sampleUrl": entry.get("url"),
+            }
+            continue
+        candidate["filings"] += 1
+        if entry_date and entry_date > str(candidate.get("latestDate") or ""):
+            candidate.update({
+                "latestDate": entry_date,
+                "sampleSubject": _clean(entry.get("subject")),
+                "sampleNodeId": entry.get("nodeId"),
+                "sampleUrl": entry.get("url"),
+            })
+
+    # Most-filed first: a count is evidence, whereas name proximity to a ticker is
+    # a hint that would rank a wrong company above a right one.
+    return sorted(grouped.values(), key=lambda item: (-item["filings"], item["name"]))
+
+
+def ticker_root(ticker: str) -> str:
+    """The part of a Yahoo ticker worth typing into a search box."""
+    return str(ticker or "").strip().upper().split(".")[0]
+
+
+def candidate_starts_with_root(candidate_name: str, ticker: str) -> bool:
+    """Whether this issuer's name literally begins with the ticker root.
+
+    That is all it claims, and the label shown to the owner must say the same
+    thing ("starts with SPR"), never "matches the ticker". The distinction is not
+    pedantry: SPR.WA is Spyrosoft, but `SPRINT S.A.` also begins with SPR and was
+    a real GPW issuer, so a mark reading "matches" would be confidently wrong next
+    to a one-click control. It stays a prefix test for the same reason - a
+    subsequence test would reach BDX/BUDIMEX and BFT/BENEFIT and produce many more
+    such near misses, and a wrong issuer on a regulatory filing is the worst
+    outcome available here.
+    """
+    root = _fold(ticker_root(ticker))
+    name = normalise_issuer_name(candidate_name)
+    if not root or not name or len(root) < 2:
+        return False
+    return name.startswith(root)
 
 
 def merge_issuer_names(cached: dict, resolved: dict, tickers: list[str]) -> dict:

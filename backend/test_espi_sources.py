@@ -415,6 +415,86 @@ def main():
     )
     check("no cache and no lookup yields nothing", espi.merge_issuer_names(None, None, ["LPP.WA"]) == {})
 
+    # ---- the search-results page, and the empty one -----------------------
+    print("Search results page (?search=XTB)")
+    search_html = open(os.path.join(FIXTURES, "espi_search_results.html"), encoding="utf-8").read()
+    empty_html = open(os.path.join(FIXTURES, "espi_search_empty.html"), encoding="utf-8").read()
+
+    search_entries = espi.parse_listing(search_html)
+    # The search page turned out to use the same markup as the dated listing, so
+    # one parser serves both. This fixture is what proves it rather than assumes it.
+    check("the search page parses", len(search_entries) == 30, str(len(search_entries)))
+    check(
+        "every row is the issuer that was searched for",
+        {espi.normalise_issuer_name(e["issuer"]) for e in search_entries} == {"xtb"},
+        str({e["issuer"] for e in search_entries}),
+    )
+    check(
+        "dates come from the page, so a query without dates spans many days",
+        len({e["date"] for e in search_entries}) > 10,
+        str(len({e["date"] for e in search_entries})),
+    )
+    check(
+        "the EBi badge is still classified",
+        any(e["source"] == "EBI" for e in search_entries),
+        str({e["source"] for e in search_entries}),
+    )
+    check(
+        "an empty report number is tolerated here too",
+        any(not e["number"] for e in search_entries),
+    )
+
+    print("A search that matches nothing is not a broken parser")
+    # This is the bug the owner hit. PAP renders no `ul.newsList` at all when a
+    # phrase matches nothing, and raising for it reported "the layout changed"
+    # for the ordinary case of a query with no filings.
+    check("an empty result set returns no entries", espi.parse_listing(empty_html) == [])
+    check(
+        "the empty page is still recognised as a results page",
+        "view-id-wszukiwarka" in empty_html,
+    )
+    # A page that is genuinely not the search view must still raise, or a
+    # redirect or a rename would read as "nothing filed".
+    for label, html in (
+        ("a report page", "<html><body><div class='nDokument'>x</div></body></html>"),
+        ("a renamed view", empty_html.replace("view-id-wszukiwarka", "view-id-renamed").replace("path-wyszukiwarka", "path-renamed")),
+    ):
+        try:
+            espi.parse_listing(html)
+            check(f"{label} raises rather than reporting zero filings", False)
+        except espi.EspiParseError as error:
+            check(f"{label} raises rather than reporting zero filings", "results page" in str(error), str(error))
+
+    print("PAP's search is case-sensitive, so one retry in upper case")
+    requested: list[str] = []
+
+    def case_sensitive_get(url):
+        requested.append(url)
+        return search_html if "search=XTB" in url else empty_html
+
+    result = espi.fetch_listing(query="xtb", max_pages=1, get=case_sensitive_get)
+    check("a lower-case query still finds the filings", len(result["entries"]) == 30, str(len(result["entries"])))
+    check("and says which spelling worked", result["retriedQuery"] == "XTB", str(result["retriedQuery"]))
+    check("the retry happened only after the first attempt came back empty", len(requested) == 2, str(requested))
+    check("the first attempt used what was typed", "search=xtb&" in requested[0], requested[0])
+
+    # A phrase that matches nothing in either case must not claim a retry helped.
+    quiet = espi.fetch_listing(query="zzzqqq", max_pages=1, get=lambda url: empty_html)
+    check("a genuinely absent phrase returns nothing", quiet["entries"] == [])
+    check("and reports no successful retry", quiet["retriedQuery"] is None, str(quiet["retriedQuery"]))
+    # An already-upper-case query must not cost a second request set.
+    upper_calls: list[str] = []
+    espi.fetch_listing(query="ZZZQQQ", max_pages=1, get=lambda url: (upper_calls.append(url), empty_html)[1])
+    check("an upper-case query is not retried", len(upper_calls) == 1, str(upper_calls))
+
+    print("Candidates from a single-issuer search")
+    candidates = espi.issuer_candidates(search_entries)
+    check("the issuer is offered as a candidate", any(c["name"] == "XTB" for c in candidates), str(candidates[:2]))
+    check(
+        "the ticker root marks it",
+        espi.candidate_starts_with_root("XTB", "XTB.WA"),
+    )
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED:")

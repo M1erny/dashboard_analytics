@@ -18,7 +18,7 @@ import pandas as pd
 import numpy as np
 import time
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
@@ -173,6 +173,26 @@ BRAIN_ESPI_TIMEOUT_SECONDS = max(5.0, min(_env_float("BRAIN_ESPI_TIMEOUT_SECONDS
 BRAIN_ESPI_MAX_PAGES = max(1, min(_env_int("BRAIN_ESPI_MAX_PAGES", 3), 10))
 BRAIN_ESPI_DIGEST_MAX_DAYS = max(1, min(_env_int("BRAIN_ESPI_DIGEST_MAX_DAYS", 30), 120))
 ESPI_ISSUER_NAMES_SETTING = "brain.espi_issuer_names.v1"
+# Provenance and lookup history for the map above, kept beside it rather than in
+# it so `merge_issuer_names` and `digest_for_holdings` keep working on a flat
+# ticker -> name dict. Per ticker: source, at, attempts, lastError,
+# verifiedCount, verifiedAt.
+ESPI_ISSUER_META_SETTING = "brain.espi_issuer_meta.v1"
+# Sectors whose holdings have no statutory disclosures of their own to look for.
+# An index tracker is a structural fact stated by the portfolio, not a judgement.
+ESPI_NON_ISSUER_SECTORS = {"index/etf"}
+# The browser gives an ESPI request 120s (InvestmentBrainChat.tsx). A server
+# budget above that returns a 504 nobody sees, after discarding every issuer
+# that already answered, so the digest stops short and reports what it has.
+BRAIN_ESPI_DIGEST_DEADLINE_SECONDS = max(20.0, min(_env_float("BRAIN_ESPI_DIGEST_DEADLINE", 95.0), 300.0))
+# If the provider cannot name a ticker it is usually blocked for this host rather
+# than briefly unlucky, so the retry window is hours: re-crawling ten tickers on
+# every panel open buys nothing and costs the whole request.
+ESPI_ISSUER_RETRY_HOURS = max(1.0, min(_env_float("BRAIN_ESPI_ISSUER_RETRY_HOURS", 12.0), 168.0))
+# yfinance exposes no timeout on .info, so a hung lookup cannot be cancelled -
+# only contained. This bounds the wait, not the thread, which is why the job also
+# carries a `running` flag: without it, requests would pile threads up.
+ESPI_ISSUER_LOOKUP_TIMEOUT_SECONDS = max(5.0, min(_env_float("BRAIN_ESPI_ISSUER_LOOKUP_TIMEOUT", 45.0), 180.0))
 MODEL_ROUTING_SETTING = "brain.model_routing.v1"
 # Google renames and retires models faster than this file changes, so the picker
 # is filled from the live catalogue rather than a constant. It is cached because a
@@ -236,6 +256,27 @@ drive_index_job: dict[str, Any] = {
     "message": "Idle",
 }
 
+espi_issuer_job: dict[str, Any] = {
+    "running": False,
+    "startedAt": None,
+    "finishedAt": None,
+    "requested": 0,
+    "resolved": 0,
+    "errors": [],
+    "message": "Idle",
+}
+
+# asyncio only holds a weak reference to a task, so a fire-and-forget job with no
+# strong reference anywhere is eligible for collection mid-run.
+_background_tasks: set[Any] = set()
+
+
+def _spawn_background_task(coro) -> Any:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+    return task
+
 # These caches are deliberately short-lived/versioned: they reduce repeated Supabase
 # work during a research thread without hiding newly indexed files for long.
 brain_status_cache: dict[str, Any] = {"payload": None, "expiresAt": 0.0}
@@ -285,6 +326,18 @@ def _public_drive_job() -> dict[str, Any]:
         "counts": drive_index_job.get("counts"),
         "results": drive_index_job.get("results", [])[-500:],
         "message": drive_index_job.get("message", "Idle"),
+    }
+
+
+def _public_espi_issuer_job() -> dict[str, Any]:
+    return {
+        "running": espi_issuer_job.get("running", False),
+        "startedAt": espi_issuer_job.get("startedAt"),
+        "finishedAt": espi_issuer_job.get("finishedAt"),
+        "requested": espi_issuer_job.get("requested", 0),
+        "resolved": espi_issuer_job.get("resolved", 0),
+        "errors": espi_issuer_job.get("errors", [])[-10:],
+        "message": espi_issuer_job.get("message", "Idle"),
     }
 
 
@@ -3867,85 +3920,476 @@ async def get_brain_portfolio_outline(portfolio: str = "main"):
 # Polish regulatory filings (ESPI/EBI via PAP)
 # ==========================================
 
-def _resolve_issuer_names_from_market(tickers: list[str]) -> dict[str, str]:
+def _resolve_issuer_names_from_market(tickers: list[str]) -> tuple[dict[str, str], dict[str, str]]:
     """Company names for tickers, from the market-data provider already in use.
 
     Nothing here hardcodes a name. `SWM.WA` and `SPR.WA` are not names anybody
-    should be guessing at in a tool that files reports against holdings, and
-    yfinance already answers this question in risk.py.
+    should be guessing at in a tool that files reports against holdings.
+
+    Returns the names it got and the errors it hit, keyed by ticker, so a caller
+    can tell "the provider said nothing about this one" from "we never asked".
+    A name that merely repeats the ticker is not a name; see `_usable_issuer_name`.
     """
     if not risk:
-        return {}
+        return {}, {}
     import yfinance as yf
 
     resolved: dict[str, str] = {}
+    errors: dict[str, str] = {}
     for ticker in tickers:
         try:
             info = yf.Ticker(ticker).info or {}
         except Exception as exc:
-            print(f"Could not resolve an issuer name for {ticker}: {_clean_public_error(exc)[:120]}")
+            errors[ticker] = _clean_public_error(exc)[:200]
             continue
         name = str(info.get("longName") or info.get("shortName") or "").strip()
-        if name:
+        if _usable_issuer_name(ticker, name):
             resolved[ticker] = name
-    return resolved
+        else:
+            errors[ticker] = "the provider returned no usable company name"
+    return resolved, errors
 
 
-async def _espi_issuer_names(store: Any, portfolio: str = "main") -> dict[str, str]:
-    """ticker -> issuer name for the book's Polish holdings, cached in Supabase."""
+def _usable_issuer_name(ticker: str, name: str | None) -> bool:
+    """Whether `name` is a company name rather than the ticker wearing a hat.
+
+    /api/metrics-style lookups fall back to the ticker string when the provider
+    says nothing, and storing that is strictly worse than storing nothing: the
+    ticker stops appearing as unresolved, nothing retries it, and the digest
+    searches PAP for "BDX.WA", finds nothing, and reports zero filings -
+    indistinguishable from a quiet week.
+
+    The test is an exact comparison, deliberately not a length or normalisation
+    floor: `LPP` is a real three-character issuer name identical to its own
+    ticker root, and any floor would reject it.
+    """
+    clean = str(name or "").strip()
+    if not clean:
+        return False
+    return clean.upper() != str(ticker or "").strip().upper()
+
+
+def _parse_issuer_meta(raw: str | None) -> dict[str, dict[str, Any]]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {
+        str(ticker): entry
+        for ticker, entry in parsed.items()
+        if isinstance(entry, dict)
+    }
+
+
+def _issuer_lookup_is_cooling_down(entry: dict[str, Any] | None) -> bool:
+    """Whether a failed lookup for this ticker is still inside its retry window."""
+    if not isinstance(entry, dict) or not entry.get("lastError"):
+        return False
+    stamp = str(entry.get("at") or "")
+    if not stamp:
+        return False
+    try:
+        last = datetime.fromisoformat(stamp.replace("Z", ""))
+    except ValueError:
+        return False
+    return (datetime.utcnow() - last) < timedelta(hours=ESPI_ISSUER_RETRY_HOURS)
+
+
+async def _read_issuer_state(store: Any) -> tuple[dict[str, str], dict[str, dict[str, Any]], str | None]:
+    """The stored name map and its provenance, plus why the read failed if it did.
+
+    The third value is what stops a failed read from being mistaken for an empty
+    map. Treating them the same is how a single slow Supabase call could overwrite
+    every hand-picked name with whatever the provider happened to answer.
+    """
+    if not hasattr(store, "get_setting"):
+        return {}, {}, None
+    try:
+        raw_names = await _run_brain_step(
+            "ESPI issuer name lookup",
+            store.get_setting,
+            ESPI_ISSUER_NAMES_SETTING,
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        return {}, {}, _clean_public_error(exc)[:200]
+
+    names: dict[str, str] = {}
+    try:
+        parsed = json.loads(raw_names) if raw_names else {}
+        if isinstance(parsed, dict):
+            names = {str(k): str(v) for k, v in parsed.items() if str(v or "").strip()}
+    except (TypeError, ValueError, json.JSONDecodeError):
+        names = {}
+
+    meta: dict[str, dict[str, Any]] = {}
+    try:
+        raw_meta = await _run_brain_step(
+            "ESPI issuer meta lookup",
+            store.get_setting,
+            ESPI_ISSUER_META_SETTING,
+            timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+        )
+        meta = _parse_issuer_meta(raw_meta)
+    except Exception:
+        # Provenance is a nicety; losing it must not block an answer or, worse,
+        # look like a failed name read and suppress a legitimate write.
+        meta = {}
+    return names, meta, None
+
+
+async def _write_issuer_names(store: Any, names: dict[str, str]) -> None:
+    """Persist the name map. `{}` is written as `{}`, never as an empty string."""
+    if not hasattr(store, "set_setting"):
+        return
+    await _run_brain_step(
+        "ESPI issuer name save",
+        store.set_setting,
+        ESPI_ISSUER_NAMES_SETTING,
+        json.dumps(names or {}, ensure_ascii=False),
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
+
+
+async def _write_issuer_meta(store: Any, meta: dict[str, dict[str, Any]]) -> None:
+    if not hasattr(store, "set_setting"):
+        return
+    await _run_brain_step(
+        "ESPI issuer meta save",
+        store.set_setting,
+        ESPI_ISSUER_META_SETTING,
+        json.dumps(meta or {}, ensure_ascii=False),
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
+
+
+def _espi_book_tickers(portfolio: str = "main") -> tuple[list[str], list[str]]:
+    """The Warsaw holdings worth searching, and the ones that cannot file.
+
+    An index tracker has no statutory disclosures of its own to look for, so it is
+    separated rather than counted as an unresolved company. Reading `sector` for
+    this mirrors `polish_tickers` reading `country`: both are the portfolio's own
+    structural statement about a holding, not a judgement about it.
+    """
     config = risk.get_all_position_configs(portfolio) if risk else {}
     tickers = espi_sources.polish_tickers(config)
+    excluded = [
+        ticker for ticker in tickers
+        if str(((config or {}).get(ticker) or {}).get("sector") or "").strip().lower() in ESPI_NON_ISSUER_SECTORS
+    ]
+    searchable = [ticker for ticker in tickers if ticker not in set(excluded)]
+    return searchable, excluded
+
+
+async def _espi_issuer_names(store: Any, portfolio: str = "main") -> dict[str, Any]:
+    """The book's Polish issuer names as currently stored, with no provider call.
+
+    Resolution moved to a background job: ten serial `.info` calls used to run
+    inside this request with no deadline, so the browser gave up at 90 seconds and
+    the partial map that would have been cached was discarded with the response.
+    """
+    tickers, excluded = _espi_book_tickers(portfolio)
     if not tickers:
-        return {}
+        return {"names": {}, "tickers": [], "excluded": excluded, "meta": {}, "cacheError": None, "unresolved": []}
 
-    cached: dict[str, str] = {}
-    if hasattr(store, "get_setting"):
-        try:
-            raw = await _run_brain_step(
-                "ESPI issuer name lookup",
-                store.get_setting,
-                ESPI_ISSUER_NAMES_SETTING,
-                timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
-            )
-            cached = json.loads(raw) if raw else {}
-            if not isinstance(cached, dict):
-                cached = {}
-        except Exception:
-            cached = {}
+    stored, meta, cache_error = await _read_issuer_state(store)
+    names = espi_sources.merge_issuer_names(stored, {}, tickers)
+    return {
+        "names": names,
+        "tickers": tickers,
+        "excluded": excluded,
+        "meta": {ticker: meta[ticker] for ticker in tickers if ticker in meta},
+        "cacheError": cache_error,
+        "unresolved": [ticker for ticker in tickers if ticker not in names],
+    }
 
-    missing = [ticker for ticker in tickers if not str(cached.get(ticker) or "").strip()]
-    resolved: dict[str, str] = {}
-    if missing:
-        resolved = await run_in_threadpool(_resolve_issuer_names_from_market, missing)
 
-    names = espi_sources.merge_issuer_names(cached, resolved, tickers)
-    if names and names != cached and hasattr(store, "set_setting"):
-        try:
-            await _run_brain_step(
-                "ESPI issuer name save",
-                store.set_setting,
-                ESPI_ISSUER_NAMES_SETTING,
-                json.dumps(names, ensure_ascii=False),
-                timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
-            )
-        except Exception as exc:
-            print(f"Could not cache ESPI issuer names: {_clean_public_error(exc)[:160]}")
-    return names
+async def _run_espi_issuer_lookup_job(portfolio: str = "main") -> None:
+    """Fill in missing issuer names one at a time, saving after each one.
+
+    Each name is persisted as soon as it arrives rather than at the end, because a
+    free-tier instance can be stopped mid-job and a batch that only saves on
+    completion saves nothing.
+    """
+    store = brain_store
+    espi_issuer_job.update({
+        "running": True,
+        "startedAt": _utc_now_iso(),
+        "finishedAt": None,
+        "requested": 0,
+        "resolved": 0,
+        "errors": [],
+        "message": "Looking up issuer names.",
+    })
+    try:
+        if not store or not espi_sources or not risk:
+            espi_issuer_job["message"] = "Issuer lookup cannot start: the brain or the filings module is unavailable."
+            return
+
+        tickers, _ = _espi_book_tickers(portfolio)
+        stored, meta, cache_error = await _read_issuer_state(store)
+        if cache_error:
+            # Without a trustworthy read there is no way to tell a missing name
+            # from an unread one, and writing back would overwrite good names.
+            espi_issuer_job["message"] = f"Issuer lookup skipped: the stored names could not be read ({cache_error})."
+            return
+
+        missing = [
+            ticker for ticker in tickers
+            if not str(stored.get(ticker) or "").strip()
+            and not _issuer_lookup_is_cooling_down(meta.get(ticker))
+        ]
+        espi_issuer_job["requested"] = len(missing)
+        if not missing:
+            espi_issuer_job["message"] = "Every holding already has a name, or is waiting out a failed lookup."
+            return
+
+        names = dict(stored)
+        for ticker in missing:
+            try:
+                resolved, errors = await asyncio.wait_for(
+                    run_in_threadpool(_resolve_issuer_names_from_market, [ticker]),
+                    timeout=ESPI_ISSUER_LOOKUP_TIMEOUT_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                resolved, errors = {}, {ticker: f"the provider did not answer within {ESPI_ISSUER_LOOKUP_TIMEOUT_SECONDS:.0f}s"}
+            except Exception as exc:
+                resolved, errors = {}, {ticker: _clean_public_error(exc)[:200]}
+
+            entry = dict(meta.get(ticker) or {})
+            entry["at"] = _utc_now_iso()
+            entry["attempts"] = int(entry.get("attempts") or 0) + 1
+            name = resolved.get(ticker)
+            if name:
+                names[ticker] = name
+                entry["source"] = "provider"
+                entry.pop("lastError", None)
+                espi_issuer_job["resolved"] = int(espi_issuer_job.get("resolved") or 0) + 1
+                try:
+                    await _write_issuer_names(store, espi_sources.merge_issuer_names(names, {}, tickers))
+                except Exception as exc:
+                    espi_issuer_job["errors"].append(f"{ticker}: could not be saved ({_clean_public_error(exc)[:120]})")
+            else:
+                entry["lastError"] = errors.get(ticker) or "no name returned"
+                espi_issuer_job["errors"].append(f"{ticker}: {entry['lastError']}")
+            meta[ticker] = entry
+            try:
+                await _write_issuer_meta(store, meta)
+            except Exception:
+                pass
+
+        resolved_count = int(espi_issuer_job.get("resolved") or 0)
+        still_missing = len(missing) - resolved_count
+        espi_issuer_job["message"] = (
+            f"Resolved {resolved_count} of {len(missing)}."
+            + (f" {still_missing} still need a name — assign one from a PAP filing." if still_missing else "")
+        )
+    except Exception as exc:
+        espi_issuer_job["message"] = f"Issuer lookup failed: {_clean_public_error(exc)[:200]}"
+    finally:
+        espi_issuer_job["running"] = False
+        espi_issuer_job["finishedAt"] = _utc_now_iso()
+
+
+def _queue_espi_issuer_lookup(portfolio: str = "main") -> bool:
+    """Start a lookup unless one is already running. Never blocks the caller."""
+    if not brain_store or not espi_sources or not risk:
+        return False
+    if espi_issuer_job.get("running"):
+        return False
+    _spawn_background_task(_run_espi_issuer_lookup_job(portfolio))
+    return True
 
 
 @app.get("/api/brain/espi/issuers")
-async def get_espi_issuers(portfolio: str = "main"):
-    """Which holdings the digest can search for, and which still have no name."""
+async def get_espi_issuers(portfolio: str = "main", lookup: bool = True):
+    """Which holdings the digest can search for, and which still have no name.
+
+    Reading this may start a background lookup for the missing ones, but never
+    waits for it: the caller gets the state as it stands now, plus the job's.
+    """
     store = _brain_or_503()
-    config = risk.get_all_position_configs(portfolio) if risk else {}
-    tickers = espi_sources.polish_tickers(config)
-    names = await _espi_issuer_names(store, portfolio)
+    state = await _espi_issuer_names(store, portfolio)
+    queued = False
+    if lookup and state["unresolved"] and not state["cacheError"]:
+        queued = _queue_espi_issuer_lookup(portfolio)
     return {
         "portfolio": portfolio,
-        "tickers": tickers,
-        "names": names,
-        "unresolved": [ticker for ticker in tickers if ticker not in names],
+        "tickers": state["tickers"],
+        "names": state["names"],
+        "unresolved": state["unresolved"],
+        "excluded": state["excluded"],
+        "meta": state["meta"],
+        "cacheError": state["cacheError"],
+        "lookupQueued": queued,
+        "job": _public_espi_issuer_job(),
         "setting": ESPI_ISSUER_NAMES_SETTING,
+    }
+
+
+class BrainEspiIssuerNamesRequest(BaseModel):
+    names: dict[str, str] = Field(default_factory=dict)
+    portfolio: str = Field(default="main", max_length=60)
+    verify: bool = True
+
+
+@app.put("/api/brain/espi/issuers")
+async def update_espi_issuers(payload: BrainEspiIssuerNamesRequest):
+    """Assign an issuer name to a holding, and say what PAP does with it.
+
+    The name is stored even when verification finds nothing: the owner knows the
+    company and a seven-day window does not. But the evidence comes back with the
+    save, because the failure that matters here is a name that quietly matches the
+    wrong issuer, and a bare count hides it.
+    """
+    store = _brain_or_503()
+    if not espi_sources:
+        raise HTTPException(status_code=503, detail="The Polish filings module is not available")
+    if not hasattr(store, "set_setting"):
+        raise HTTPException(status_code=503, detail="Brain settings are not available")
+
+    tickers, excluded = _espi_book_tickers(payload.portfolio)
+    known = set(tickers)
+    cleaned: dict[str, str] = {}
+    for raw_ticker, raw_name in (payload.names or {}).items():
+        ticker = str(raw_ticker or "").strip().upper()
+        if ticker not in known:
+            detail = (
+                f"{ticker} is an index tracker, which files no reports of its own."
+                if ticker in set(excluded)
+                else f"{ticker} is not a Polish holding in the {payload.portfolio} book."
+            )
+            raise HTTPException(status_code=400, detail=detail)
+        name = re.sub(r"\s+", " ", str(raw_name or "")).strip()[:120]
+        if name and name.upper() == ticker:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{ticker} is the ticker, not an issuer name. PAP would find nothing for it.",
+            )
+        cleaned[ticker] = name
+
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Name at least one holding.")
+
+    stored, meta, cache_error = await _read_issuer_state(store)
+    if cache_error:
+        # Writing on top of an unread map is how good names get destroyed.
+        raise HTTPException(
+            status_code=503,
+            detail=f"The stored issuer names could not be read, so they were not changed ({cache_error}).",
+        )
+
+    verification: dict[str, Any] = {}
+    names = dict(stored)
+    for ticker, name in cleaned.items():
+        entry = dict(meta.get(ticker) or {})
+        if not name:
+            names.pop(ticker, None)
+            meta.pop(ticker, None)
+            verification[ticker] = {"cleared": True}
+            continue
+        names[ticker] = name
+        entry.update({"source": "picked", "at": _utc_now_iso()})
+        entry.pop("lastError", None)
+        if payload.verify:
+            checked = await _verify_issuer_name(name)
+            verification[ticker] = checked
+            if checked.get("checked"):
+                entry["verifiedCount"] = checked.get("filings")
+                entry["verifiedAt"] = _utc_now_iso()
+            else:
+                # Recording a timestamp for a check that never ran would let an
+                # unverified name read as a verified one.
+                entry.pop("verifiedCount", None)
+                entry.pop("verifiedAt", None)
+                entry["verifyError"] = checked.get("error")
+        meta[ticker] = entry
+
+    merged = espi_sources.merge_issuer_names(names, {}, tickers)
+    await _write_issuer_names(store, merged)
+    try:
+        await _write_issuer_meta(store, meta)
+    except Exception:
+        pass
+
+    return {
+        "portfolio": payload.portfolio,
+        "names": merged,
+        "unresolved": [ticker for ticker in tickers if ticker not in merged],
+        "excluded": excluded,
+        "verification": verification,
+        "meta": {ticker: meta[ticker] for ticker in tickers if ticker in meta},
+    }
+
+
+async def _verify_issuer_name(name: str) -> dict[str, Any]:
+    """What PAP returns for this name, broken out by the issuer it actually is.
+
+    `issuer_matches` accepts a four-character prefix, so "BUDIMEX" matches filings
+    from both BUDIMEX and BUDIMEX NIERUCHOMOSCI. A count alone would read as clean
+    while half the rows belonged to a different company, so the distinct issuer
+    strings are returned and more than one is called ambiguous.
+    """
+    try:
+        result = await asyncio.wait_for(
+            run_in_threadpool(
+                espi_sources.fetch_listing,
+                name,
+                None,
+                None,
+                BRAIN_ESPI_MAX_PAGES,
+                BRAIN_ESPI_TIMEOUT_SECONDS,
+            ),
+            timeout=BRAIN_ESPI_TIMEOUT_SECONDS + 10,
+        )
+    except asyncio.TimeoutError:
+        return {"checked": False, "error": "PAP did not answer in time, so the name was saved unverified."}
+    except Exception as exc:
+        return {"checked": False, "error": f"PAP could not be searched: {_clean_public_error(exc)[:200]}"}
+
+    matched: dict[str, int] = {}
+    latest: str | None = None
+    for entry in result.get("entries") or []:
+        issuer = str(entry.get("issuer") or "").strip()
+        if not issuer or not espi_sources.issuer_matches(issuer, name):
+            continue
+        matched[issuer] = matched.get(issuer, 0) + 1
+        entry_date = str(entry.get("date") or "")
+        if entry_date and (latest is None or entry_date > latest):
+            latest = entry_date
+
+    # One company can file under more than one spelling - XTB's ESPI reports say
+    # "XTB" and its EBi report says "XTB SA" - and that is not ambiguity, it is
+    # the same issuer. Grouping by the normalised form is what separates a second
+    # spelling from a second company, which is the only case worth warning about.
+    groups: dict[str, dict[str, int]] = {}
+    for issuer, count in matched.items():
+        groups.setdefault(espi_sources.normalise_issuer_name(issuer), {})[issuer] = count
+
+    canonical = None
+    if len(groups) == 1:
+        # The spelling the issuer files under most is the one to store, because it
+        # is what `match_ticker` will compare future filings against.
+        spellings = next(iter(groups.values()))
+        canonical = max(sorted(spellings), key=lambda spelling: spellings[spelling])
+
+    normalised = espi_sources.normalise_issuer_name(name)
+    return {
+        "checked": True,
+        "filings": sum(matched.values()),
+        "matchedIssuers": matched,
+        "ambiguous": len(groups) > 1,
+        "canonical": canonical,
+        "latestDate": latest,
+        # Four is the shortest prefix `issuer_matches` will accept, so a name of
+        # exactly that length is the one that can widen into unrelated issuers.
+        # Anything shorter can only ever match by exact equality, which is safer
+        # rather than riskier - warning about it would have been backwards.
+        "shortName": len(normalised) == 4,
     }
 
 
@@ -3957,33 +4401,59 @@ async def get_espi_digest(
 ):
     """What the book's Polish issuers filed over the last `days` days."""
     store = _brain_or_503()
-    names = await _espi_issuer_names(store, portfolio)
+    state = await _espi_issuer_names(store, portfolio)
+    names = state["names"]
+    queued = False
+    if state["unresolved"] and not state["cacheError"]:
+        queued = _queue_espi_issuer_lookup(portfolio)
+
+    # Every response carries the same coverage fields, so a partial gap is as
+    # visible as a total one. They used to appear only when nothing resolved,
+    # which meant six of nine searching looked exactly like nine of nine.
+    coverage = {
+        "portfolio": portfolio,
+        "days": days,
+        "unresolved": state["unresolved"],
+        "excluded": state["excluded"],
+        "names": names,
+        "issuerMeta": state["meta"],
+        "cacheError": state["cacheError"],
+        "lookupQueued": queued,
+        "job": _public_espi_issuer_job(),
+    }
+
     if not names:
         return {
-            "portfolio": portfolio,
-            "days": days,
+            **coverage,
             "entries": [],
             "byTicker": {},
             "queriedTickers": [],
-            "unresolved": espi_sources.polish_tickers(
-                risk.get_all_position_configs(portfolio) if risk else {}
+            "message": (
+                "None of the Polish holdings has an issuer name yet, so there is nothing to search for. "
+                "Assign one from a PAP filing."
             ),
-            "message": "No issuer names are known yet for the Polish holdings, so there is nothing to search for.",
         }
 
-    end = datetime.now().date()
-    start = end - timedelta(days=max(0, days - 1))
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=max(0, days - 1))
+    # Keep the server's own budget under the browser's, so a slow last issuer
+    # cannot make us throw away every issuer that already answered.
+    deadline = min(
+        BRAIN_ESPI_TIMEOUT_SECONDS * len(names) + 10,
+        BRAIN_ESPI_DIGEST_DEADLINE_SECONDS,
+    )
     try:
         result = await asyncio.wait_for(
             run_in_threadpool(
                 espi_sources.digest_for_holdings,
                 names,
-                start,
-                end,
+                start_date,
+                end_date,
                 max_pages=BRAIN_ESPI_MAX_PAGES,
                 timeout=BRAIN_ESPI_TIMEOUT_SECONDS,
+                deadline_seconds=deadline,
             ),
-            timeout=BRAIN_ESPI_TIMEOUT_SECONDS * len(names) + 10,
+            timeout=deadline + 15,
         )
     except asyncio.TimeoutError:
         raise HTTPException(status_code=504, detail="The ESPI/EBI digest did not finish in time. Try a shorter window.")
@@ -3993,14 +4463,18 @@ async def get_espi_digest(
     entries = result["entries"]
     if periodicOnly:
         entries = [e for e in entries if espi_sources.is_periodic_report(e.get("subject") or "")]
+    # An explicit zero for every ticker that was actually queried: without it a
+    # ticker carrying a wrong name is indistinguishable from a quiet week.
+    by_ticker = {ticker: 0 for ticker in result.get("queriedTickers") or []}
+    by_ticker.update(result.get("byTicker") or {})
     return {
-        "portfolio": portfolio,
-        "days": days,
-        "from": start.isoformat(),
-        "to": end.isoformat(),
+        **coverage,
+        "from": start_date.isoformat(),
+        "to": end_date.isoformat(),
         "source": espi_sources.PAP_BASE,
         "periodicOnly": periodicOnly,
         **result,
+        "byTicker": by_ticker,
         "entries": entries,
     }
 
@@ -4010,6 +4484,7 @@ async def get_espi_search(
     q: str,
     periodicOnly: bool = False,
     pages: int = Query(default=2, ge=1, le=BRAIN_ESPI_MAX_PAGES),
+    forTicker: str | None = Query(default=None, max_length=40),
 ):
     """The PAP listing's own free-text search, passed through."""
     _brain_or_503()
@@ -4038,7 +4513,23 @@ async def get_espi_search(
     entries = result["entries"]
     if periodicOnly:
         entries = [e for e in entries if espi_sources.is_periodic_report(e.get("subject") or "")]
-    return {"query": query, "source": espi_sources.PAP_BASE, "periodicOnly": periodicOnly, **result, "entries": entries}
+    # The distinct issuers behind these rows, so a search doubles as the picklist
+    # for a holding with no name: every option is a string PAP actually uses.
+    candidates = espi_sources.issuer_candidates(result["entries"])
+    if forTicker:
+        ticker = str(forTicker).strip().upper()
+        for candidate in candidates:
+            candidate["startsWithRoot"] = espi_sources.candidate_starts_with_root(candidate["name"], ticker)
+    return {
+        "query": query,
+        "source": espi_sources.PAP_BASE,
+        "periodicOnly": periodicOnly,
+        **result,
+        "entries": entries,
+        "candidates": candidates,
+        "forTicker": (str(forTicker).strip().upper() or None) if forTicker else None,
+    }
+
 
 
 @app.get("/api/brain/espi/report/{node_id}")
@@ -5943,7 +6434,57 @@ async def get_quality(portfolio: str = 'main'):
 
     payload = {"portfolio": portfolio, "positions": results}
     _quality_cache[portfolio] = {"data": payload, "ts": now}
+    # This crawl has already paid for a provider lookup per holding, so any Polish
+    # issuer name it produced is free to keep. It is the same provider the ESPI
+    # lookup would call, so if it works anywhere it works here.
+    await _harvest_issuer_names_from_quality(results, portfolio)
     return payload
+
+
+async def _harvest_issuer_names_from_quality(positions: list[dict[str, Any]], portfolio: str) -> None:
+    """Record any Polish issuer name the quality crawl happened to resolve.
+
+    Never overwrites a stored name, and never writes on an unreadable cache: the
+    point is to fill gaps for free, not to have a background crawl outrank a name
+    the owner picked.
+    """
+    store = brain_store
+    if not store or not espi_sources or not risk:
+        return
+    try:
+        tickers, _ = _espi_book_tickers(portfolio)
+        wanted = set(tickers)
+        if not wanted:
+            return
+        harvested: dict[str, str] = {}
+        for position in positions or []:
+            ticker = str((position or {}).get("ticker") or "").strip().upper()
+            if ticker not in wanted:
+                continue
+            # The error branch of the crawl emits no name key at all, and its
+            # success branch falls back to the ticker string, which is not a name.
+            name = str((position or {}).get("name") or "").strip()
+            if _usable_issuer_name(ticker, name):
+                harvested[ticker] = name
+        if not harvested:
+            return
+
+        stored, meta, cache_error = await _read_issuer_state(store)
+        if cache_error:
+            return
+        additions = {t: n for t, n in harvested.items() if not str(stored.get(t) or "").strip()}
+        if not additions:
+            return
+        merged = espi_sources.merge_issuer_names({**stored, **additions}, {}, tickers)
+        await _write_issuer_names(store, merged)
+        for ticker in additions:
+            entry = dict(meta.get(ticker) or {})
+            entry.update({"source": "provider", "at": _utc_now_iso()})
+            entry.pop("lastError", None)
+            meta[ticker] = entry
+        await _write_issuer_meta(store, meta)
+    except Exception as exc:
+        print(f"Could not harvest issuer names from the quality crawl: {_clean_public_error(exc)[:160]}")
 
 
 if __name__ == "__main__":
