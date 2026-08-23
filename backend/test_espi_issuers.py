@@ -237,8 +237,40 @@ check("and both are named with their counts",
       checked["matchedIssuers"] == {"BUDIMEX SA": 1, "BUDIMEX NIERUCHOMOŚCI SA": 1}, checked)
 check("no canonical form is offered when it is ambiguous", checked["canonical"] is None, checked)
 
-check("a four-character name is flagged as too short", verify("BEST")["shortName"] is True)
+# Four is the shortest prefix issuer_matches accepts, so it is the length that can
+# widen into unrelated issuers. Shorter can only match by exact equality.
+check("a four-character name is flagged", verify("BEST")["shortName"] is True)
 check("a longer name is not", verify("SYNEKTIK S.A.")["shortName"] is False)
+check("a three-character name is not flagged, since it can only match exactly",
+      verify("LPP")["shortName"] is False)
+
+
+print("Two spellings of one issuer are not two issuers")
+search_html = open("fixtures/espi_search_results.html", encoding="utf-8").read()
+
+
+def verify_against(html, name):
+    original = espi_sources.fetch_listing
+
+    def patched(query=None, start=None, end=None, max_pages=1, timeout=0, get_=None, **kwargs):
+        return original(query=query, max_pages=1, timeout=0, get=lambda url: html)
+
+    espi_sources.fetch_listing = patched
+    try:
+        return run(server._verify_issuer_name(name))
+    finally:
+        espi_sources.fetch_listing = original
+
+
+# XTB files its ESPI reports as "XTB" and its EBi report as "XTB SA". That is one
+# company, and calling it ambiguous would send the owner looking for a distinction
+# that does not exist.
+checked = verify_against(search_html, "XTB")
+check("both spellings are found", checked["filings"] == 30, checked["filings"])
+check("both are reported", sorted(checked["matchedIssuers"]) == ["XTB", "XTB SA"], checked["matchedIssuers"])
+check("one company is not ambiguous", checked["ambiguous"] is False, checked)
+# The spelling it files under most is the one match_ticker will meet again.
+check("the most-used spelling becomes canonical", checked["canonical"] == "XTB", checked["canonical"])
 
 
 print("Candidates come from real filings")

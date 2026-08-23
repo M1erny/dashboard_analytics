@@ -313,6 +313,13 @@ def _attr(attrs: list[tuple[str, str | None]], name: str) -> str:
     return ""
 
 
+# A results page carries these whether or not it found anything. They are what
+# lets "PAP found nothing" be told apart from "the page we got is not a results
+# page at all" - the empty search renders no `ul.newsList` whatsoever, so the
+# absence of the list cannot carry that distinction on its own.
+SEARCH_PAGE_MARKERS = ("view-id-wszukiwarka", "path-wyszukiwarka")
+
+
 class _ListingParser(HTMLParser):
     """Pull `li.news` entries out of a /wyszukiwarka results page.
 
@@ -325,6 +332,7 @@ class _ListingParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.entries: list[dict] = []
         self.saw_news_list = False
+        self.saw_search_page = False
         self.list_items = 0
         self._news_list_depth = 0
         self._day: str | None = None
@@ -344,6 +352,8 @@ class _ListingParser(HTMLParser):
             return
 
         classes = _classes(attrs)
+        if not self.saw_search_page and classes.intersection(SEARCH_PAGE_MARKERS):
+            self.saw_search_page = True
         if tag == "h2" and "date" in classes:
             self._start_capture(tag, "day")
         elif tag == "ul" and "newsList" in classes:
@@ -431,8 +441,15 @@ def parse_listing(html: str) -> list[dict]:
     parser.feed(text)
     parser.close()
     if not parser.saw_news_list:
+        if parser.saw_search_page:
+            # A search that matches nothing renders the form and no list at all.
+            # Raising here reported "the layout changed" for the ordinary case of
+            # a phrase with no filings, which sent the owner hunting a bug in the
+            # parser instead of correcting their query.
+            return []
         raise EspiParseError(
-            "Selector 'ul.newsList' not found: the listing layout changed, or this is not a results page"
+            "Selector 'ul.newsList' not found and this is not a /wyszukiwarka results page: "
+            "the layout changed, or the request was redirected"
         )
     if parser.list_items and not parser.entries:
         # The list held items and none of them parsed. A quiet day renders an
@@ -660,29 +677,51 @@ def fetch_listing(
     """
     fetcher = get or (lambda url: _get(url, timeout))
     pages = max(1, int(max_pages))
-    entries: list[dict] = []
-    seen: set[str] = set()
-    pages_read = 0
-    truncated = False
-    for page in range(pages):
-        url = search_url(query=query, start=start, end=end, page=page)
-        page_entries = parse_listing(fetcher(url))
-        pages_read += 1
-        # Deduplication and end-of-results are separate questions. Stopping on
-        # "no new entries" would conflate them, and a repeated page would then
-        # look like the end while the cap was the real reason.
-        for entry in page_entries:
-            if entry["nodeId"] not in seen:
-                seen.add(entry["nodeId"])
-                entries.append(entry)
-        if not page_entries:
-            break
-        if page == pages - 1:
-            # Stopped because of the cap while the page still had content, so
-            # there is probably more behind it. Say so: a caller that cannot
-            # tell a capped answer from a complete one will present it as complete.
-            truncated = True
-    return {"entries": entries, "pagesRead": pages_read, "truncated": truncated}
+
+    def collect(phrase: str | None) -> tuple[list[dict], int, bool]:
+        entries: list[dict] = []
+        seen: set[str] = set()
+        pages_read = 0
+        truncated = False
+        for page in range(pages):
+            url = search_url(query=phrase, start=start, end=end, page=page)
+            page_entries = parse_listing(fetcher(url))
+            pages_read += 1
+            # Deduplication and end-of-results are separate questions. Stopping on
+            # "no new entries" would conflate them, and a repeated page would then
+            # look like the end while the cap was the real reason.
+            for entry in page_entries:
+                if entry["nodeId"] not in seen:
+                    seen.add(entry["nodeId"])
+                    entries.append(entry)
+            if not page_entries:
+                break
+            if page == pages - 1:
+                # Stopped because of the cap while the page still had content, so
+                # there is probably more behind it. Say so: a caller that cannot
+                # tell a capped answer from a complete one will present it as complete.
+                truncated = True
+        return entries, pages_read, truncated
+
+    entries, pages_read, truncated = collect(query)
+
+    # PAP's search appears to match case-sensitively: `search=xtb` returns nothing
+    # while `search=XTB` returns six pages, and ESPI titles carry issuer names in
+    # the form the issuer files under. So one retry in upper case, and only when
+    # the first attempt found nothing - it can add hits, never remove them.
+    retried_query = None
+    clean_query = _clean(query)
+    if not entries and clean_query and clean_query != clean_query.upper():
+        retried_query = clean_query.upper()
+        entries, retry_pages, truncated = collect(retried_query)
+        pages_read += retry_pages
+
+    return {
+        "entries": entries,
+        "pagesRead": pages_read,
+        "truncated": truncated,
+        "retriedQuery": retried_query if entries else None,
+    }
 
 
 def fetch_report(node_id: str | int, timeout: float = DEFAULT_LISTING_TIMEOUT, get: object = None) -> dict:

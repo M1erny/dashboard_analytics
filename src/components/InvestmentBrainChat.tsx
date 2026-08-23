@@ -292,6 +292,9 @@ type EspiListing = {
     failures?: Record<string, string>;
     truncated?: boolean;
     deadlineHit?: boolean;
+    // Set when PAP found nothing for what was typed but did for the upper-case
+    // spelling, which its search appears to require.
+    retriedQuery?: string | null;
     candidates?: EspiIssuerCandidate[];
     forTicker?: string | null;
     from?: string;
@@ -1661,7 +1664,10 @@ export const InvestmentBrainChat: React.FC = () => {
             const payload = await response.json() as EspiListing;
             setEspiListing(payload);
             const count = payload.entries?.length ?? 0;
-            setNotice(`${count} ESPI/EBI filing${count === 1 ? '' : 's'} for "${query}"${payload.truncated ? ' (more may exist beyond the page limit)' : ''}.`);
+            const spelling = payload.retriedQuery ? ` — PAP matched "${payload.retriedQuery}", its search is case-sensitive` : '';
+            setNotice(count
+                ? `${count} ESPI/EBI filing${count === 1 ? '' : 's'} for "${query}"${spelling}${payload.truncated ? ' (more may exist beyond the page limit)' : ''}.`
+                : `PAP has no filing matching "${query}". Try the issuer's name as it files, in capitals.`);
         } catch (error) {
             setNotice(error instanceof Error ? error.message : 'The ESPI/EBI search failed.');
         } finally {
@@ -1696,9 +1702,10 @@ export const InvestmentBrainChat: React.FC = () => {
             const payload = await response.json() as EspiListing;
             const candidates = payload.candidates ?? [];
             setAssignCandidates(candidates);
+            const spelling = payload.retriedQuery ? ` (as "${payload.retriedQuery}" — PAP's search is case-sensitive)` : '';
             setNotice(candidates.length
-                ? `${candidates.length} issuer${candidates.length === 1 ? '' : 's'} filed under "${query}". Pick the one that is ${ticker}.`
-                : `PAP has no recent filing matching "${query}". Try the company's name.`);
+                ? `${candidates.length} issuer${candidates.length === 1 ? '' : 's'} filed under "${query}"${spelling}. Pick the one that is ${ticker}.`
+                : `PAP has no recent filing matching "${query}". Try the company's name, in capitals.`);
         } catch (error) {
             setNotice(error instanceof Error ? error.message : 'PAP could not be searched.');
         } finally {
@@ -2319,7 +2326,7 @@ export const InvestmentBrainChat: React.FC = () => {
                                                             </div>
                                                             {assignCandidates?.length === 0 && (
                                                                 <p className="text-[10px] leading-4 text-amber-200/60">
-                                                                    PAP has no recent filing matching that phrase. The ticker root is only an abbreviation for some holdings — try the company's name.
+                                                                    PAP has no filing matching that phrase. Its search is case-sensitive and the ticker root is only an abbreviation for some holdings — try the company's name in capitals.
                                                                 </p>
                                                             )}
                                                             {/* Every option is a string PAP itself used, shown with the filing

@@ -4362,18 +4362,34 @@ async def _verify_issuer_name(name: str) -> dict[str, Any]:
         if entry_date and (latest is None or entry_date > latest):
             latest = entry_date
 
-    distinct = sorted(matched)
+    # One company can file under more than one spelling - XTB's ESPI reports say
+    # "XTB" and its EBi report says "XTB SA" - and that is not ambiguity, it is
+    # the same issuer. Grouping by the normalised form is what separates a second
+    # spelling from a second company, which is the only case worth warning about.
+    groups: dict[str, dict[str, int]] = {}
+    for issuer, count in matched.items():
+        groups.setdefault(espi_sources.normalise_issuer_name(issuer), {})[issuer] = count
+
+    canonical = None
+    if len(groups) == 1:
+        # The spelling the issuer files under most is the one to store, because it
+        # is what `match_ticker` will compare future filings against.
+        spellings = next(iter(groups.values()))
+        canonical = max(sorted(spellings), key=lambda spelling: spellings[spelling])
+
     normalised = espi_sources.normalise_issuer_name(name)
     return {
         "checked": True,
         "filings": sum(matched.values()),
         "matchedIssuers": matched,
-        "ambiguous": len(distinct) > 1,
-        "canonical": distinct[0] if len(distinct) == 1 else None,
+        "ambiguous": len(groups) > 1,
+        "canonical": canonical,
         "latestDate": latest,
-        # Four characters is the shortest prefix `issuer_matches` accepts, so a
-        # name this short matches every issuer that merely starts with it.
-        "shortName": len(normalised) <= 4,
+        # Four is the shortest prefix `issuer_matches` will accept, so a name of
+        # exactly that length is the one that can widen into unrelated issuers.
+        # Anything shorter can only ever match by exact equality, which is safer
+        # rather than riskier - warning about it would have been backwards.
+        "shortName": len(normalised) == 4,
     }
 
 
@@ -4513,6 +4529,7 @@ async def get_espi_search(
         "candidates": candidates,
         "forTicker": (str(forTicker).strip().upper() or None) if forTicker else None,
     }
+
 
 
 @app.get("/api/brain/espi/report/{node_id}")

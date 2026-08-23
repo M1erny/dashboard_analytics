@@ -715,6 +715,34 @@ and `BUDIMEX NIERUCHOMOŚCI SA`, and "2 filings matched" would read as clean whi
 half the rows belonged to another company. The name is stored anyway — the owner
 knows the company and a recent window does not — but never without the evidence.
 
+**PAP's search is case-sensitive, and an empty result is not a broken parser.**
+Two saved pages settled both. `?search=XTB` returns six pages of filings in exactly
+the same markup as the dated listing, so one parser serves both shapes — but
+`?search=xtb` returns nothing, so `fetch_listing` retries once in upper case when
+the first attempt is empty, and reports which spelling worked. And a phrase that
+matches nothing renders no `ul.newsList` at all, which the parser used to treat as
+a changed layout: it reported "the listing layout changed" for the ordinary case of
+a query with no filings, sending the owner after a parser bug that did not exist.
+A results page always carries `view-id-wszukiwarka`, so that marker is what
+separates "PAP found nothing" from "this is not a results page", and only the
+latter raises. `backend/fixtures/espi_search_results.html` and
+`espi_search_empty.html` pin both.
+
+**One company filing under two spellings is not ambiguity.** XTB's ESPI reports
+say `XTB` and its EBi report says `XTB SA`. Matched issuers are grouped by
+`normalise_issuer_name`, which strips the legal form, so those collapse to one
+group and the name is stored as the spelling the issuer files under most —
+`XTB` — while `BUDIMEX` against `BUDIMEX` and `BUDIMEX NIERUCHOMOŚCI` stays two
+groups and is flagged. Warning about the first case would send the owner looking
+for a distinction that does not exist; missing the second would file one company's
+reports under another holding.
+
+**The short-name warning fires at exactly four characters,** because four is the
+shortest prefix `issuer_matches` accepts and therefore the length that can widen
+into unrelated issuers. Anything shorter can only match by exact equality, which
+is safer rather than riskier — the original `<= 4` test warned about `XTB` and
+`LPP`, which was backwards.
+
 **The ticker root is a hint about spelling, not about identity.**
 `candidate_starts_with_root` tests only whether an issuer name begins with the
 ticker root, and the label says exactly that. `SPR.WA` is Spyrosoft, but `SPRINT
