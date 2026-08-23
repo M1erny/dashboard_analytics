@@ -4554,6 +4554,14 @@ async def diagnose_espi_access(q: str = "XTB", probeFeeds: bool = True):
     except asyncio.TimeoutError:
         listing = {"requestedUrl": listing_url, "reached": False, "error": "timed out"}
 
+    try:
+        surfaces = await asyncio.wait_for(
+            run_in_threadpool(espi_sources.probe_access_surfaces, BRAIN_ESPI_TIMEOUT_SECONDS),
+            timeout=BRAIN_ESPI_TIMEOUT_SECONDS * len(espi_sources.ACCESS_SURFACES) + 15,
+        )
+    except asyncio.TimeoutError:
+        surfaces = []
+
     feeds: list[dict[str, Any]] = []
     if probeFeeds:
         try:
@@ -4589,9 +4597,18 @@ async def diagnose_espi_access(q: str = "XTB", probeFeeds: bool = True):
         access = "ok"
         verdict = f"PAP returned the search listing to this host ({listing.get('status')})."
 
+    usable_surfaces = [surface["name"] for surface in surfaces if surface.get("usable")]
     return {
         "query": query,
         "listing": listing,
+        "surfaces": surfaces,
+        "usableSurfaces": usable_surfaces,
+        # Importing a pasted report needs only the node page and the attachment.
+        # It was claimed to work without ever being run, so it is reported apart
+        # from the digest rather than folded into one pass/fail.
+        "importPathUsable": all(
+            name in usable_surfaces for name in ("report_page", "attachment")
+        ) if surfaces else None,
         "feeds": feeds,
         "structuredFeeds": [feed for feed in feeds if feed.get("structured")],
         "access": access,

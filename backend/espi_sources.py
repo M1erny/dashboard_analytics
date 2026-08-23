@@ -718,13 +718,14 @@ def fetch_page_diagnostics(url: str, timeout: float = DEFAULT_LISTING_TIMEOUT) -
             "error": f"{type(exc).__name__}: {str(exc)[:300]}",
         }
 
-    return {
+    content_type = response.headers.get("content-type", "")
+    base = {
         "requestedUrl": url,
         "reached": True,
         "status": response.status_code,
         "finalUrl": str(response.url),
         "redirected": str(response.url) != url,
-        "contentType": response.headers.get("content-type", ""),
+        "contentType": content_type,
         "server": response.headers.get("server", ""),
         # Imperva names itself in a response header more reliably than in the body.
         "setCookieNames": sorted({
@@ -732,8 +733,12 @@ def fetch_page_diagnostics(url: str, timeout: float = DEFAULT_LISTING_TIMEOUT) -
             for cookie in response.headers.get_list("set-cookie")
         })[:10],
         "userAgentSent": USER_AGENT,
-        **page_fingerprint(response.text),
     }
+    # A PDF is not a page, and running the HTML fingerprint over its bytes would
+    # report "not a results page" about a file that arrived perfectly.
+    if content_type and not any(kind in content_type for kind in ("html", "xml", "json", "text/plain")):
+        return {**base, "binary": True, "bytes": len(response.content), "isResultsPage": None}
+    return {**base, "binary": False, **page_fingerprint(response.text)}
 
 
 def fetch_listing(
@@ -840,6 +845,43 @@ FEED_CANDIDATES = (
     ("view_xml", "/wyszukiwarka.xml"),
     ("sitemap", "/sitemap.xml"),
 )
+
+
+# The three surfaces the feature needs, kept separate because they can fail
+# independently. Bot protection is often heavier on a search than on a static
+# file, so "the digest is dead" and "importing a pasted report is dead" are two
+# different findings - and the second was claimed to work without ever being run.
+ACCESS_SURFACES = (
+    ("search_listing", "/wyszukiwarka?search=XTB&page=0"),
+    ("report_page", "/node/733373"),
+    ("attachment", "/download/attachment/735217/zal02_Sprawozdanie_finansowe_30_06_2026.pdf"),
+)
+
+
+def probe_access_surfaces(timeout: float = DEFAULT_LISTING_TIMEOUT) -> list[dict]:
+    """Whether this host can fetch a listing, a report page and an attachment."""
+    results = []
+    for name, path in ACCESS_SURFACES:
+        info = fetch_page_diagnostics(f"{PAP_BASE}{path}", timeout=timeout)
+        usable = bool(
+            info.get("reached")
+            and info.get("status") == 200
+            and not info.get("challengeMarker")
+            and (info.get("binary") or info.get("isResultsPage") or name != "search_listing")
+        )
+        results.append({
+            "name": name,
+            "path": path,
+            "status": info.get("status"),
+            "contentType": str(info.get("contentType") or "")[:80],
+            "bytes": info.get("bytes"),
+            "challengeMarker": info.get("challengeMarker"),
+            "title": info.get("title"),
+            "isResultsPage": info.get("isResultsPage"),
+            "usable": usable,
+            "error": info.get("error"),
+        })
+    return results
 
 
 def probe_feed_candidates(timeout: float = DEFAULT_LISTING_TIMEOUT) -> list[dict]:

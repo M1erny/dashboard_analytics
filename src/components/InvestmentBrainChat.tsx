@@ -265,6 +265,20 @@ type EspiDiagnosis = {
         error?: string;
     }>;
     structuredFeeds?: Array<{ name: string; path: string }>;
+    surfaces?: Array<{
+        name: string;
+        path: string;
+        status?: number;
+        contentType?: string;
+        bytes?: number;
+        challengeMarker?: string | null;
+        usable?: boolean;
+        error?: string;
+    }>;
+    usableSurfaces?: string[];
+    // Pasting a report URL needs only the node page and the attachment, so it can
+    // work while the digest's search does not.
+    importPathUsable?: boolean | null;
 };
 
 type EspiIssuerCandidate = {
@@ -2390,6 +2404,25 @@ export const InvestmentBrainChat: React.FC = () => {
                                                     {espiDiagnosis.listing?.snippet && (
                                                         <p className="rounded border border-white/[0.06] bg-black/30 p-2 font-mono text-[9px] leading-4 text-slate-500">{espiDiagnosis.listing.snippet}</p>
                                                     )}
+                                                    {espiDiagnosis.surfaces?.length ? (
+                                                        <div>
+                                                            <p className="mb-1 text-[10px] font-bold uppercase tracking-[0.08em] text-slate-500">
+                                                                What this server can fetch
+                                                                {espiDiagnosis.importPathUsable === true ? ' — pasting a report URL still works' : espiDiagnosis.importPathUsable === false ? ' — pasting a report URL does not work either' : ''}
+                                                            </p>
+                                                            <ul className="space-y-0.5">
+                                                                {espiDiagnosis.surfaces.map(surface => (
+                                                                    <li key={surface.name} className="flex items-center gap-2">
+                                                                        <span className="w-28 shrink-0 truncate text-slate-500">{surface.name.replace(/_/g, ' ')}</span>
+                                                                        <span className={cn('w-8 shrink-0', surface.status === 200 ? 'text-emerald-300' : 'text-rose-300')}>{surface.status ?? '—'}</span>
+                                                                        <span className={cn('min-w-0 flex-1 truncate', surface.usable ? 'text-emerald-300' : 'text-rose-300')}>
+                                                                            {surface.usable ? (surface.contentType || 'ok') : (surface.challengeMarker || surface.error || 'refused')}
+                                                                        </span>
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                        </div>
+                                                    ) : null}
                                                     {/* A structured endpoint would remove the scraping and the bot check together. */}
                                                     {espiDiagnosis.feeds?.length ? (
                                                         <div>
