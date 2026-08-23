@@ -65,7 +65,16 @@ try:
         index_drive_folder,
         parse_drive_folder_id,
     )
-    from gemini_client import GeminiClient, load_backend_env
+    from gemini_client import (
+        IMPORTANT_TIER,
+        STANDARD_TIER,
+        TASK_TIERS,
+        VALID_THINKING_LEVELS,
+        GeminiClient,
+        clean_model_id,
+        load_backend_env,
+        resolve_thinking_level,
+    )
     from github_client import GitHubClient
     from code_agent import code_agent_settings, propose_code_change
     from drive_coverage import build_coverage_report
@@ -91,6 +100,12 @@ except ImportError as e:
     parse_drive_folder_id = None
     GeminiClient = None
     load_backend_env = None
+    clean_model_id = None
+    resolve_thinking_level = None
+    STANDARD_TIER = "standard"
+    IMPORTANT_TIER = "important"
+    TASK_TIERS = (STANDARD_TIER, IMPORTANT_TIER)
+    VALID_THINKING_LEVELS = {"minimal", "low", "medium", "high"}
     GitHubClient = None
     code_agent_settings = None
     propose_code_change = None
@@ -158,6 +173,11 @@ BRAIN_ESPI_TIMEOUT_SECONDS = max(5.0, min(_env_float("BRAIN_ESPI_TIMEOUT_SECONDS
 BRAIN_ESPI_MAX_PAGES = max(1, min(_env_int("BRAIN_ESPI_MAX_PAGES", 3), 10))
 BRAIN_ESPI_DIGEST_MAX_DAYS = max(1, min(_env_int("BRAIN_ESPI_DIGEST_MAX_DAYS", 30), 120))
 ESPI_ISSUER_NAMES_SETTING = "brain.espi_issuer_names.v1"
+MODEL_ROUTING_SETTING = "brain.model_routing.v1"
+# Google renames and retires models faster than this file changes, so the picker
+# is filled from the live catalogue rather than a constant. It is cached because a
+# free-tier instance should not spend a round trip on it every time a panel opens.
+MODEL_LIST_CACHE_SECONDS = max(60.0, min(_env_float("BRAIN_MODEL_LIST_CACHE_SECONDS", 900.0), 86400.0))
 # The market-data fetch is the slowest thing an analysis can wait on: a cold yfinance
 # pull behind get_metrics. Unbounded, it can outlast whatever patience the host has for
 # an open connection, and the question dies with no response at all. Bounded, the worst
@@ -1163,6 +1183,19 @@ class BrainCompanyAnalysisRequest(BaseModel):
     exchangeId: str | None = Field(default=None, min_length=8, max_length=100)
     threadTitle: str | None = Field(default=None, max_length=160)
     autoSave: bool = True
+    # Which tier answers this one question. Anything unrecognised falls back to
+    # the standard tier rather than erroring, so an older client keeps working.
+    tier: str | None = Field(default=None, max_length=20)
+
+
+class BrainModelChoice(BaseModel):
+    model: str | None = Field(default=None, max_length=140)
+    thinkingLevel: str | None = Field(default=None, max_length=20)
+
+
+class BrainModelRoutingRequest(BaseModel):
+    standard: BrainModelChoice | None = None
+    important: BrainModelChoice | None = None
 
 
 def _validate_brain_identifier(value: str, label: str) -> str:
@@ -1428,11 +1461,186 @@ async def get_brain_status():
     return payload
 
 
+_model_list_cache: dict[str, Any] = {"fetchedAt": 0.0, "models": [], "error": None}
+
+
+def _parse_model_routing(raw: str | None) -> dict[str, dict[str, str]]:
+    """Read the saved tier routing, discarding anything that no longer parses.
+
+    A malformed or half-written setting must fall back to the environment
+    defaults rather than raise: the Brain answering with the default model beats
+    the Brain refusing to answer.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    routing: dict[str, dict[str, str]] = {}
+    for tier in TASK_TIERS:
+        entry = parsed.get(tier)
+        if not isinstance(entry, dict):
+            continue
+        clean: dict[str, str] = {}
+        try:
+            if entry.get("model"):
+                clean["model"] = clean_model_id(entry.get("model"), label=f"{tier} model")
+        except ValueError:
+            clean.pop("model", None)
+        level = str(entry.get("thinkingLevel") or "").strip().lower()
+        if level in VALID_THINKING_LEVELS:
+            clean["thinkingLevel"] = level
+        if clean:
+            routing[tier] = clean
+    return routing
+
+
+def _merge_model_routing(saved: dict[str, dict[str, str]]) -> dict[str, dict[str, Any]]:
+    """Resolve each tier to the model that will actually be called, and say why.
+
+    Precedence is saved choice, then environment, then the built-in default: a
+    picker whose selection an env var could silently override would be a lie.
+    """
+    defaults = gemini_client.routing_defaults() if gemini_client else {}
+    resolved: dict[str, dict[str, Any]] = {}
+    for tier in TASK_TIERS:
+        fallback = defaults.get(tier) or {}
+        entry = saved.get(tier) or {}
+        model = entry.get("model") or fallback.get("model")
+        level = entry.get("thinkingLevel") or fallback.get("thinkingLevel")
+        resolved[tier] = {
+            "model": model,
+            "thinkingLevel": (
+                resolve_thinking_level(model, level) if resolve_thinking_level and model else level
+            ),
+            "source": "saved" if entry.get("model") else "environment",
+            "thinkingLevelSource": "saved" if entry.get("thinkingLevel") else "environment",
+        }
+    return resolved
+
+
+async def _model_routing(store: Any | None = None) -> dict[str, dict[str, Any]]:
+    saved: dict[str, dict[str, str]] = {}
+    if store is not None and hasattr(store, "get_setting"):
+        try:
+            raw = await _run_brain_step(
+                "Model routing lookup",
+                store.get_setting,
+                MODEL_ROUTING_SETTING,
+                timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+            )
+            saved = _parse_model_routing(raw)
+        except Exception:
+            # A settings read that fails must not take the answer down with it.
+            saved = {}
+    return _merge_model_routing(saved)
+
+
+def _resolve_task_tier(value: str | None) -> str:
+    clean = str(value or "").strip().lower()
+    return clean if clean in TASK_TIERS else STANDARD_TIER
+
+
+async def _cached_model_catalogue(*, refresh: bool = False) -> dict[str, Any]:
+    now = time.time()
+    fresh = (now - float(_model_list_cache["fetchedAt"] or 0)) < MODEL_LIST_CACHE_SECONDS
+    if not refresh and fresh and _model_list_cache["models"]:
+        return {"models": _model_list_cache["models"], "error": _model_list_cache["error"], "cached": True}
+
+    try:
+        models = await _run_brain_step(
+            "Gemini model catalogue",
+            gemini_client.list_models,
+            timeout=30.0,
+        )
+        _model_list_cache.update({"fetchedAt": now, "models": models, "error": None})
+        return {"models": models, "error": None, "cached": False}
+    except Exception as e:
+        error = _public_exception_reason(e)[:300]
+        # Keep whatever was listed before: a picker with a stale catalogue and a
+        # visible warning is more use than an empty one.
+        _model_list_cache["error"] = error
+        return {"models": _model_list_cache["models"], "error": error, "cached": bool(_model_list_cache["models"])}
+
+
 @app.get("/api/brain/llm/status")
 async def get_brain_llm_status():
     if not gemini_client:
         return {"configured": False, "provider": None}
-    return gemini_client.status()
+    store = brain_store if brain_store else None
+    return {**gemini_client.status(), "routing": await _model_routing(store)}
+
+
+@app.get("/api/brain/llm/models")
+async def get_brain_llm_models(refresh: bool = False):
+    """The models this API key can generate with, plus which one answers what."""
+    if not gemini_client or not gemini_client.configured:
+        raise HTTPException(status_code=503, detail="Google AI API key is not configured")
+    store = brain_store if brain_store else None
+    catalogue = await _cached_model_catalogue(refresh=refresh)
+    return {
+        "models": catalogue["models"],
+        "catalogueError": catalogue["error"],
+        "cached": catalogue["cached"],
+        "routing": await _model_routing(store),
+        "tiers": list(TASK_TIERS),
+        "thinkingLevels": sorted(VALID_THINKING_LEVELS),
+        "defaults": gemini_client.routing_defaults(),
+    }
+
+
+@app.put("/api/brain/llm/routing")
+async def update_brain_llm_routing(payload: BrainModelRoutingRequest):
+    store = _brain_or_503()
+    if not hasattr(store, "set_setting"):
+        raise HTTPException(status_code=503, detail="Brain settings are not available")
+    if not gemini_client:
+        raise HTTPException(status_code=503, detail="Gemini client is not available")
+
+    catalogue = await _cached_model_catalogue()
+    known = {model["id"] for model in catalogue["models"]}
+    chosen: dict[str, dict[str, str]] = {}
+    for tier, entry in (("standard", payload.standard), ("important", payload.important)):
+        if entry is None:
+            continue
+        clean: dict[str, str] = {}
+        if entry.model:
+            try:
+                model_id = clean_model_id(entry.model, label=f"{tier} model")
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            # An unreachable catalogue must not lock the setting: only reject a
+            # model when Google actually answered and did not list it.
+            if known and model_id not in known:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{model_id} is not one of the models this API key can generate with.",
+                )
+            clean["model"] = model_id
+        if entry.thinkingLevel:
+            level = entry.thinkingLevel.strip().lower()
+            if level not in VALID_THINKING_LEVELS:
+                raise HTTPException(status_code=400, detail=f"Unknown thinking level: {level}")
+            clean["thinkingLevel"] = level
+        if clean:
+            chosen[tier] = clean
+
+    await _run_brain_step(
+        "Model routing save",
+        store.set_setting,
+        MODEL_ROUTING_SETTING,
+        json.dumps(chosen),
+        timeout=BRAIN_SEARCH_TIMEOUT_SECONDS,
+    )
+    return {
+        "routing": _merge_model_routing(chosen),
+        "catalogueError": catalogue["error"],
+        "defaults": gemini_client.routing_defaults(),
+    }
 
 
 @app.get("/api/brain/embeddings/status")
@@ -1945,6 +2153,9 @@ async def propose_brain_code_change(payload: BrainCodeProposalRequest):
         raise HTTPException(status_code=503, detail="Self-build agent is not available")
 
     settings = code_agent_settings()
+    # Writing code is the important-task tier by definition, so it follows the
+    # model chosen for that tier instead of keeping a separate hidden default.
+    routing = (await _model_routing(brain_store))[IMPORTANT_TIER]
     try:
         return await _run_brain_step(
             "Brain self-build agent",
@@ -1955,6 +2166,8 @@ async def propose_brain_code_change(payload: BrainCodeProposalRequest):
             notes=payload.notes,
             open_pull_request=payload.openPullRequest,
             context_limit=payload.contextFiles,
+            model=routing["model"],
+            thinking_level=routing["thinkingLevel"],
             timeout=settings["planTimeoutSeconds"] + 120.0,
         )
     except ValueError as e:
@@ -3911,6 +4124,8 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     for identifier, label in ((payload.threadId, "threadId"), (payload.exchangeId, "exchangeId")):
         if identifier:
             _validate_brain_identifier(identifier, label)
+    task_tier = _resolve_task_tier(payload.tier)
+    tier_routing = (await _model_routing(store))[task_tier]
     conversation_history = _format_conversation_history(payload.conversation)
     prior_user_questions = " ".join(
         re.sub(r"\s+", " ", turn.content).strip()[:280]
@@ -4190,6 +4405,8 @@ Full-document sources are investor-selected primary context. They contain the fu
             temperature=0.2,
             max_output_tokens=1600,
             timeout_seconds=generation_timeout,
+            model=tier_routing["model"],
+            thinking_level=tier_routing["thinkingLevel"],
             timeout=generation_timeout + 1.0,
         )
     except Exception as e:
@@ -4199,7 +4416,9 @@ Full-document sources are investor-selected primary context. They contain the fu
         return {
             "ticker": ticker,
             "question": question,
-            "model": client.generation_model,
+            "model": tier_routing["model"],
+            "modelTier": task_tier,
+            "thinkingLevel": tier_routing["thinkingLevel"],
             "embeddingModel": client.embedding_model,
             "answer": _format_retrieval_fallback_answer(
                 error=e,
@@ -4283,7 +4502,9 @@ Full-document sources are investor-selected primary context. They contain the fu
     return {
         "ticker": ticker,
         "question": question,
-        "model": client.generation_model,
+        "model": tier_routing["model"],
+        "modelTier": task_tier,
+        "thinkingLevel": tier_routing["thinkingLevel"],
         "embeddingModel": client.embedding_model,
         "answer": answer,
         "timings": timings,

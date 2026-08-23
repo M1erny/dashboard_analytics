@@ -739,8 +739,15 @@ def propose_code_change(
     notes: str | None = None,
     open_pull_request: bool = True,
     context_limit: int | None = None,
+    model: str | None = None,
+    thinking_level: str | None = None,
 ) -> dict[str, Any]:
-    """Plan, validate, and (optionally) push a self-build change as a pull request."""
+    """Plan, validate, and (optionally) push a self-build change as a pull request.
+
+    A caller may override the model: writing code is the important-task tier, and
+    the dashboard lets its model be chosen there rather than only in the
+    environment. Falling back to BRAIN_CODE_MODEL keeps this callable on its own.
+    """
     clean_request = (request or "").strip()
     if not clean_request:
         raise ValueError("Describe the change you want before running the self-build agent.")
@@ -784,6 +791,11 @@ def propose_code_change(
         notes=notes,
     )
 
+    plan_model = (model or settings["model"]).strip()
+    plan_thinking_level = (thinking_level or settings["thinkingLevel"]).strip().lower()
+    timings["planModel"] = plan_model
+    timings["planThinkingLevel"] = plan_thinking_level
+
     plan_started = time.perf_counter()
     plan = gemini.generate_json(
         prompt,
@@ -792,8 +804,8 @@ def propose_code_change(
         temperature=0.15,
         max_output_tokens=settings["maxOutputTokens"],
         timeout_seconds=settings["planTimeoutSeconds"],
-        model=settings["model"],
-        thinking_level=settings["thinkingLevel"],
+        model=plan_model,
+        thinking_level=plan_thinking_level,
     )
     timings["planMs"] = round((time.perf_counter() - plan_started) * 1000, 1)
 

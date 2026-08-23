@@ -11,6 +11,7 @@ import {
     Cloud,
     Command,
     CornerDownLeft,
+    Cpu,
     Database,
     ExternalLink,
     FileSearch,
@@ -24,6 +25,7 @@ import {
     Search,
     Send,
     Sparkles,
+    Telescope,
     X,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
@@ -44,10 +46,40 @@ type EmbeddingStats = {
     coverage?: number;
 };
 
+type ModelTier = 'standard' | 'important';
+
+type ModelRoutingEntry = {
+    model?: string;
+    thinkingLevel?: string;
+    source?: 'saved' | 'environment';
+    thinkingLevelSource?: 'saved' | 'environment';
+};
+
+type ModelRouting = Record<ModelTier, ModelRoutingEntry>;
+
+type ModelOption = {
+    id: string;
+    label: string;
+    description?: string;
+    inputTokenLimit?: number | null;
+    outputTokenLimit?: number | null;
+    usesThinkingLevel?: boolean;
+};
+
+type ModelCatalogue = {
+    models?: ModelOption[];
+    catalogueError?: string | null;
+    cached?: boolean;
+    routing?: ModelRouting;
+    thinkingLevels?: string[];
+    defaults?: Record<string, { model?: string; thinkingLevel?: string }>;
+};
+
 type BrainLlmStatus = {
     configured: boolean;
     generationModel?: string;
     embeddingModel?: string;
+    routing?: ModelRouting;
 };
 
 type BrainStatus = {
@@ -259,6 +291,8 @@ type BrainBootstrapSnapshot = {
 type AnalysisResponse = {
     answer: string;
     model: string;
+    modelTier?: ModelTier;
+    thinkingLevel?: string;
     embeddingModel: string;
     context?: AnalysisContext;
     retrieval?: RetrievalDiagnostics;
@@ -690,15 +724,21 @@ const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { tone?: 
 
 type IconComponent = React.ComponentType<{ className?: string }>;
 
-type WorkbenchTab = 'library' | 'search' | 'filings' | 'drive' | 'code';
+type WorkbenchTab = 'library' | 'search' | 'filings' | 'drive' | 'model' | 'code';
 
 const WORKBENCH_TABS: Array<{ id: WorkbenchTab; label: string; short: string; icon: IconComponent }> = [
     { id: 'library', label: 'Library and index', short: 'Index', icon: Database },
     { id: 'search', label: 'Search sources', short: 'Search', icon: Search },
     { id: 'filings', label: 'Filing finder and imports', short: 'Filings', icon: FileSearch },
     { id: 'drive', label: 'Drive files and coverage', short: 'Drive', icon: CalendarClock },
+    { id: 'model', label: 'Models and reasoning', short: 'Model', icon: Cpu },
     { id: 'code', label: 'Self-build proposals', short: 'Code', icon: GitBranch },
 ];
+
+const TIER_COPY: Record<ModelTier, { title: string; blurb: string }> = {
+    standard: { title: 'Chat', blurb: 'Every ordinary question. Answered while you wait, so it favours speed.' },
+    important: { title: 'Important tasks', blurb: 'Deep questions and self-build code proposals. Allowed to think longer.' },
+};
 
 // Shown in shortcut hints. A Ctrl hint on a Mac is worse than no hint.
 const modKeyLabel = typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent) ? '⌘' : 'Ctrl+';
@@ -865,6 +905,11 @@ export const InvestmentBrainChat: React.FC = () => {
     const [isEspiLoading, setIsEspiLoading] = useState(false);
     const [espiOpenNode, setEspiOpenNode] = useState<string | null>(null);
     const [espiReports, setEspiReports] = useState<Record<string, EspiReport>>({});
+    const [catalogue, setCatalogue] = useState<ModelCatalogue | null>(null);
+    const [isCatalogueLoading, setIsCatalogueLoading] = useState(false);
+    // A question can be routed to the important tier without changing the saved
+    // default, so a one-off deep question does not make every answer slow.
+    const [deepMode, setDeepMode] = useState(false);
     const [agentSearch, setAgentSearch] = useState<AgentSearchResponse | null>(null);
     const [isAgentWorking, setIsAgentWorking] = useState(false);
     const outputRef = useRef<HTMLDivElement | null>(null);
@@ -959,6 +1004,11 @@ export const InvestmentBrainChat: React.FC = () => {
     const embeddings = status?.embeddings ?? {};
     const allEmbedded = (embeddings.missing ?? 0) === 0 && (embeddings.total ?? counts.chunks ?? 0) > 0;
     const libraryState = !ready ? 'Offline' : !drive?.connected ? 'Drive needs access' : !allEmbedded ? 'Embedding pending' : 'Library ready';
+    // The panel's own copy is fresher once a save lands, but the status payload is
+    // what is available before the panel has ever been opened.
+    const routing = catalogue?.routing ?? status?.llm?.routing;
+    const importantModelLabel = routing?.important?.model;
+    const activeModelLabel = (deepMode ? routing?.important?.model : routing?.standard?.model) ?? status?.llm?.generationModel;
     const displayedExposure = portfolioContext?.marketDataAvailable
         ? portfolioContext.exposure?.currentDrifted
         : portfolioContext?.exposure?.target;
@@ -1015,6 +1065,7 @@ export const InvestmentBrainChat: React.FC = () => {
                     exchangeId,
                     threadTitle: priorConversation.find(message => message.role === 'user')?.content ?? question,
                     autoSave: true,
+                    tier: deepMode ? 'important' : 'standard',
                 }),
             }, askTimeoutMs(fullContextSources.length));
             if (!response.ok) throw new Error(await errorText(response, 'The Brain could not complete this question.'));
@@ -1044,7 +1095,11 @@ export const InvestmentBrainChat: React.FC = () => {
                 : payload.autosave?.status === 'failed' || payload.autosave?.status === 'unavailable'
                     ? ' Answer completed, but Drive autosave needs attention.'
                     : '';
-            const answeredBy = payload.model ? `${payload.model} answered` : 'Answered';
+            // Name the tier as well as the model: with one model on both tiers the
+            // only difference is how long it thought, and that is worth seeing.
+            const answeredBy = payload.model
+                ? `${payload.model}${payload.modelTier === 'important' ? ` (deep${payload.thinkingLevel ? `, ${payload.thinkingLevel} thinking` : ''})` : ''} answered`
+                : 'Answered';
             const answeredIn = payload.timings?.totalMs ? ` in ${formatSeconds(payload.timings.totalMs)}` : '';
             setNotice(`${answeredBy}${answeredIn}${liveBook}${fullDocumentCount ? ` and ${fullDocumentCount} full document${fullDocumentCount === 1 ? '' : 's'} in context` : readCount ? ` after reading ${readCount} source file${readCount === 1 ? '' : 's'}` : ''}.${saveNote}`);
         } catch (error) {
@@ -1131,6 +1186,51 @@ export const InvestmentBrainChat: React.FC = () => {
             setNotice('Embedding is running in the background. Search remains available while it finishes.');
         } catch (error) {
             setNotice(error instanceof Error ? error.message : 'Embedding job could not start.');
+        }
+    };
+
+    const loadModelCatalogue = useCallback(async (refresh = false) => {
+        setIsCatalogueLoading(true);
+        try {
+            const response = await request(api(`/api/brain/llm/models${refresh ? '?refresh=true' : ''}`), {}, 35000);
+            if (!response.ok) throw new Error(await errorText(response, 'The model list could not be read.'));
+            const payload = await response.json() as ModelCatalogue;
+            setCatalogue(payload);
+            if (payload.catalogueError) setNotice(`Google would not list the models: ${payload.catalogueError}`);
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'The model list could not be read.');
+        } finally {
+            setIsCatalogueLoading(false);
+        }
+        // request and errorText are stable helpers defined outside this component.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const saveRouting = async (tier: ModelTier, patch: { model?: string; thinkingLevel?: string }) => {
+        const current = catalogue?.routing;
+        if (!current) return;
+        // The whole routing is sent every time, so a saved choice for the other
+        // tier is never dropped by an update that only mentions one of them.
+        const next: Record<ModelTier, { model?: string; thinkingLevel?: string }> = {
+            standard: { model: current.standard?.model, thinkingLevel: current.standard?.thinkingLevel },
+            important: { model: current.important?.model, thinkingLevel: current.important?.thinkingLevel },
+        };
+        next[tier] = { ...next[tier], ...patch };
+        setNotice('Saving the model routing...');
+        try {
+            const response = await request(api('/api/brain/llm/routing'), {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(next),
+            }, 20000);
+            if (!response.ok) throw new Error(await errorText(response, 'The model routing could not be saved.'));
+            const payload = await response.json() as ModelCatalogue;
+            setCatalogue(current_ => (current_ ? { ...current_, routing: payload.routing } : current_));
+            const saved = payload.routing?.[tier];
+            setNotice(`${TIER_COPY[tier].title} now uses ${saved?.model ?? 'the default model'}${saved?.thinkingLevel ? ` at ${saved.thinkingLevel} thinking` : ''}.`);
+            await refresh();
+        } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'The model routing could not be saved.');
         }
     };
 
@@ -1547,6 +1647,14 @@ export const InvestmentBrainChat: React.FC = () => {
 
     const togglePanel = (tab: WorkbenchTab) => setPanelTab(current => (current === tab ? null : tab));
 
+    // Listing models costs a Google round trip, so it waits until the panel that
+    // needs it is actually open rather than spending it on every page load.
+    useEffect(() => {
+        if (panelTab !== 'model' || !ready || catalogue || isCatalogueLoading) return;
+        void loadModelCatalogue();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [panelTab, ready, catalogue]);
+
     // The rail needs a name for the open thread before the transcript has one.
     const firstQuestion = thread.find(message => message.role === 'user')?.content.trim();
     const threadTitle = firstQuestion ? excerpt(firstQuestion, 64) : 'New thread';
@@ -1572,6 +1680,8 @@ export const InvestmentBrainChat: React.FC = () => {
             { id: 'embed', label: `Embed missing passages${embeddings.missing ? ` (${formatCount(embeddings.missing)})` : ''}`, group: 'Library', icon: Sparkles, disabled: !ready || (embeddings.missing ?? 0) === 0, run: () => void embedMissing() },
             { id: 'files-by-date', label: 'Drive files by upload date', group: 'Drive', icon: CalendarClock, run: () => setPanelTab('drive') },
             { id: 'sync', label: drive?.connected ? 'Sync Drive' : 'Connect Google Drive', group: 'Drive', icon: drive?.connected ? FolderSync : Cloud, disabled: !ready, run: () => void (drive?.connected ? syncDrive() : connectDrive()) },
+            { id: 'models', label: 'Choose the models', group: 'View', icon: Cpu, hint: activeModelLabel ? `Chat: ${routing?.standard?.model ?? 'default'} · Important: ${routing?.important?.model ?? 'default'}` : undefined, run: () => setPanelTab('model') },
+            { id: 'deep', label: deepMode ? 'Send the next question to the chat model' : 'Send the next question to the important-task model', group: 'Context', icon: Telescope, run: () => setDeepMode(deep => !deep) },
             { id: 'self-build', label: 'Self-build proposals', group: 'Code', icon: GitBranch, run: () => setPanelTab('code') },
             { id: 'refresh', label: 'Refresh Brain status', group: 'View', icon: RefreshCw, run: () => void refresh() },
             { id: 'rail', label: isRailOpen ? 'Hide the thread rail' : 'Show the thread rail', group: 'View', icon: PanelLeft, run: () => setIsRailOpen(open => !open) },
@@ -1582,7 +1692,7 @@ export const InvestmentBrainChat: React.FC = () => {
         }
         return commands;
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [ready, isAsking, isSavedThreadsLoading, referenceSources, fullContextSources, systemPrompt, embeddings.missing, drive?.connected, drive?.folderUrl, isRailOpen]);
+    }, [ready, isAsking, isSavedThreadsLoading, referenceSources, fullContextSources, systemPrompt, embeddings.missing, drive?.connected, drive?.folderUrl, isRailOpen, deepMode, activeModelLabel, routing?.standard?.model, routing?.important?.model]);
 
     const paletteMatches = useMemo(() => {
         const query = paletteQuery.trim().toLowerCase();
@@ -1806,6 +1916,18 @@ export const InvestmentBrainChat: React.FC = () => {
                                 </ContextChip>
                                 <ContextChip onClick={() => void openSystemPrompt()} disabled={!ready} active={Boolean(systemPrompt)} tone="amber" icon={Sparkles} title={systemPrompt ? excerpt(systemPrompt, 240) : 'Default research instructions'}>
                                     Prompt
+                                </ContextChip>
+                                <ContextChip
+                                    onClick={() => setDeepMode(deep => !deep)}
+                                    disabled={!ready}
+                                    active={deepMode}
+                                    tone="violet"
+                                    icon={Telescope}
+                                    title={deepMode
+                                        ? `This question goes to the important-task model${importantModelLabel ? ` (${importantModelLabel})` : ''}, which thinks longer`
+                                        : `Send this question to the important-task model${importantModelLabel ? ` (${importantModelLabel})` : ''} instead of the chat model`}
+                                >
+                                    Deep
                                 </ContextChip>
                                 <ContextChip onClick={() => { setPaletteQuery(''); setIsPaletteOpen(true); }} tone="slate" icon={Command} title={`All Brain commands (${modKeyLabel}K)`}>
                                     Tools
@@ -2144,6 +2266,79 @@ export const InvestmentBrainChat: React.FC = () => {
                                     </>
                                 )}
 
+                                {panelTab === 'model' && (
+                                    <PanelSection
+                                        icon={Cpu}
+                                        tone="text-violet-300"
+                                        title="Models"
+                                        action={<IconButton onClick={() => void loadModelCatalogue(true)} label="Reload the model list from Google"><RefreshCw className={cn('h-3.5 w-3.5', isCatalogueLoading && 'animate-spin')} /></IconButton>}
+                                    >
+                                        {isCatalogueLoading && !catalogue ? (
+                                            <p className="text-xs text-slate-500">Asking Google which models this key can use...</p>
+                                        ) : !catalogue ? (
+                                            <p className="text-xs text-slate-500">The model list is unavailable.</p>
+                                        ) : (
+                                            <div className="space-y-5">
+                                                {catalogue.catalogueError && (
+                                                    <p className="text-xs leading-5 text-amber-300">
+                                                        Google would not list the models{catalogue.models?.length ? ', so this is the last list that came back' : ''}: {catalogue.catalogueError}
+                                                    </p>
+                                                )}
+                                                {(['standard', 'important'] as ModelTier[]).map(tier => {
+                                                    const entry = catalogue.routing?.[tier];
+                                                    const options = catalogue.models ?? [];
+                                                    // A model saved before it left the catalogue must stay
+                                                    // selectable, or opening this panel would silently
+                                                    // reassign it on the next save.
+                                                    const missing = entry?.model && !options.some(option => option.id === entry.model) ? entry.model : null;
+                                                    return (
+                                                        <div key={tier} className="space-y-2">
+                                                            <div>
+                                                                <p className="text-[11px] font-semibold text-white">{TIER_COPY[tier].title}</p>
+                                                                <p className="mt-0.5 text-[10px] leading-4 text-slate-500">{TIER_COPY[tier].blurb}</p>
+                                                            </div>
+                                                            <label className="block">
+                                                                <span className="sr-only">{TIER_COPY[tier].title} model</span>
+                                                                <select
+                                                                    value={entry?.model ?? ''}
+                                                                    onChange={event => void saveRouting(tier, { model: event.target.value })}
+                                                                    className="w-full rounded-md border border-white/[0.1] bg-black/30 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-violet-500/40"
+                                                                >
+                                                                    {missing && <option value={missing}>{missing} (not in the current list)</option>}
+                                                                    {options.map(option => (
+                                                                        <option key={option.id} value={option.id}>{option.id}</option>
+                                                                    ))}
+                                                                </select>
+                                                            </label>
+                                                            <label className="flex items-center gap-2">
+                                                                <span className="shrink-0 text-[10px] uppercase tracking-[0.08em] text-slate-500">Thinking</span>
+                                                                <select
+                                                                    value={entry?.thinkingLevel ?? ''}
+                                                                    onChange={event => void saveRouting(tier, { thinkingLevel: event.target.value })}
+                                                                    className="flex-1 rounded-md border border-white/[0.1] bg-black/30 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-violet-500/40"
+                                                                >
+                                                                    {(catalogue.thinkingLevels ?? ['low', 'medium', 'high']).map(level => (
+                                                                        <option key={level} value={level}>{level}</option>
+                                                                    ))}
+                                                                </select>
+                                                            </label>
+                                                            <p className="text-[10px] text-slate-600">
+                                                                {entry?.source === 'saved' ? 'Chosen here' : 'From the server environment'}
+                                                                {entry?.model && catalogue.models?.find(option => option.id === entry.model)?.label
+                                                                    ? ` · ${catalogue.models.find(option => option.id === entry.model)?.label}`
+                                                                    : ''}
+                                                            </p>
+                                                        </div>
+                                                    );
+                                                })}
+                                                <p className="border-t border-white/[0.06] pt-3 text-[10px] leading-4 text-slate-600">
+                                                    The list comes from Google, not from this app, so a model appears here as soon as your key can call it. A choice made here overrides the server environment.
+                                                </p>
+                                            </div>
+                                        )}
+                                    </PanelSection>
+                                )}
+
                                 {panelTab === 'code' && <BrainSelfBuild disabled={backendState !== 'ready'} />}
                             </div>
                         </aside>
@@ -2163,6 +2358,11 @@ export const InvestmentBrainChat: React.FC = () => {
                 {portfolioContext && (
                     <button type="button" onClick={() => setPanelTab('library')} className="hidden shrink-0 transition-colors hover:text-slate-200 md:inline">
                         {portfolioContext.positionCount ?? 0} positions · {formatPercent(displayedExposure?.gross)} {portfolioContext.marketDataAvailable ? 'gross' : 'target gross'}
+                    </button>
+                )}
+                {activeModelLabel && (
+                    <button type="button" onClick={() => setPanelTab('model')} className="hidden shrink-0 truncate transition-colors hover:text-slate-200 lg:inline" title={deepMode ? 'Important-task model, chosen for this question' : 'Chat model. Toggle Deep in the composer for the important-task model.'}>
+                        {deepMode ? 'Deep · ' : ''}{activeModelLabel}
                     </button>
                 )}
                 {conversationAutosave?.status === 'failed' || conversationAutosave?.status === 'unavailable' ? (
