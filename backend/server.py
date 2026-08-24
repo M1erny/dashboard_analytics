@@ -4532,6 +4532,93 @@ async def get_espi_search(
 
 
 
+@app.get("/api/brain/espi/diagnose")
+async def diagnose_espi_access(q: str = "XTB", probeFeeds: bool = True):
+    """What this server actually receives from PAP, and whether a data feed exists.
+
+    Every ESPI failure so far was diagnosed from a page saved in a browser, which
+    had already passed the bot check and so could never show why the server's own
+    request failed. This reports the server's view instead.
+    """
+    _brain_or_503()
+    if not espi_sources:
+        raise HTTPException(status_code=503, detail="The Polish filings module is not available")
+
+    query = re.sub(r"\s+", " ", str(q or "")).strip()[:120] or "XTB"
+    listing_url = espi_sources.search_url(query=query, page=0)
+    try:
+        listing = await asyncio.wait_for(
+            run_in_threadpool(espi_sources.fetch_page_diagnostics, listing_url, BRAIN_ESPI_TIMEOUT_SECONDS),
+            timeout=BRAIN_ESPI_TIMEOUT_SECONDS + 10,
+        )
+    except asyncio.TimeoutError:
+        listing = {"requestedUrl": listing_url, "reached": False, "error": "timed out"}
+
+    try:
+        surfaces = await asyncio.wait_for(
+            run_in_threadpool(espi_sources.probe_access_surfaces, BRAIN_ESPI_TIMEOUT_SECONDS),
+            timeout=BRAIN_ESPI_TIMEOUT_SECONDS * len(espi_sources.ACCESS_SURFACES) + 15,
+        )
+    except asyncio.TimeoutError:
+        surfaces = []
+
+    feeds: list[dict[str, Any]] = []
+    if probeFeeds:
+        try:
+            feeds = await asyncio.wait_for(
+                run_in_threadpool(espi_sources.probe_feed_candidates, BRAIN_ESPI_TIMEOUT_SECONDS),
+                timeout=BRAIN_ESPI_TIMEOUT_SECONDS * len(espi_sources.FEED_CANDIDATES) + 15,
+            )
+        except asyncio.TimeoutError:
+            feeds = []
+
+    # Three outcomes, not two. A request that never left the host is not the same
+    # as one PAP answered, and reporting "PAP returned the listing" for it would be
+    # the same false reassurance this endpoint exists to remove.
+    if not listing.get("reached"):
+        access = "unreachable"
+        verdict = (
+            f"The request never reached {espi_sources.PAP_BASE} from this host "
+            f"({listing.get('error') or 'no response'}), so nothing can be said about PAP itself."
+        )
+    elif listing.get("challengeMarker"):
+        access = "challenged"
+        verdict = (
+            f"PAP answered {listing.get('status')} with a bot-protection interstitial "
+            f"(marker '{listing.get('challengeMarker')}'), not the listing. Scraping from this host cannot work."
+        )
+    elif not listing.get("isResultsPage"):
+        access = "wrong_page"
+        verdict = (
+            f"PAP answered {listing.get('status')} with a page that is not the search view "
+            f"(title {listing.get('title')!r}). Either the path moved or the request was diverted."
+        )
+    else:
+        access = "ok"
+        verdict = f"PAP returned the search listing to this host ({listing.get('status')})."
+
+    usable_surfaces = [surface["name"] for surface in surfaces if surface.get("usable")]
+    return {
+        "query": query,
+        "listing": listing,
+        "surfaces": surfaces,
+        "usableSurfaces": usable_surfaces,
+        # Importing a pasted report needs only the node page and the attachment.
+        # It was claimed to work without ever being run, so it is reported apart
+        # from the digest rather than folded into one pass/fail.
+        "importPathUsable": all(
+            name in usable_surfaces for name in ("report_page", "attachment")
+        ) if surfaces else None,
+        "feeds": feeds,
+        "structuredFeeds": [feed for feed in feeds if feed.get("structured")],
+        "access": access,
+        # Kept for the UI's badge: only a reached-but-refused page is "blocked".
+        "blocked": access in ("challenged", "wrong_page"),
+        "reached": bool(listing.get("reached")),
+        "verdict": verdict,
+    }
+
+
 @app.get("/api/brain/espi/report/{node_id}")
 async def get_espi_report(node_id: str):
     """One report: its type, issuer identity, attachments and selected financials."""

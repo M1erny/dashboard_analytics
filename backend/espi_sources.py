@@ -650,6 +650,47 @@ DEFAULT_MAX_PAGES = 3
 USER_AGENT = "dashboard-analytics-brain/1.0 (portfolio research; contact via repository)"
 
 
+# Markers of an interstitial served instead of the page that was asked for. PAP
+# sits behind Imperva, and its challenge answers 200 with a body that is not the
+# site - so the status code cannot be what tells us, and "no ul.newsList" on its
+# own reads as a layout change when the real answer is "we never got the page".
+CHALLENGE_MARKERS = (
+    "_Incapsula_Resource",
+    "incap_ses",
+    "visid_incap",
+    "Request unsuccessful",
+    "Incident ID",
+    "Imperva",
+    "cf-browser-verification",
+    "Just a moment",
+    "captcha",
+)
+
+
+def page_fingerprint(text: str) -> dict:
+    """Enough about a page to say what it is without printing the whole thing.
+
+    Every failure so far has been diagnosed from a saved browser page, which by
+    definition already passed the bot check. This is the equivalent taken from
+    wherever the request actually ran.
+    """
+    body = text or ""
+    title = ""
+    match = re.search(r"<title[^>]*>(.*?)</title>", body, re.S | re.I)
+    if match:
+        title = _clean(re.sub(r"\s+", " ", match.group(1)))[:200]
+    challenge = next((marker for marker in CHALLENGE_MARKERS if marker in body), None)
+    return {
+        "bytes": len(body),
+        "title": title,
+        "isResultsPage": any(marker in body for marker in SEARCH_PAGE_MARKERS),
+        "hasNewsList": "newsList" in body,
+        "challengeMarker": challenge,
+        # First non-empty text, which is what a challenge page usually says.
+        "snippet": _clean(re.sub(r"<[^>]+>", " ", body))[:300],
+    }
+
+
 def _get(url: str, timeout: float) -> str:
     import httpx
 
@@ -657,6 +698,47 @@ def _get(url: str, timeout: float) -> str:
         response = client.get(url, headers={"User-Agent": USER_AGENT})
         response.raise_for_status()
         return response.text
+
+
+def fetch_page_diagnostics(url: str, timeout: float = DEFAULT_LISTING_TIMEOUT) -> dict:
+    """What this host receives for `url`, without parsing or raising on status.
+
+    Deliberately separate from `_get`: the point is to report a refusal, so it
+    must not turn one into an exception.
+    """
+    import httpx
+
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            response = client.get(url, headers={"User-Agent": USER_AGENT})
+    except Exception as exc:
+        return {
+            "requestedUrl": url,
+            "reached": False,
+            "error": f"{type(exc).__name__}: {str(exc)[:300]}",
+        }
+
+    content_type = response.headers.get("content-type", "")
+    base = {
+        "requestedUrl": url,
+        "reached": True,
+        "status": response.status_code,
+        "finalUrl": str(response.url),
+        "redirected": str(response.url) != url,
+        "contentType": content_type,
+        "server": response.headers.get("server", ""),
+        # Imperva names itself in a response header more reliably than in the body.
+        "setCookieNames": sorted({
+            cookie.split("=", 1)[0].strip()
+            for cookie in response.headers.get_list("set-cookie")
+        })[:10],
+        "userAgentSent": USER_AGENT,
+    }
+    # A PDF is not a page, and running the HTML fingerprint over its bytes would
+    # report "not a results page" about a file that arrived perfectly.
+    if content_type and not any(kind in content_type for kind in ("html", "xml", "json", "text/plain")):
+        return {**base, "binary": True, "bytes": len(response.content), "isResultsPage": None}
+    return {**base, "binary": False, **page_fingerprint(response.text)}
 
 
 def fetch_listing(
@@ -685,7 +767,21 @@ def fetch_listing(
         truncated = False
         for page in range(pages):
             url = search_url(query=phrase, start=start, end=end, page=page)
-            page_entries = parse_listing(fetcher(url))
+            body = fetcher(url)
+            try:
+                page_entries = parse_listing(body)
+            except EspiParseError as error:
+                # Say what came back instead. "The layout changed" was a guess
+                # that sent the owner after a parser bug when the page had never
+                # arrived, and the evidence was sitting in the response body.
+                fingerprint = page_fingerprint(body)
+                if fingerprint["challengeMarker"]:
+                    raise EspiParseError(
+                        f"{PAP_BASE} answered with a bot-protection interstitial rather than the page "
+                        f"(marker '{fingerprint['challengeMarker']}', title {fingerprint['title']!r}, "
+                        f"{fingerprint['bytes']} bytes). The request never reached the listing."
+                    ) from error
+                raise EspiParseError(f"{error} [received {fingerprint}]") from error
             pages_read += 1
             # Deduplication and end-of-results are separate questions. Stopping on
             # "no new entries" would conflate them, and a repeated page would then
@@ -732,6 +828,85 @@ def fetch_report(node_id: str | int, timeout: float = DEFAULT_LISTING_TIMEOUT, g
     if not report.get("url"):
         report["url"] = url
     return report
+
+
+# Candidate machine-readable sources, cheapest and most official first. The site
+# is Drupal 11 with a view named `wszukiwarka`, and Drupal core ships JSON:API and
+# can expose a view as a feed - so an endpoint that returns data rather than a
+# page may already exist. Probing beats guessing, and a real API would remove the
+# scraping and the bot check together.
+FEED_CANDIDATES = (
+    ("jsonapi", "/jsonapi"),
+    ("jsonapi_node", "/jsonapi/node/report"),
+    ("node_json", "/node/733373?_format=json"),
+    ("rss_root", "/rss.xml"),
+    ("view_rss", "/wyszukiwarka/rss"),
+    ("view_feed", "/wyszukiwarka/feed"),
+    ("view_xml", "/wyszukiwarka.xml"),
+    ("sitemap", "/sitemap.xml"),
+)
+
+
+# The three surfaces the feature needs, kept separate because they can fail
+# independently. Bot protection is often heavier on a search than on a static
+# file, so "the digest is dead" and "importing a pasted report is dead" are two
+# different findings - and the second was claimed to work without ever being run.
+ACCESS_SURFACES = (
+    ("search_listing", "/wyszukiwarka?search=XTB&page=0"),
+    ("report_page", "/node/733373"),
+    ("attachment", "/download/attachment/735217/zal02_Sprawozdanie_finansowe_30_06_2026.pdf"),
+)
+
+
+def probe_access_surfaces(timeout: float = DEFAULT_LISTING_TIMEOUT) -> list[dict]:
+    """Whether this host can fetch a listing, a report page and an attachment."""
+    results = []
+    for name, path in ACCESS_SURFACES:
+        info = fetch_page_diagnostics(f"{PAP_BASE}{path}", timeout=timeout)
+        usable = bool(
+            info.get("reached")
+            and info.get("status") == 200
+            and not info.get("challengeMarker")
+            and (info.get("binary") or info.get("isResultsPage") or name != "search_listing")
+        )
+        results.append({
+            "name": name,
+            "path": path,
+            "status": info.get("status"),
+            "contentType": str(info.get("contentType") or "")[:80],
+            "bytes": info.get("bytes"),
+            "challengeMarker": info.get("challengeMarker"),
+            "title": info.get("title"),
+            "isResultsPage": info.get("isResultsPage"),
+            "usable": usable,
+            "error": info.get("error"),
+        })
+    return results
+
+
+def probe_feed_candidates(timeout: float = DEFAULT_LISTING_TIMEOUT) -> list[dict]:
+    """Ask each candidate what it is. Read-only, one request each, no parsing."""
+    results = []
+    for name, path in FEED_CANDIDATES:
+        info = fetch_page_diagnostics(f"{PAP_BASE}{path}", timeout=timeout)
+        content_type = str(info.get("contentType") or "")
+        results.append({
+            "name": name,
+            "path": path,
+            "status": info.get("status"),
+            "contentType": content_type,
+            "bytes": info.get("bytes"),
+            "challengeMarker": info.get("challengeMarker"),
+            # A structured answer is the whole point; an HTML page is not one.
+            "structured": any(
+                kind in content_type
+                for kind in ("json", "xml", "rss", "atom")
+            ),
+            "title": info.get("title"),
+            "snippet": str(info.get("snippet") or "")[:160],
+            "error": info.get("error"),
+        })
+    return results
 
 
 def digest_for_holdings(
