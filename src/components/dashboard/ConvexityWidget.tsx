@@ -61,7 +61,7 @@ const ScatterPlot: React.FC<{
         const sy = (v: number) => pad.top + plotH - (v + maxAbsY) / (2 * maxAbsY) * plotH;
 
         // Grid
-        ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(180,255,180,0.06)'; ctx.lineWidth = 1;
         for (let i = 0; i <= 4; i++) {
             const gx = pad.left + (plotW / 4) * i;
             const gy = pad.top  + (plotH / 4) * i;
@@ -70,13 +70,13 @@ const ScatterPlot: React.FC<{
         }
 
         // Zero axes
-        ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(180,255,180,0.15)'; ctx.lineWidth = 1;
         const zx = sx(0), zy = sy(0);
         ctx.beginPath(); ctx.moveTo(zx, pad.top);  ctx.lineTo(zx, pad.top + plotH); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(pad.left, zy); ctx.lineTo(pad.left + plotW, zy); ctx.stroke();
 
         // Beta=1 reference
-        ctx.strokeStyle = 'rgba(255,255,255,0.08)'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+        ctx.strokeStyle = 'rgba(180,255,180,0.08)'; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
         ctx.beginPath(); ctx.moveTo(sx(-maxAbsX), sy(-maxAbsX)); ctx.lineTo(sx(maxAbsX), sy(maxAbsX)); ctx.stroke();
         ctx.setLineDash([]);
 
@@ -85,7 +85,7 @@ const ScatterPlot: React.FC<{
         for (const pt of data) {
             const px = sx(pt.b), py = sy(pt.p);
             const good = (pt.b > 0 && pt.p > 0) || (pt.b < 0 && pt.p > pt.b);
-            ctx.fillStyle = good ? 'rgba(52,211,153,0.45)' : 'rgba(251,113,133,0.45)';
+            ctx.fillStyle = good ? 'rgba(0,255,51,0.45)' : 'rgba(255,120,10,0.45)';
             ctx.beginPath(); ctx.arc(px, py, 3, 0, Math.PI * 2); ctx.fill();
             hits.push({ sx: px, sy: py, pt });
         }
@@ -103,7 +103,7 @@ const ScatterPlot: React.FC<{
 
         // Quadratic fit
         const [b2, b1, a] = coeffs;
-        ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 2.5; ctx.beginPath();
+        ctx.strokeStyle = '#ffc70f'; ctx.lineWidth = 2.5; ctx.beginPath();
         for (let i = 0; i <= 120; i++) {
             const xv = -maxAbsX + (2 * maxAbsX * i) / 120;
             const yv = a + b1 * xv + b2 * xv * xv;
@@ -171,7 +171,7 @@ const ScatterPlot: React.FC<{
                     style={{
                         width: 11, height: 11,
                         left: tooltip.x - 5.5, top: tooltip.y - 5.5,
-                        background: tooltip.point.p >= 0 ? 'rgba(52,211,153,0.95)' : 'rgba(251,113,133,0.95)',
+                        background: tooltip.point.p >= 0 ? 'rgba(0,255,51,0.95)' : 'rgba(255,120,10,0.95)',
                     }}
                 />
             )}

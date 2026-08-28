@@ -85,12 +85,12 @@ const ScoreRing = ({ score }: { score: number | null }) => {
     const r = 20;
     const circ = 2 * Math.PI * r;
     const fill = (s / 100) * circ;
-    const color = s >= 70 ? '#34d399' : s >= 45 ? '#fbbf24' : s >= 20 ? '#fb923c' : '#f87171';
+    const color = s >= 70 ? '#33ff33' : s >= 45 ? '#ffc70f' : s >= 20 ? '#e6b000' : '#ff770f';
 
     return (
         <div className="relative flex items-center justify-center w-14 h-14 shrink-0">
             <svg className="w-14 h-14 -rotate-90" viewBox="0 0 50 50">
-                <circle cx="25" cy="25" r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="4" />
+                <circle cx="25" cy="25" r={r} fill="none" stroke="rgba(180,255,180,0.06)" strokeWidth="4" />
                 <circle
                     cx="25" cy="25" r={r} fill="none"
                     stroke={color} strokeWidth="4"

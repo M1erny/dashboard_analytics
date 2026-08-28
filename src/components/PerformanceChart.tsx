@@ -27,10 +27,10 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, classN
 
             <ResponsiveContainer width="100%" height="90%">
                 <LineChart data={data} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.1)" vertical={false} />
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(180,255,180,0.1)" vertical={false} />
                     <XAxis
                         dataKey="date"
-                        stroke="#888888"
+                        stroke="#517051"
                         tickFormatter={(value: string) => new Date(value).toLocaleDateString('en-US', { month: 'short' })}
                         minTickGap={30}
                         tick={{ fontSize: 12 }}
@@ -38,7 +38,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, classN
                         axisLine={false}
                     />
                     <YAxis
-                        stroke="#888888"
+                        stroke="#517051"
                         tickFormatter={(value: number) => `$${value}`}
                         domain={['auto', 'auto']}
                         tick={{ fontSize: 12 }}
@@ -46,7 +46,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, classN
                         axisLine={false}
                     />
                     <Tooltip
-                        contentStyle={{ backgroundColor: '#0f172a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }}
+                        contentStyle={{ backgroundColor: '#0c130c', border: '1px solid rgba(180,255,180,0.1)', borderRadius: '8px' }}
                         itemStyle={{ fontSize: '12px' }}
                         formatter={(value: number | undefined) => [value !== undefined ? `$${value.toFixed(2)}` : 'N/A', '']}
                         labelFormatter={(label) => new Date(label).toLocaleDateString('en-US', { dateStyle: 'medium' })}
@@ -56,7 +56,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, classN
                         type="monotone"
                         dataKey="portfolioPrice"
                         name="Portfolio"
-                        stroke="#8b5cf6"
+                        stroke="#34b234"
                         strokeWidth={3}
                         dot={false}
                         activeDot={{ r: 6, strokeWidth: 0 }}
@@ -65,7 +65,7 @@ export const PerformanceChart: React.FC<PerformanceChartProps> = ({ data, classN
                         type="monotone"
                         dataKey="benchmarkPrice"
                         name="Benchmark"
-                        stroke="#64748b"
+                        stroke="#517051"
                         strokeWidth={2}
                         strokeDasharray="5 5" // Dashed line for benchmark
                         dot={false}

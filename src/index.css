@@ -1,6 +1,30 @@
 /* Font loaded via <link> in index.html for non-render-blocking performance */
 @import "tailwindcss";
 
+/* ============================================================================
+   CRT PHOSPHOR TERMINAL
+   Ported from M1erny/antifragility: 1960s/70s phosphor display. Near-black
+   ground, phosphor green text, zero radius, scanlines, vignette, glow.
+
+   The port is done at the THEME level rather than by rewriting components.
+   This codebase carries ~1500 hard-coded palette classes (text-emerald-300,
+   border-rose-400/20, bg-slate-900 ...). Redefining the palette retargets all
+   of them at once, which keeps the diff small and, more importantly, keeps the
+   MEANING those classes already encode: whoever wrote text-emerald-300 meant
+   "this is a gain", and that still holds after emerald becomes phosphor green.
+
+   The one thing a monochrome terminal cannot inherit is a financial dashboard's
+   need to separate gain from loss from warning. Antifragility solved its own
+   version with two hues - "tree" green and "fire" amber - and that split is kept
+   here, with a third, yellower amber so a warning never reads as a loss:
+
+     hue 120  gain, long, healthy        (emerald, green, teal, lime)
+     hue  26  loss, short, drawdown      (rose, red, pink, fuchsia)
+     hue  46  warning, pending, stale    (amber, orange, yellow)
+     hue 120  accents, dimmer            (cyan, sky, blue, indigo, violet)
+     hue 120  neutrals at 16% saturation (slate, gray, zinc, neutral, stone)
+   ========================================================================== */
+
 @theme {
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
@@ -29,42 +53,344 @@
   --color-card: hsl(var(--card));
   --color-card-foreground: hsl(var(--card-foreground));
 
-  --radius-lg: var(--radius);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-sm: calc(var(--radius) - 4px);
+  /* Nothing is rounded on a phosphor display. */
+  --radius-lg: 0px;
+  --radius-md: 0px;
+  --radius-sm: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+  --radius-full: 0px;
+
+  /* The whole interface is monospace, so both families resolve to the same stack.
+     Without these, `font-mono` (123 uses) and `font-sans` fall through to
+     Tailwind's own defaults and quietly escape the terminal typeface - the body
+     rule below only reaches elements that inherit. */
+  --font-sans: 'Berkeley Mono', 'JetBrains Mono', 'SF Mono', 'Courier New', 'Lucida Console', Monaco, monospace;
+  --font-mono: 'Berkeley Mono', 'JetBrains Mono', 'SF Mono', 'Courier New', 'Lucida Console', Monaco, monospace;
+
+  /* `white` is used ~430 times, nearly all of it as translucent chrome
+     (border-white/[0.07], bg-white/[0.025]). Making it phosphor rather than
+     neutral is what turns every one of those surfaces green-tinted. */
+  --color-white: hsl(120 100% 92%);
+  --color-black: hsl(120 40% 1%);
+
+  /* --- Phosphor green: gain, long, healthy, ok ------------------------ */
+  /* emerald */
+  --color-emerald-50: hsl(120 100% 88%);
+  --color-emerald-100: hsl(120 100% 80%);
+  --color-emerald-200: hsl(120 100% 71%);
+  --color-emerald-300: hsl(120 100% 62%);
+  --color-emerald-400: hsl(120 100% 53%);
+  --color-emerald-500: hsl(120 100% 45%);
+  --color-emerald-600: hsl(120 100% 36%);
+  --color-emerald-700: hsl(120 100% 27%);
+  --color-emerald-800: hsl(120 100% 19%);
+  --color-emerald-900: hsl(120 100% 12%);
+  --color-emerald-950: hsl(120 100% 7%);
+  /* green */
+  --color-green-50: hsl(120 100% 88%);
+  --color-green-100: hsl(120 100% 80%);
+  --color-green-200: hsl(120 100% 71%);
+  --color-green-300: hsl(120 100% 62%);
+  --color-green-400: hsl(120 100% 53%);
+  --color-green-500: hsl(120 100% 45%);
+  --color-green-600: hsl(120 100% 36%);
+  --color-green-700: hsl(120 100% 27%);
+  --color-green-800: hsl(120 100% 19%);
+  --color-green-900: hsl(120 100% 12%);
+  --color-green-950: hsl(120 100% 7%);
+  /* teal */
+  --color-teal-50: hsl(120 100% 88%);
+  --color-teal-100: hsl(120 100% 80%);
+  --color-teal-200: hsl(120 100% 71%);
+  --color-teal-300: hsl(120 100% 62%);
+  --color-teal-400: hsl(120 100% 53%);
+  --color-teal-500: hsl(120 100% 45%);
+  --color-teal-600: hsl(120 100% 36%);
+  --color-teal-700: hsl(120 100% 27%);
+  --color-teal-800: hsl(120 100% 19%);
+  --color-teal-900: hsl(120 100% 12%);
+  --color-teal-950: hsl(120 100% 7%);
+  /* lime */
+  --color-lime-50: hsl(120 100% 88%);
+  --color-lime-100: hsl(120 100% 80%);
+  --color-lime-200: hsl(120 100% 71%);
+  --color-lime-300: hsl(120 100% 62%);
+  --color-lime-400: hsl(120 100% 53%);
+  --color-lime-500: hsl(120 100% 45%);
+  --color-lime-600: hsl(120 100% 36%);
+  --color-lime-700: hsl(120 100% 27%);
+  --color-lime-800: hsl(120 100% 19%);
+  --color-lime-900: hsl(120 100% 12%);
+  --color-lime-950: hsl(120 100% 7%);
+
+  /* --- Fire amber: loss, short, drawdown ------------------------------ */
+  /* rose */
+  --color-rose-50: hsl(26 100% 88%);
+  --color-rose-100: hsl(26 100% 80%);
+  --color-rose-200: hsl(26 100% 71%);
+  --color-rose-300: hsl(26 100% 62%);
+  --color-rose-400: hsl(26 100% 53%);
+  --color-rose-500: hsl(26 100% 45%);
+  --color-rose-600: hsl(26 100% 36%);
+  --color-rose-700: hsl(26 100% 27%);
+  --color-rose-800: hsl(26 100% 19%);
+  --color-rose-900: hsl(26 100% 12%);
+  --color-rose-950: hsl(26 100% 7%);
+  /* red */
+  --color-red-50: hsl(26 100% 88%);
+  --color-red-100: hsl(26 100% 80%);
+  --color-red-200: hsl(26 100% 71%);
+  --color-red-300: hsl(26 100% 62%);
+  --color-red-400: hsl(26 100% 53%);
+  --color-red-500: hsl(26 100% 45%);
+  --color-red-600: hsl(26 100% 36%);
+  --color-red-700: hsl(26 100% 27%);
+  --color-red-800: hsl(26 100% 19%);
+  --color-red-900: hsl(26 100% 12%);
+  --color-red-950: hsl(26 100% 7%);
+  /* pink */
+  --color-pink-50: hsl(26 100% 88%);
+  --color-pink-100: hsl(26 100% 80%);
+  --color-pink-200: hsl(26 100% 71%);
+  --color-pink-300: hsl(26 100% 62%);
+  --color-pink-400: hsl(26 100% 53%);
+  --color-pink-500: hsl(26 100% 45%);
+  --color-pink-600: hsl(26 100% 36%);
+  --color-pink-700: hsl(26 100% 27%);
+  --color-pink-800: hsl(26 100% 19%);
+  --color-pink-900: hsl(26 100% 12%);
+  --color-pink-950: hsl(26 100% 7%);
+  /* fuchsia */
+  --color-fuchsia-50: hsl(26 100% 88%);
+  --color-fuchsia-100: hsl(26 100% 80%);
+  --color-fuchsia-200: hsl(26 100% 71%);
+  --color-fuchsia-300: hsl(26 100% 62%);
+  --color-fuchsia-400: hsl(26 100% 53%);
+  --color-fuchsia-500: hsl(26 100% 45%);
+  --color-fuchsia-600: hsl(26 100% 36%);
+  --color-fuchsia-700: hsl(26 100% 27%);
+  --color-fuchsia-800: hsl(26 100% 19%);
+  --color-fuchsia-900: hsl(26 100% 12%);
+  --color-fuchsia-950: hsl(26 100% 7%);
+
+  /* --- Caution amber: warnings, pending, stale ------------------------ */
+  /* amber */
+  --color-amber-50: hsl(46 100% 88%);
+  --color-amber-100: hsl(46 100% 80%);
+  --color-amber-200: hsl(46 100% 71%);
+  --color-amber-300: hsl(46 100% 62%);
+  --color-amber-400: hsl(46 100% 53%);
+  --color-amber-500: hsl(46 100% 45%);
+  --color-amber-600: hsl(46 100% 36%);
+  --color-amber-700: hsl(46 100% 27%);
+  --color-amber-800: hsl(46 100% 19%);
+  --color-amber-900: hsl(46 100% 12%);
+  --color-amber-950: hsl(46 100% 7%);
+  /* orange */
+  --color-orange-50: hsl(46 100% 88%);
+  --color-orange-100: hsl(46 100% 80%);
+  --color-orange-200: hsl(46 100% 71%);
+  --color-orange-300: hsl(46 100% 62%);
+  --color-orange-400: hsl(46 100% 53%);
+  --color-orange-500: hsl(46 100% 45%);
+  --color-orange-600: hsl(46 100% 36%);
+  --color-orange-700: hsl(46 100% 27%);
+  --color-orange-800: hsl(46 100% 19%);
+  --color-orange-900: hsl(46 100% 12%);
+  --color-orange-950: hsl(46 100% 7%);
+  /* yellow */
+  --color-yellow-50: hsl(46 100% 88%);
+  --color-yellow-100: hsl(46 100% 80%);
+  --color-yellow-200: hsl(46 100% 71%);
+  --color-yellow-300: hsl(46 100% 62%);
+  --color-yellow-400: hsl(46 100% 53%);
+  --color-yellow-500: hsl(46 100% 45%);
+  --color-yellow-600: hsl(46 100% 36%);
+  --color-yellow-700: hsl(46 100% 27%);
+  --color-yellow-800: hsl(46 100% 19%);
+  --color-yellow-900: hsl(46 100% 12%);
+  --color-yellow-950: hsl(46 100% 7%);
+
+  /* --- Accents collapse to phosphor; a CRT has no blue ---------------- */
+  /* cyan */
+  --color-cyan-50: hsl(120 85% 88%);
+  --color-cyan-100: hsl(120 85% 80%);
+  --color-cyan-200: hsl(120 85% 71%);
+  --color-cyan-300: hsl(120 85% 62%);
+  --color-cyan-400: hsl(120 85% 53%);
+  --color-cyan-500: hsl(120 85% 45%);
+  --color-cyan-600: hsl(120 85% 36%);
+  --color-cyan-700: hsl(120 85% 27%);
+  --color-cyan-800: hsl(120 85% 19%);
+  --color-cyan-900: hsl(120 85% 12%);
+  --color-cyan-950: hsl(120 85% 7%);
+  /* sky */
+  --color-sky-50: hsl(120 85% 88%);
+  --color-sky-100: hsl(120 85% 80%);
+  --color-sky-200: hsl(120 85% 71%);
+  --color-sky-300: hsl(120 85% 62%);
+  --color-sky-400: hsl(120 85% 53%);
+  --color-sky-500: hsl(120 85% 45%);
+  --color-sky-600: hsl(120 85% 36%);
+  --color-sky-700: hsl(120 85% 27%);
+  --color-sky-800: hsl(120 85% 19%);
+  --color-sky-900: hsl(120 85% 12%);
+  --color-sky-950: hsl(120 85% 7%);
+  /* blue */
+  --color-blue-50: hsl(120 60% 84%);
+  --color-blue-100: hsl(120 60% 76%);
+  --color-blue-200: hsl(120 60% 67%);
+  --color-blue-300: hsl(120 60% 58%);
+  --color-blue-400: hsl(120 60% 49%);
+  --color-blue-500: hsl(120 60% 41%);
+  --color-blue-600: hsl(120 60% 32%);
+  --color-blue-700: hsl(120 60% 23%);
+  --color-blue-800: hsl(120 60% 15%);
+  --color-blue-900: hsl(120 60% 8%);
+  --color-blue-950: hsl(120 60% 3%);
+  /* indigo */
+  --color-indigo-50: hsl(120 60% 84%);
+  --color-indigo-100: hsl(120 60% 76%);
+  --color-indigo-200: hsl(120 60% 67%);
+  --color-indigo-300: hsl(120 60% 58%);
+  --color-indigo-400: hsl(120 60% 49%);
+  --color-indigo-500: hsl(120 60% 41%);
+  --color-indigo-600: hsl(120 60% 32%);
+  --color-indigo-700: hsl(120 60% 23%);
+  --color-indigo-800: hsl(120 60% 15%);
+  --color-indigo-900: hsl(120 60% 8%);
+  --color-indigo-950: hsl(120 60% 3%);
+  /* violet */
+  --color-violet-50: hsl(120 60% 84%);
+  --color-violet-100: hsl(120 60% 76%);
+  --color-violet-200: hsl(120 60% 67%);
+  --color-violet-300: hsl(120 60% 58%);
+  --color-violet-400: hsl(120 60% 49%);
+  --color-violet-500: hsl(120 60% 41%);
+  --color-violet-600: hsl(120 60% 32%);
+  --color-violet-700: hsl(120 60% 23%);
+  --color-violet-800: hsl(120 60% 15%);
+  --color-violet-900: hsl(120 60% 8%);
+  --color-violet-950: hsl(120 60% 3%);
+  /* purple */
+  --color-purple-50: hsl(120 60% 84%);
+  --color-purple-100: hsl(120 60% 76%);
+  --color-purple-200: hsl(120 60% 67%);
+  --color-purple-300: hsl(120 60% 58%);
+  --color-purple-400: hsl(120 60% 49%);
+  --color-purple-500: hsl(120 60% 41%);
+  --color-purple-600: hsl(120 60% 32%);
+  --color-purple-700: hsl(120 60% 23%);
+  --color-purple-800: hsl(120 60% 15%);
+  --color-purple-900: hsl(120 60% 8%);
+  --color-purple-950: hsl(120 60% 3%);
+
+  /* --- Neutrals: green-tinted greys, never true grey ------------------ */
+  /* slate */
+  --color-slate-50: hsl(120 16% 92%);
+  --color-slate-100: hsl(120 16% 85%);
+  --color-slate-200: hsl(120 16% 74%);
+  --color-slate-300: hsl(120 16% 62%);
+  --color-slate-400: hsl(120 16% 48%);
+  --color-slate-500: hsl(120 16% 38%);
+  --color-slate-600: hsl(120 16% 28%);
+  --color-slate-700: hsl(120 16% 20%);
+  --color-slate-800: hsl(120 16% 13%);
+  --color-slate-900: hsl(120 16% 8%);
+  --color-slate-950: hsl(120 16% 4%);
+  /* gray */
+  --color-gray-50: hsl(120 16% 92%);
+  --color-gray-100: hsl(120 16% 85%);
+  --color-gray-200: hsl(120 16% 74%);
+  --color-gray-300: hsl(120 16% 62%);
+  --color-gray-400: hsl(120 16% 48%);
+  --color-gray-500: hsl(120 16% 38%);
+  --color-gray-600: hsl(120 16% 28%);
+  --color-gray-700: hsl(120 16% 20%);
+  --color-gray-800: hsl(120 16% 13%);
+  --color-gray-900: hsl(120 16% 8%);
+  --color-gray-950: hsl(120 16% 4%);
+  /* zinc */
+  --color-zinc-50: hsl(120 16% 92%);
+  --color-zinc-100: hsl(120 16% 85%);
+  --color-zinc-200: hsl(120 16% 74%);
+  --color-zinc-300: hsl(120 16% 62%);
+  --color-zinc-400: hsl(120 16% 48%);
+  --color-zinc-500: hsl(120 16% 38%);
+  --color-zinc-600: hsl(120 16% 28%);
+  --color-zinc-700: hsl(120 16% 20%);
+  --color-zinc-800: hsl(120 16% 13%);
+  --color-zinc-900: hsl(120 16% 8%);
+  --color-zinc-950: hsl(120 16% 4%);
+  /* neutral */
+  --color-neutral-50: hsl(120 16% 92%);
+  --color-neutral-100: hsl(120 16% 85%);
+  --color-neutral-200: hsl(120 16% 74%);
+  --color-neutral-300: hsl(120 16% 62%);
+  --color-neutral-400: hsl(120 16% 48%);
+  --color-neutral-500: hsl(120 16% 38%);
+  --color-neutral-600: hsl(120 16% 28%);
+  --color-neutral-700: hsl(120 16% 20%);
+  --color-neutral-800: hsl(120 16% 13%);
+  --color-neutral-900: hsl(120 16% 8%);
+  --color-neutral-950: hsl(120 16% 4%);
+  /* stone */
+  --color-stone-50: hsl(120 16% 92%);
+  --color-stone-100: hsl(120 16% 85%);
+  --color-stone-200: hsl(120 16% 74%);
+  --color-stone-300: hsl(120 16% 62%);
+  --color-stone-400: hsl(120 16% 48%);
+  --color-stone-500: hsl(120 16% 38%);
+  --color-stone-600: hsl(120 16% 28%);
+  --color-stone-700: hsl(120 16% 20%);
+  --color-stone-800: hsl(120 16% 13%);
+  --color-stone-900: hsl(120 16% 8%);
+  --color-stone-950: hsl(120 16% 4%);
 }
 
 @layer base {
   :root {
-    --background: 224 71% 4%;
-    --foreground: 213 31% 91%;
+    --background: 120 30% 2%;
+    --foreground: 120 100% 45%;
 
-    --card: 224 71% 4%;
-    --card-foreground: 213 31% 91%;
+    --card: 120 30% 2%;
+    --card-foreground: 120 100% 45%;
 
-    --popover: 224 71% 4%;
-    --popover-foreground: 213 31% 91%;
+    --popover: 120 30% 3%;
+    --popover-foreground: 120 100% 45%;
 
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary: 120 100% 40%;
+    --primary-foreground: 0 0% 0%;
 
-    --secondary: 222.2 47.4% 11.2%;
-    --secondary-foreground: 210 40% 98%;
+    --secondary: 120 25% 5%;
+    --secondary-foreground: 120 100% 45%;
 
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
+    --muted: 120 22% 8%;
+    --muted-foreground: 120 80% 30%;
 
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    --accent: 120 100% 40%;
+    --accent-foreground: 0 0% 0%;
 
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive: 26 100% 45%;
+    --destructive-foreground: 0 0% 0%;
 
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    --border: 120 100% 20%;
+    --input: 120 100% 20%;
+    --ring: 120 100% 40%;
 
-    --radius: 0.5rem;
+    --radius: 0;
+
+    --phosphor-glow: 120 100% 50%;
+    /* One dial for the whole CRT illusion. Turned down from antifragility's
+       0.08 because this screen is dense with four-digit numbers, not a sparse
+       simulation: scanlines that read as texture there read as noise here. */
+    --scanline-opacity: 0.045;
+    /* Halved and halved again after seeing it on the real screen: the glow was
+       reading as blur on the headline figures rather than as bloom around them,
+       which is the wrong trade on numbers people act on. */
+    --crt-glow-strength: 0.26;
   }
 }
 
@@ -74,25 +400,26 @@
     border-style: solid;
     border-width: 0;
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+    scrollbar-color: hsl(120 100% 25%) transparent;
   }
 
   *::-webkit-scrollbar {
-    width: 5px;
-    height: 5px;
+    width: 6px;
+    height: 6px;
   }
 
   *::-webkit-scrollbar-track {
-    background: transparent;
+    background: hsl(120 30% 4%);
   }
 
+  /* A terminal scrollbar is a block, not a pill. */
   *::-webkit-scrollbar-thumb {
-    background-color: rgba(255, 255, 255, 0.08);
-    border-radius: 999px;
+    background-color: hsl(120 100% 25%);
+    border-radius: 0;
   }
 
   *::-webkit-scrollbar-thumb:hover {
-    background-color: rgba(255, 255, 255, 0.15);
+    background-color: hsl(120 100% 38%);
   }
 
   body {
@@ -101,30 +428,134 @@
     min-width: 320px;
     min-height: 100dvh;
     overflow-x: hidden;
-    font-family: 'Inter', system-ui, -apple-system, sans-serif;
-    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    font-family: var(--font-mono);
+    /* Tabular figures matter more here than in the source design: this screen is
+       columns of numbers that have to line up down the page. */
+    font-variant-numeric: tabular-nums;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
 
-  button,
-  a,
-  input,
-  textarea {
-    -webkit-tap-highlight-color: transparent;
+  /* --- CRT scanlines ------------------------------------------------------
+     Fixed, pointer-events:none, above content. Kept faint; see
+     --scanline-opacity for why. */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0, 0, 0, var(--scanline-opacity)) 2px,
+      rgba(0, 0, 0, var(--scanline-opacity)) 4px
+    );
   }
 
-  :where(a, button, input, textarea, select):focus-visible {
-    outline: 2px solid rgba(52, 211, 153, 0.72);
-    outline-offset: 3px;
+  /* --- Screen curvature / vignette --------------------------------------- */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9998;
+    background: radial-gradient(
+      ellipse at center,
+      transparent 0%,
+      transparent 62%,
+      rgba(0, 0, 0, 0.34) 100%
+    );
+    box-shadow: inset 0 0 120px rgba(0, 0, 0, 0.5);
+  }
+
+  /* --- Phosphor glow ------------------------------------------------------
+     The source applies this to every p/span/a/button. Doing that here would
+     smear the four-digit percentages this dashboard exists to show, so the glow
+     is scoped to display type - headings and the big tile numbers - where it
+     reads as phosphor bloom, and small body text stays crisp. */
+  /* One rule, so --crt-glow-strength really is one dial - the numeral rule used
+     to hard-code its own opacities and ignore the variable entirely.
+
+     Two layers, not three: three stacked blurs is a halo, not bloom. The bloom
+     takes `currentColor` rather than the fixed phosphor hue, which fixes a real
+     bug - a drawdown of -10.42% is amber, and haloing it in green was lighting
+     an amber glyph with the wrong gun. Radii are in `em` so the bloom stays
+     proportional at 12px and at 48px instead of swamping the smaller text. */
+  h1, h2, h3, h4,
+  .crt-glow,
+  .text-2xl, .text-3xl, .text-4xl, .text-5xl, .text-6xl {
+    text-shadow:
+      0 0 0.04em color-mix(in srgb, currentColor calc(var(--crt-glow-strength) * 100%), transparent),
+      0 0 0.28em color-mix(in srgb, currentColor calc(var(--crt-glow-strength) * 45%), transparent);
+  }
+
+  button {
+    font-family: inherit;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+
+  /* Buttons carrying real prose - the Brain's suggested questions, saved thread
+     titles, command-palette rows - must not be shouted in caps. In this codebase
+     those are reliably the left-aligned ones: a button whose content is a
+     sentence is written text-left, while a button whose content is a label is
+     centred. Uppercase is for labels. */
+  button.text-left,
+  button.normal-case,
+  button:has(> p),
+  [role='dialog'] button {
+    text-transform: none;
+    letter-spacing: normal;
+  }
+
+  input, textarea, select {
+    font-family: inherit;
+  }
+
+  /* Omarchy draws the focused window's accent ON the window edge, not as a ring
+     floating outside it: border_size = 2, no offset. */
+  :where(a, button, input, textarea, select, [tabindex]):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 0;
   }
 
   ::selection {
-    background: rgba(16, 185, 129, 0.28);
-    color: white;
+    background: hsl(120 100% 40%);
+    color: hsl(120 40% 2%);
+  }
+
+  ::placeholder {
+    color: hsl(120 60% 24%);
   }
 }
 
+/* --- Terminal motion ------------------------------------------------------ */
+@keyframes crt-flicker {
+  0%, 100% { opacity: 1; }
+  92% { opacity: 1; }
+  93% { opacity: 0.97; }
+  94% { opacity: 1; }
+  97% { opacity: 0.99; }
+  98% { opacity: 1; }
+}
+
+@keyframes cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.crt-flicker {
+  animation: crt-flicker 6s infinite;
+}
+
+.cursor-blink::after {
+  content: '\2588';
+  animation: cursor-blink 1s step-end infinite;
+}
+
+/* The old rainbow loading bar has no place on a phosphor display. */
 @keyframes top-bar-shift {
   0%   { background-position: 0% 50%; }
   50%  { background-position: 100% 50%; }
@@ -132,18 +563,161 @@
 }
 
 .animated-top-bar {
-  background: linear-gradient(90deg, #6366f1, #3b82f6, #06b6d4, #10b981, #f59e0b, #6366f1);
+  background: linear-gradient(
+    90deg,
+    hsl(120 100% 8%),
+    hsl(120 100% 45%),
+    hsl(46 100% 50%),
+    hsl(120 100% 45%),
+    hsl(120 100% 8%)
+  );
   background-size: 300% 300%;
   animation: top-bar-shift 8s ease infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
   *,
-  *::before,
-  *::after {
+  *::after,
+  *::before {
     scroll-behavior: auto !important;
     animation-duration: 0.01ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* Tailwind writes a literal 0.25rem into the bare `rounded` utility and into the
+   directional ones rather than reading a theme variable, so zeroing the radius
+   scale in @theme misses them - 45 uses of the bare class kept their corners on a
+   display that is meant to have none. Unlayered on purpose: unlayered CSS beats
+   the utilities layer regardless of specificity. */
+[class*="rounded"] {
+  border-radius: 0;
+}
+
+/* ===========================================================================
+   OMARCHY
+   Borrowed from basecamp/omarchy, verified against its own config rather than
+   from memory: border_size = 2, gaps_in 5 / gaps_out 10, rounding 0, a 26px
+   flat bar, shadows and blur disabled outright in v4. Only what a tiling
+   desktop and a phosphor screen actually agree on - the brief was "a bit".
+
+   The thing that looked like a conflict turned out not to be one. Omarchy ships
+   `decoration { rounding = 0 }` and its manual states that "Omarchy's default
+   design is one of square corners"; the `rounding = 8` people remember is the
+   manual's suggested opt-in tweak, not stock. Both languages want square
+   corners, so nothing had to give.
+
+   Unlayered on purpose, like the rounded rule above: unlayered CSS beats the
+   utilities layer regardless of specificity. One systemic rule instead of
+   hundreds of component edits - the same strategy as the palette port.
+   ========================================================================= */
+
+/* Omarchy v4 turned both off outright - `shadow { enabled = false }`,
+   `blur { enabled = false }` - and communicates depth with a border alone. A
+   phosphor screen is a single emitting plane and has no elevation either, so
+   this is where the two languages agree completely. Focus rings are `outline`,
+   not box-shadow, so they survive this. */
+[class*="shadow-"] { box-shadow: none; }
+[class*="backdrop-blur"] {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* With shadows gone the border is the only depth cue left, so it has to be
+   visible. Components write `border-white/[0.06]`, which composites to roughly
+   #0d0f0d on this ground - invisible. This file already declares
+   --border: 120 100% 20%, which almost nothing used. Point the family at the
+   token the file already owns; no new colour values. */
+[class*="border-white/"] { border-color: var(--color-border); }
+
+/* Hover is an interaction state, so only interactive elements take it -
+   brightening two hundred static card borders as the pointer crosses the grid
+   would be constant movement on a screen meant to be read. */
+:where(a, button, [role='button'], [tabindex])[class*="border-white/"]:hover {
+  border-color: hsl(120 100% 30%);
+}
+
+/* Focus IS the accent, and a tiling desktop has exactly one focused window. The
+   :not(:has(...)) clause picks only the innermost bordered ancestor holding
+   focus, so focusing a deep button lights one border rather than the three it
+   is nested inside. */
+[class*="border-white/"]:focus-within:not(:has([class*="border-white/"]:focus-within)) {
+  border-color: hsl(var(--ring));
+}
+
+/* --- The bar --------------------------------------------------------------
+   26px, flat, opaque, edge to edge, no border, no radius, no margin, three
+   sections - the one piece of always-on chrome in a desktop whose philosophy is
+   subtraction. It replaces the rainbow loader strip, which had no business on a
+   phosphor display. */
+.crt-statusbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 26px;
+  padding-inline: 10px;
+  background-color: var(--color-background);
+  color: hsl(120 60% 32%);
+  font-size: 11px;
+  line-height: 1;
+  border: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.crt-statusbar > * {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1 1 0;
+}
+.crt-statusbar > *:nth-child(2) { justify-content: center; }
+.crt-statusbar > *:last-child { justify-content: flex-end; }
+/* The accent has exactly one job on this desktop: "this one is current". */
+.crt-statusbar .is-current { color: hsl(var(--ring)); }
+
+/* --- Touch ergonomics ------------------------------------------------------
+   A terminal is designed for a keyboard, and this one inherited chips as small
+   as 18px tall - fine under a mouse, not under a thumb. Only coarse pointers pay
+   the extra height, so the desktop layout keeps its density. 36px rather than
+   the usual 44px: this is a dense data tool where 44 would push real content off
+   a phone screen, and the targets sit in scrolling strips with clear gaps. */
+@media (pointer: coarse) {
+  button,
+  a[href],
+  select,
+  [role='button'] {
+    min-height: 36px;
+  }
+
+  /* 9px uppercase monospace is legible on a laptop at arm's length and not on a
+     phone. The floor only lifts the smallest labels. */
+  .text-\[9px\] {
+    font-size: 10px;
+  }
+}
+
+/* A strip that scrolls but ends in a hard edge looks like a strip that ended.
+   The fade says there is more, and is scoped to the widths where the period tabs
+   actually overflow - at desktop widths they fit and the mask would just dim a
+   real tab. */
+@media (max-width: 767px) {
+  .crt-scroll-strip {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  }
+}
+
+/* Keyboard hints on a touch device are instructions for keys that are not there. */
+@media (pointer: coarse) {
+  .crt-keyboard-hint {
+    display: none;
   }
 }

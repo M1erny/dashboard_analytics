@@ -918,7 +918,7 @@ const ContextChip: React.FC<{
 );
 
 const PanelSection: React.FC<{ icon: IconComponent; tone: string; title: string; action?: React.ReactNode; children: React.ReactNode }> = ({ icon: Icon, tone, title, action, children }) => (
-    <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
+    <section className="rounded-lg border border-white/[0.08] bg-[#080d08]/95 p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
                 <Icon className={cn('h-4 w-4 shrink-0', tone)} />
@@ -1987,7 +1987,7 @@ export const InvestmentBrainChat: React.FC = () => {
     }, [isPaletteOpen, isAsking]);
 
     return (
-        <div className="flex h-[100dvh] flex-col overflow-hidden bg-[#06080d] text-foreground">
+        <div className="flex h-[100dvh] flex-col overflow-hidden bg-[#040704] text-foreground">
             <div className="h-px shrink-0 bg-gradient-to-r from-emerald-400 via-cyan-400 to-violet-400" />
 
             <div className="flex min-h-0 flex-1">
@@ -1995,7 +1995,7 @@ export const InvestmentBrainChat: React.FC = () => {
                 {isRailOpen && (
                     <>
                         <div className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm lg:hidden" onClick={() => setIsRailOpen(false)} aria-hidden="true" />
-                        <nav aria-label="Research threads" className="fixed inset-y-0 left-0 z-40 flex w-[268px] shrink-0 flex-col border-r border-white/[0.07] bg-[#080c14] lg:static lg:z-auto">
+                        <nav aria-label="Research threads" className="fixed inset-y-0 left-0 z-40 flex w-[268px] shrink-0 flex-col border-r border-white/[0.07] bg-[#080d08] lg:static lg:z-auto">
                             <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-white/[0.07] pl-3 pr-2">
                                 <a href="/" className="inline-flex min-w-0 items-center gap-2 text-slate-300 transition-colors hover:text-white" title="Back to the dashboard">
                                     <BrainCircuit className="h-4 w-4 shrink-0 text-emerald-300" />
@@ -2208,7 +2208,7 @@ export const InvestmentBrainChat: React.FC = () => {
                                 </Button>
                             </div>
                         </div>
-                        <p className="mx-auto mt-1.5 w-full max-w-3xl px-1 text-[10px] text-slate-600">
+                        <p className="crt-keyboard-hint mx-auto mt-1.5 w-full max-w-3xl px-1 text-[10px] text-slate-600">
                             <CornerDownLeft className="mr-1 inline h-3 w-3 align-[-2px]" />send · Shift + Enter for a new line · {modKeyLabel}K for commands
                         </p>
                     </div>
@@ -2218,7 +2218,7 @@ export const InvestmentBrainChat: React.FC = () => {
                 {panelTab && (
                     <>
                         <div className="fixed inset-0 z-30 bg-black/60 backdrop-blur-sm xl:hidden" onClick={() => setPanelTab(null)} aria-hidden="true" />
-                        <aside aria-label="Brain workbench" className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[420px] shrink-0 flex-col border-l border-white/[0.07] bg-[#080c14] xl:static xl:z-auto xl:w-[400px]">
+                        <aside aria-label="Brain workbench" className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[420px] shrink-0 flex-col border-l border-white/[0.07] bg-[#080d08] xl:static xl:z-auto xl:w-[400px]">
                             <div className="flex h-12 shrink-0 items-center gap-1 border-b border-white/[0.07] pl-2 pr-2">
                                 {WORKBENCH_TABS.map(tab => (
                                     <button
@@ -2830,7 +2830,7 @@ export const InvestmentBrainChat: React.FC = () => {
             </div>
 
             {/* ── Status bar: the state an editor keeps at the bottom, not in cards ── */}
-            <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-white/[0.07] bg-[#080c14] px-3 text-[10px] text-slate-500">
+            <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-white/[0.07] bg-[#080d08] px-3 text-[10px] text-slate-500">
                 <span className="inline-flex shrink-0 items-center gap-1.5">
                     <span className={cn('h-1.5 w-1.5 rounded-full', ready ? allEmbedded ? 'bg-emerald-400' : 'bg-amber-400' : 'bg-rose-400')} />
                     <span className={cn('font-semibold', ready ? 'text-slate-300' : 'text-rose-300')}>{ready ? libraryState : backendState === 'checking' ? 'Checking Brain' : 'Backend offline'}</span>
@@ -2859,7 +2859,7 @@ export const InvestmentBrainChat: React.FC = () => {
 
             {isPaletteOpen && (
                 <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/75 p-4 pt-[12vh] backdrop-blur-sm" onClick={() => setIsPaletteOpen(false)}>
-                    <section role="dialog" aria-modal="true" aria-label="Brain commands" onClick={event => event.stopPropagation()} className="flex max-h-[min(560px,calc(100vh-160px))] w-full max-w-lg flex-col overflow-hidden rounded-lg border border-white/[0.12] bg-[#0a0f18] shadow-2xl">
+                    <section role="dialog" aria-modal="true" aria-label="Brain commands" onClick={event => event.stopPropagation()} className="flex max-h-[min(560px,calc(100vh-160px))] w-full max-w-lg flex-col overflow-hidden rounded-lg border border-white/[0.12] bg-[#0c130c] shadow-2xl">
                         <div className="flex items-center gap-2 border-b border-white/[0.08] px-4">
                             <Command className="h-4 w-4 shrink-0 text-slate-500" />
                             <input
@@ -2903,7 +2903,7 @@ export const InvestmentBrainChat: React.FC = () => {
             )}
             {isReferencePickerOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-                    <section role="dialog" aria-modal="true" aria-labelledby="reference-layer-title" className="flex max-h-[min(720px,calc(100vh-32px))] w-full max-w-2xl flex-col rounded-lg border border-white/[0.12] bg-[#0a0f18] shadow-2xl">
+                    <section role="dialog" aria-modal="true" aria-labelledby="reference-layer-title" className="flex max-h-[min(720px,calc(100vh-32px))] w-full max-w-2xl flex-col rounded-lg border border-white/[0.12] bg-[#0c130c] shadow-2xl">
                         <div className="flex items-start justify-between gap-4 border-b border-white/[0.08] px-5 py-4">
                             <div>
                                 <div className="flex items-center gap-2"><BookOpenCheck className="h-4 w-4 text-violet-300" /><h2 id="reference-layer-title" className="text-sm font-bold text-white">Persistent reference layer</h2></div>
@@ -2949,7 +2949,7 @@ export const InvestmentBrainChat: React.FC = () => {
             )}
             {isFullContextPickerOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-                    <section role="dialog" aria-modal="true" aria-labelledby="full-context-title" className="flex max-h-[min(720px,calc(100vh-32px))] w-full max-w-2xl flex-col rounded-lg border border-white/[0.12] bg-[#0a0f18] shadow-2xl">
+                    <section role="dialog" aria-modal="true" aria-labelledby="full-context-title" className="flex max-h-[min(720px,calc(100vh-32px))] w-full max-w-2xl flex-col rounded-lg border border-white/[0.12] bg-[#0c130c] shadow-2xl">
                         <div className="flex items-start justify-between gap-4 border-b border-white/[0.08] px-5 py-4">
                             <div>
                                 <div className="flex items-center gap-2"><FileSearch className="h-4 w-4 text-cyan-300" /><h2 id="full-context-title" className="text-sm font-bold text-white">Full-document context</h2></div>
@@ -2995,7 +2995,7 @@ export const InvestmentBrainChat: React.FC = () => {
             )}
             {isSystemPromptOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
-                    <section role="dialog" aria-modal="true" aria-labelledby="system-prompt-title" className="flex max-h-[min(720px,calc(100vh-32px))] w-full max-w-2xl flex-col rounded-lg border border-white/[0.12] bg-[#0a0f18] shadow-2xl">
+                    <section role="dialog" aria-modal="true" aria-labelledby="system-prompt-title" className="flex max-h-[min(720px,calc(100vh-32px))] w-full max-w-2xl flex-col rounded-lg border border-white/[0.12] bg-[#0c130c] shadow-2xl">
                         <div className="flex items-start justify-between gap-4 border-b border-white/[0.08] px-5 py-4">
                             <div>
                                 <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-amber-300" /><h2 id="system-prompt-title" className="text-sm font-bold text-white">AI system prompt</h2></div>
