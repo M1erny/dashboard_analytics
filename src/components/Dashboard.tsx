@@ -535,19 +535,33 @@ export const Dashboard: React.FC = () => {
     const portfolioLabel = 'My Portfolio';
 
     return (
-        <div className="relative min-h-[100dvh] overflow-x-hidden bg-[#050814] text-foreground">
-            <div className="pointer-events-none fixed inset-0 bg-[radial-gradient(circle_at_12%_8%,rgba(79,70,229,0.10),transparent_28%),radial-gradient(circle_at_88%_12%,rgba(14,165,233,0.07),transparent_26%),linear-gradient(to_bottom,rgba(15,23,42,0.18),transparent_42%)]" />
-            {/* Animated top bar */}
-            <div className="animated-top-bar relative z-10 h-[2px] w-full" />
+        <div className="relative min-h-[100dvh] overflow-x-hidden bg-[#040704] text-foreground">
+            {/* A tiling desktop has no wallpaper glow behind its windows, and the two
+                remaining radial washes were the last non-monochrome light in the app -
+                one of them literally sky-500. The ground is already #040704. */}
+            {/* One always-on strip of chrome, which is the only chrome Omarchy keeps. */}
+            <div className="crt-statusbar relative z-40">
+                <div>
+                    <span className="is-current">&#9632;</span>
+                    <span>{portfolioLabel}</span>
+                </div>
+                <div>
+                    <span>{lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
+                <div>
+                    <span>{COST_TIER_OPTIONS.find(option => option.value === costTier)?.label ?? costTier}</span>
+                    <span className={isSwitchingTier ? 'is-current' : undefined}>{isSwitchingTier ? 'SYNC' : 'OK'}</span>
+                </div>
+            </div>
 
-            <div className="relative z-10 px-3 py-4 sm:px-5 sm:py-5 lg:px-8 lg:py-7">
+            <div className="relative z-10 p-[10px]">
             {/* While a tier refetch is in flight the figures below still belong to the previous
                 tier, but the tier badge already reads the new one. Dim them so the mismatch
                 cannot be mistaken for a recomputed book. */}
             <div
                 aria-busy={isSwitchingTier}
                 className={cn(
-                    "mx-auto max-w-[1600px] space-y-5 sm:space-y-6 lg:space-y-7",
+                    "mx-auto max-w-[1600px] space-y-[10px]",
                     // Everything except the header (the first child) is stale during a refetch.
                     // The header keeps full opacity so the tier controls and status stay legible.
                     isSwitchingTier && "[&>*:not(:first-child)]:opacity-40 [&>*:not(:first-child)]:transition-opacity [&>*:not(:first-child)]:duration-200"
@@ -558,11 +572,11 @@ export const Dashboard: React.FC = () => {
                 <header className="flex flex-col justify-between gap-5 rounded-2xl border border-white/[0.08] bg-slate-950/65 p-4 shadow-2xl shadow-black/20 backdrop-blur-xl sm:p-5 xl:flex-row xl:items-start xl:gap-6">
                     <div className="min-w-0">
                         <h1 className="flex min-w-0 items-center gap-3 text-[1.75rem] font-black tracking-tight text-white sm:text-3xl md:text-4xl">
-                            <div className="shrink-0 rounded-xl border border-indigo-400/15 bg-gradient-to-br from-indigo-500/20 to-blue-500/15 p-2.5 shadow-lg shadow-indigo-950/30">
+                            <div className="shrink-0 border border-emerald-500/25 p-2.5">
                                 <LayoutDashboard className="h-6 w-6 md:h-7 md:w-7 text-indigo-400" />
                             </div>
                             <div className="flex flex-col min-w-0">
-                                <span className="bg-gradient-to-r from-white via-white to-gray-400 bg-clip-text text-transparent leading-none truncate">
+                                <span className="text-white leading-none truncate">
                                     {portfolioLabel}
                                 </span>
                                 <span className="text-[11px] font-normal text-gray-500 tracking-[0.12em] uppercase mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">

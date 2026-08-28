@@ -135,7 +135,7 @@ export const BrainDriveCoverage: React.FC<{ disabled?: boolean }> = ({ disabled 
     const problems = (report?.files ?? []).filter(file => PROBLEM_STATUSES.has(file.status));
 
     return (
-        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
+        <section className="rounded-lg border border-white/[0.08] bg-[#080d08]/95 p-4">
             <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                     <Gauge className="h-4 w-4 text-sky-300" />

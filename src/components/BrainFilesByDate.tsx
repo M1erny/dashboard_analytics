@@ -129,7 +129,7 @@ export const BrainFilesByDate: React.FC<{ disabled?: boolean }> = ({ disabled = 
     const activeField = DATE_FIELDS.find(item => item.value === dateField);
 
     return (
-        <section className="rounded-lg border border-white/[0.08] bg-[#090e17]/95 p-4">
+        <section className="rounded-lg border border-white/[0.08] bg-[#080d08]/95 p-4">
             <div className="flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
                     <CalendarClock className="h-4 w-4 text-amber-300" />

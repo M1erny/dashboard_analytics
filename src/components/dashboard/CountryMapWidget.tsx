@@ -88,15 +88,15 @@ export const CountryMapWidget: React.FC<CountryMapWidgetProps> = memo(({ country
 
     const getCountryColor = (geoName: string) => {
         const isoCode = COUNTRY_NAMES[geoName];
-        if (!isoCode || !countryAllocation[isoCode]) return '#1e293b';
+        if (!isoCode || !countryAllocation[isoCode]) return '#182518';
         const data = countryAllocation[isoCode];
         const netExposure = data.long - data.short;
-        if (netExposure > 0.15) return '#059669';
-        if (netExposure > 0.05) return '#34d399';
-        if (netExposure > 0)    return '#6ee7b7';
-        if (netExposure < -0.1) return '#dc2626';
-        if (netExposure < 0)    return '#f87171';
-        return '#6b7280';
+        if (netExposure > 0.15) return '#009900';
+        if (netExposure > 0.05) return '#33ff33';
+        if (netExposure > 0)    return '#66ff66';
+        if (netExposure < -0.1) return '#c25400';
+        if (netExposure < 0)    return '#ff770f';
+        return '#517051';
     };
 
     const showTooltip = (geo: { properties: { name: string } }, evt: React.MouseEvent) => {
@@ -166,11 +166,11 @@ export const CountryMapWidget: React.FC<CountryMapWidgetProps> = memo(({ country
                                         key={geo.rsmKey}
                                         geography={geo}
                                         fill={getCountryColor(geo.properties.name)}
-                                        stroke="rgba(255,255,255,0.06)"
+                                        stroke="rgba(180,255,180,0.06)"
                                         strokeWidth={0.5}
                                         style={{
                                             default: { outline: 'none', transition: 'fill 0.2s' },
-                                            hover: { fill: '#60a5fa', outline: 'none', cursor: 'pointer' },
+                                            hover: { fill: '#3cdd3c', outline: 'none', cursor: 'pointer' },
                                             pressed: { outline: 'none' },
                                         }}
                                         onMouseEnter={(evt: React.MouseEvent) => showTooltip(geo, evt)}

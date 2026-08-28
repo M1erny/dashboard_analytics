@@ -58,7 +58,7 @@ export const FxExposureWidget: React.FC<FxExposureWidgetProps> = React.memo(({ v
 
             {/* Dropdown / Popover */}
             {isOpen && (
-                <div className="absolute right-0 top-full mt-2 w-full md:w-72 bg-[#0f172a] border border-white/10 rounded-xl shadow-2xl p-4 z-50 backdrop-blur-xl animate-in fade-in zoom-in-95 origin-top-right">
+                <div className="absolute right-0 top-full mt-2 w-full md:w-72 bg-[#0c130c] border border-white/10 rounded-xl shadow-2xl p-4 z-50 backdrop-blur-xl animate-in fade-in zoom-in-95 origin-top-right">
 
                     {/* Portfolio Currency Exposure */}
                     <h4 className="text-white font-medium mb-3 text-xs uppercase tracking-wider border-b border-white/5 pb-2">Currency Exposure</h4>

@@ -165,7 +165,7 @@ const ContribBar = ({ value, maxAbsValue }: { value: number | null; maxAbsValue:
                 className={cn(
                     "h-full rounded-full transition-all duration-700 ease-out",
                     isPositive
-                        ? "bg-gradient-to-r from-emerald-400/80 to-emerald-500/60 shadow-[0_0_6px_rgba(52,211,153,0.3)]"
+                        ? "bg-gradient-to-r from-emerald-400/80 to-emerald-500/60 shadow-[0_0_6px_rgba(0,255,51,0.3)]"
                         : "bg-gradient-to-r from-red-500/60 to-red-400/80 shadow-[0_0_6px_rgba(239,68,68,0.3)]"
                 )}
                 style={{ width: `${pct}%`, marginLeft: isPositive ? 0 : 'auto', marginRight: isPositive ? 'auto' : 0 }}
@@ -931,14 +931,14 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                         </div>
                         <span className="text-[10px] uppercase tracking-[0.16em] font-bold text-gray-400">Book Analytics</span>
                         {availablePeriods.length > 0 && (
-                            <div className="flex flex-wrap items-center gap-1">
+                            <div className="crt-scroll-strip -mx-1 flex max-w-full items-center gap-1 overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                                 {availablePeriods.map(period => (
                                     <button
                                         key={period.key}
                                         type="button"
                                         onClick={() => setBookPeriodKey(period.key)}
                                         title={`${period.label}: ${period.start} to ${period.end} (${period.sessions} sessions)`}
-                                        className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-[0.08em] transition-colors ${
+                                        className={`shrink-0 rounded px-2 py-1.5 text-[10px] font-bold uppercase tracking-[0.08em] transition-colors ${
                                             period.key === (selectedPeriod?.key ?? 'ytd')
                                                 ? 'bg-indigo-500/20 text-indigo-200 ring-1 ring-indigo-400/30'
                                                 : 'text-gray-500 hover:bg-white/[0.05] hover:text-gray-300'
@@ -1084,7 +1084,7 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                                             sortKey === col.key && "text-blue-400 bg-blue-500/[0.06]",
                                             isFirstInGroup && col.group !== 'position' && "border-l border-white/[0.12]",
                                             isDragging && "opacity-50",
-                                            isDropTarget && "bg-blue-500/[0.12] shadow-[inset_2px_0_0_rgba(96,165,250,0.75)]",
+                                            isDropTarget && "bg-blue-500/[0.12] shadow-[inset_2px_0_0_rgba(60,220,60,0.75)]",
                                             "text-[12px]"
                                         )}
                                     >

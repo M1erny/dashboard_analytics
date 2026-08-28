@@ -139,11 +139,6 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                     "text-4xl sm:text-5xl font-black tracking-tighter leading-none transition-all duration-500",
                                     ytdPositive ? "text-emerald-400" : "text-rose-400"
                                 )}
-                                style={{
-                                    filter: ytdPositive
-                                        ? 'drop-shadow(0 0 20px rgba(52,211,153,0.35))'
-                                        : 'drop-shadow(0 0 20px rgba(248,113,133,0.35))'
-                                }}
                                 title="Net Return (After financing drag)"
                             >
                                 {fmtSigned(vitals.ytdReturn)}
@@ -239,7 +234,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                     <ResponsiveContainer width="100%" height="100%">
                                         <LineChart data={ytdHistory}>
                                             <Tooltip
-                                                cursor={{ stroke: 'rgba(255,255,255,0.1)', strokeWidth: 1 }}
+                                                cursor={{ stroke: 'rgba(180,255,180,0.1)', strokeWidth: 1 }}
                                                 content={({ active, payload }) => {
                                                     if (active && payload && payload.length) {
                                                         const data = payload[0].payload;
@@ -253,7 +248,7 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                                     return null;
                                                 }}
                                             />
-                                            <Line type="monotone" dataKey="beta" stroke="#60a5fa" strokeWidth={2} dot={false} isAnimationActive={false} />
+                                            <Line type="monotone" dataKey="beta" stroke="#3cdd3c" strokeWidth={2} dot={false} isAnimationActive={false} />
                                         </LineChart>
                                     </ResponsiveContainer>
                                 </div>
@@ -584,11 +579,6 @@ export const ExecutiveSummary: React.FC<ExecutiveSummaryProps> = React.memo(({ v
                                                 "font-mono text-xl font-black tracking-tight leading-none",
                                                 st.impact >= 0 ? "text-emerald-400" : "text-rose-400"
                                             )}
-                                            style={{
-                                                filter: st.impact >= 0
-                                                    ? 'drop-shadow(0 0 8px rgba(52,211,153,0.25))'
-                                                    : 'drop-shadow(0 0 8px rgba(248,113,133,0.25))'
-                                            }}
                                         >
                                             {fmtSigned(st.impact)}
                                         </span>

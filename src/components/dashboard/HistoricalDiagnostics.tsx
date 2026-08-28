@@ -92,9 +92,9 @@ const GrossPerformanceTooltip = ({ active, payload, label }: {
                 </div>
                 <div className="flex items-center justify-between gap-5">
                     <span className="flex items-center gap-2 text-gray-400">
-                        <span className="h-2 w-2 rounded-full bg-sky-400" /> S&amp;P 500
+                        <span className="h-0 w-3 border-t-2 border-dashed border-emerald-700" /> S&amp;P 500
                     </span>
-                    <span className="font-bold text-sky-300">{formatSignedPercent(point.benchmark, 2)}</span>
+                    <span className="font-bold text-emerald-600">{formatSignedPercent(point.benchmark, 2)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-5 border-t border-white/[0.08] pt-2">
                     <span className="flex items-center gap-2 text-gray-400">
@@ -193,9 +193,9 @@ const GrossPerformanceChart = ({ data, periodLabel }: { data: GrossPerformancePo
                     </div>
                     <div>
                         <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-[0.12em] text-gray-500">
-                            <span className="h-2 w-2 rounded-full bg-sky-400" /> S&amp;P 500
+                            <span className="h-0 w-3 border-t-2 border-dashed border-emerald-700" /> S&amp;P 500
                         </div>
-                        <div className="font-bold text-sky-300">{formatSignedPercent(latest.benchmark)}</div>
+                        <div className="font-bold text-emerald-600">{formatSignedPercent(latest.benchmark)}</div>
                     </div>
                     <div>
                         <div className="mb-1 flex items-center gap-1.5 text-[9px] uppercase tracking-[0.12em] text-gray-500">
@@ -209,57 +209,62 @@ const GrossPerformanceChart = ({ data, periodLabel }: { data: GrossPerformancePo
             <div className="h-[270px] w-full sm:h-[320px]">
                 <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                        <CartesianGrid vertical={false} stroke="rgba(148, 163, 184, 0.10)" />
+                        <CartesianGrid vertical={false} stroke="rgba(90, 150, 90, 0.10)" />
                         <XAxis
                             dataKey="date"
                             axisLine={false}
                             tickLine={false}
                             minTickGap={42}
-                            tick={{ fill: '#64748b', fontSize: 10, fontFamily: 'monospace' }}
+                            tick={{ fill: '#517051', fontSize: 10, fontFamily: 'monospace' }}
                             tickFormatter={(value: string) => formatDate(value, false)}
                         />
                         <YAxis
                             axisLine={false}
                             tickLine={false}
                             width={48}
-                            tick={{ fill: '#64748b', fontSize: 10, fontFamily: 'monospace' }}
+                            tick={{ fill: '#517051', fontSize: 10, fontFamily: 'monospace' }}
                             tickFormatter={(value: number) => `${(value * 100).toFixed(0)}%`}
                             domain={['auto', 'auto']}
                         />
-                        <ReferenceLine y={0} stroke="rgba(148, 163, 184, 0.32)" />
+                        <ReferenceLine y={0} stroke="rgba(90, 150, 90, 0.32)" />
                         <Tooltip
                             content={<GrossPerformanceTooltip />}
-                            cursor={{ stroke: '#64748b', strokeWidth: 1, strokeDasharray: '4 4' }}
+                            cursor={{ stroke: '#517051', strokeWidth: 1, strokeDasharray: '4 4' }}
                         />
                         <Line
                             type="linear"
                             dataKey="portfolioGross"
                             name={`${periodLabel} portfolio gross`}
-                            stroke="#34d399"
+                            stroke="#33ff33"
                             strokeWidth={2.5}
                             dot={false}
-                            activeDot={{ r: 4, fill: '#34d399', stroke: '#020617', strokeWidth: 2 }}
+                            activeDot={{ r: 4, fill: '#33ff33', stroke: '#040704', strokeWidth: 2 }}
                             isAnimationActive={false}
                         />
+                        {/* Monochrome leaves only brightness and stroke pattern to separate
+                            series. The portfolio stays the bright solid line because it is the
+                            subject; the benchmark is dimmer and dashed, so a same-hue pair never
+                            reads as one thick line. */}
                         <Line
                             type="linear"
                             dataKey="benchmark"
                             name="S&P 500"
-                            stroke="#38bdf8"
-                            strokeWidth={2}
+                            stroke="#1f9e1f"
+                            strokeWidth={1.75}
+                            strokeDasharray="3 3"
                             dot={false}
-                            activeDot={{ r: 4, fill: '#38bdf8', stroke: '#020617', strokeWidth: 2 }}
+                            activeDot={{ r: 4, fill: '#1f9e1f', stroke: '#040704', strokeWidth: 2 }}
                             isAnimationActive={false}
                         />
                         <Line
                             type="linear"
                             dataKey="spread"
                             name="Spread"
-                            stroke="#fbbf24"
+                            stroke="#ffc70f"
                             strokeWidth={1.75}
                             strokeDasharray="6 5"
                             dot={false}
-                            activeDot={{ r: 4, fill: '#fbbf24', stroke: '#020617', strokeWidth: 2 }}
+                            activeDot={{ r: 4, fill: '#ffc70f', stroke: '#040704', strokeWidth: 2 }}
                             isAnimationActive={false}
                         />
                     </LineChart>
@@ -364,57 +369,57 @@ const BookContributionChart = ({ data, periodLabel }: { data: BookContributionPo
             <div className="h-[270px] w-full sm:h-[320px]">
                 <ResponsiveContainer width="100%" height="100%">
                     <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-                        <CartesianGrid vertical={false} stroke="rgba(148, 163, 184, 0.10)" />
+                        <CartesianGrid vertical={false} stroke="rgba(90, 150, 90, 0.10)" />
                         <XAxis
                             dataKey="date"
                             axisLine={false}
                             tickLine={false}
                             minTickGap={42}
-                            tick={{ fill: '#64748b', fontSize: 10, fontFamily: 'monospace' }}
+                            tick={{ fill: '#517051', fontSize: 10, fontFamily: 'monospace' }}
                             tickFormatter={(value: string) => formatDate(value, false)}
                         />
                         <YAxis
                             axisLine={false}
                             tickLine={false}
                             width={48}
-                            tick={{ fill: '#64748b', fontSize: 10, fontFamily: 'monospace' }}
+                            tick={{ fill: '#517051', fontSize: 10, fontFamily: 'monospace' }}
                             tickFormatter={(value: number) => `${(value * 100).toFixed(0)}%`}
                             domain={['auto', 'auto']}
                         />
-                        <ReferenceLine y={0} stroke="rgba(148, 163, 184, 0.32)" />
+                        <ReferenceLine y={0} stroke="rgba(90, 150, 90, 0.32)" />
                         <Tooltip
                             content={<BookContributionTooltip />}
-                            cursor={{ stroke: '#64748b', strokeWidth: 1, strokeDasharray: '4 4' }}
+                            cursor={{ stroke: '#517051', strokeWidth: 1, strokeDasharray: '4 4' }}
                         />
                         <Line
                             type="linear"
                             dataKey="longContribution"
                             name="Long book"
-                            stroke="#34d399"
+                            stroke="#33ff33"
                             strokeWidth={2.5}
                             dot={false}
-                            activeDot={{ r: 4, fill: '#34d399', stroke: '#020617', strokeWidth: 2 }}
+                            activeDot={{ r: 4, fill: '#33ff33', stroke: '#040704', strokeWidth: 2 }}
                             isAnimationActive={false}
                         />
                         <Line
                             type="linear"
                             dataKey="shortContribution"
                             name="Short book"
-                            stroke="#fb7185"
+                            stroke="#ff770f"
                             strokeWidth={2.5}
                             dot={false}
-                            activeDot={{ r: 4, fill: '#fb7185', stroke: '#020617', strokeWidth: 2 }}
+                            activeDot={{ r: 4, fill: '#ff770f', stroke: '#040704', strokeWidth: 2 }}
                             isAnimationActive={false}
                         />
                         <Line
                             type="linear"
                             dataKey="total"
                             name="Combined gross"
-                            stroke="#cbd5e1"
+                            stroke="#a3c2a3"
                             strokeWidth={1.75}
                             strokeDasharray="6 5"
                             dot={false}
-                            activeDot={{ r: 4, fill: '#cbd5e1', stroke: '#020617', strokeWidth: 2 }}
+                            activeDot={{ r: 4, fill: '#a3c2a3', stroke: '#040704', strokeWidth: 2 }}
                             isAnimationActive={false}
                         />
                     </LineChart>

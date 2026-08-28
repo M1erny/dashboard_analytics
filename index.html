@@ -8,8 +8,10 @@
     <!-- Preconnect to Google Fonts CDN (eliminates DNS+TLS latency ~150ms) -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <!-- Non-render-blocking font load (moved from CSS @import) -->
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" />
+    <!-- The interface is monospace end to end, and neither Berkeley Mono nor
+         JetBrains Mono can be assumed installed - without this the terminal
+         design falls back to whatever generic mono the machine happens to have. -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&display=swap" />
   </head>
   <body>
     <div id="root"></div>
