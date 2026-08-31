@@ -316,6 +316,9 @@ export interface CorrelationSurge {
 export interface MomentumMetrics {
     top_rs: RelativeStrength[];
     bot_rs: RelativeStrength[];
+    /** Every holding, not just the extremes. The backend has always sent this;
+     *  the type omitted it, so nothing downstream could reach it. */
+    all_rs?: RelativeStrength[];
     corr_surges: CorrelationSurge[];
 }
 
