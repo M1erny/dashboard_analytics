@@ -326,7 +326,15 @@ export function computeSignal(row: {
     r1m: number | null;
     direction: 'Long' | 'Short' | null;
     volumeIndicator: number | null;
+    status?: 'Active' | 'Exited' | 'Planned';
 }, relativeStrength: number | null): SignalBreakdown | null {
+    // An exited position has no state to read. Its returns are still carried in
+    // the row for contribution accounting, and scoring them produced a confident
+    // reading - STLA scored a full -1.00 - about a holding that is gone. The
+    // benchmark comparison is already absent for these, so the signal would have
+    // rested on half its inputs while rendering identically to a whole one.
+    if (row.status && row.status !== 'Active') return null;
+
     // A short profits when the price falls, so every return flips sign first.
     const side = row.direction === 'Short' ? -1 : 1;
     const horizons = [row.r1d, row.r7d, row.r1m].filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
