@@ -1,9 +1,9 @@
 import React, { useState, useMemo, useCallback, useRef } from 'react';
 import { cn } from '../../lib/utils';
-import type { PeriodicReturn, RiskAttribution, Vitals } from '../../utils/finance';
+import type { MomentumMetrics, PeriodicReturn, RiskAttribution, Vitals } from '../../utils/finance';
 import { TrendingUp, ArrowUpRight, ArrowDownRight, ChevronUp, ChevronDown, BarChart3, Flame, Zap, Target, Trophy, TrendingDown, Activity, GripVertical, RotateCcw } from 'lucide-react';
 
-type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'sinceRebalanceContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry' | 'volatilityContribution';
+type SortKey = 'ticker' | 'ytd' | 'ytdContribution' | 'sinceRebalanceContribution' | 'r7dContribution' | 'r1dContribution' | 'r1d' | 'r7d' | 'r1m' | 'r1y' | 'lastPrice' | 'volatility' | 'volumeIndicator' | 'currentWeight' | 'entryPrice' | 'rSinceEntry' | 'volatilityContribution' | 'relativeStrength' | 'signalScore';
 type SortDir = 'asc' | 'desc';
 
 export type BookPeriodMetrics = {
@@ -40,7 +40,7 @@ export type BookAnalyticsPayload = {
     note?: string;
     periods?: BookPeriod[];
 };
-type ColumnGroup = 'position' | 'contribution' | 'returns' | 'risk';
+type ColumnGroup = 'position' | 'contribution' | 'returns' | 'risk' | 'signal';
 
 // ─── Color System ────────────────────────────────────────────
 const getReturnColor = (val: number | null): string => {
@@ -293,6 +293,133 @@ interface ColumnDef {
     group: ColumnGroup;
 }
 
+/** Everything below describes what the position HAS done, never what it will do.
+ *
+ *  Three measured components, each side-adjusted so a short reads correctly - a
+ *  falling price is a good outcome for a short, and a signal that ignored that
+ *  would rank the book upside down:
+ *
+ *    trend  agreement of the 1D / 7D / 1M returns, -1 each when they go against
+ *           the position, so the range is -3..+3 before weighting
+ *    rs     relative strength against the position's own benchmark, already
+ *           computed for every holding but until now only shown for the top and
+ *           bottom three
+ *    volume 7D average volume over YTD average. Not a direction of its own: it
+ *           tells you whether the trend is carried on real participation, so it
+ *           scales conviction instead of adding to it.
+ */
+const SIGNAL_VOLUME_STRONG = 1.25;
+const SIGNAL_VOLUME_THIN = 0.75;
+
+export type SignalBreakdown = {
+    score: number;          // -1..+1, side-adjusted
+    trend: number;          // -3..+3
+    relativeStrength: number | null;
+    volumeRatio: number | null;
+    conviction: 'heavy' | 'normal' | 'thin' | null;
+    horizons: number;       // how many of the three return horizons were present
+};
+
+export function computeSignal(row: {
+    r1d: number | null;
+    r7d: number | null;
+    r1m: number | null;
+    direction: 'Long' | 'Short' | null;
+    volumeIndicator: number | null;
+}, relativeStrength: number | null): SignalBreakdown | null {
+    // A short profits when the price falls, so every return flips sign first.
+    const side = row.direction === 'Short' ? -1 : 1;
+    const horizons = [row.r1d, row.r7d, row.r1m].filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+    if (!horizons.length) return null;
+
+    const trend = horizons.reduce((sum, value) => sum + Math.sign(value * side), 0);
+    const rs = typeof relativeStrength === 'number' && Number.isFinite(relativeStrength)
+        ? relativeStrength * side
+        : null;
+
+    // Normalise trend to -1..+1 over the horizons actually available, so a
+    // position missing its 1M history is not silently scored as weaker.
+    const trendScore = trend / horizons.length;
+    // Relative strength is a return difference; ±10pp is treated as a full
+    // reading, beyond which more does not make the signal more true.
+    const rsScore = rs === null ? null : Math.max(-1, Math.min(1, rs / 0.10));
+
+    const ratio = typeof row.volumeIndicator === 'number' && Number.isFinite(row.volumeIndicator)
+        ? row.volumeIndicator
+        : null;
+    const conviction = ratio === null ? null
+        : ratio >= SIGNAL_VOLUME_STRONG ? 'heavy'
+        : ratio <= SIGNAL_VOLUME_THIN ? 'thin'
+        : 'normal';
+
+    const parts = rsScore === null ? [trendScore] : [trendScore, rsScore];
+    let score = parts.reduce((a, b) => a + b, 0) / parts.length;
+    // Volume scales conviction rather than voting: a move on thin participation
+    // is the same direction with less behind it.
+    if (conviction === 'heavy') score *= 1.15;
+    else if (conviction === 'thin') score *= 0.7;
+
+    return {
+        score: Math.max(-1, Math.min(1, score)),
+        trend,
+        relativeStrength: rs,
+        volumeRatio: ratio,
+        conviction,
+        horizons: horizons.length,
+    };
+}
+
+/** A five-segment bar centred on zero. On a phosphor display a filled block
+ *  reads at a glance where a signed decimal does not, and the segments encode
+ *  the same number the column sorts on. Conviction is shown as the bar's own
+ *  brightness, not as an extra glyph competing for the width. */
+const SignalMeter = ({ signal }: { signal: SignalBreakdown | null }) => {
+    if (!signal) return <span className="font-mono text-[13px] text-gray-600">—</span>;
+    const filled = Math.min(2, Math.round(Math.abs(signal.score) * 2));
+    const positive = signal.score > 0;
+    const tone = signal.score === 0 || filled === 0
+        ? 'bg-gray-700'
+        : positive ? 'bg-emerald-400' : 'bg-rose-400';
+    const dim = signal.conviction === 'thin' ? 'opacity-50' : signal.conviction === 'heavy' ? 'opacity-100' : 'opacity-80';
+
+    // index 0,1 = against the position; 2 = neutral centre; 3,4 = for it
+    const segments = [0, 1, 2, 3, 4].map(i => {
+        if (i === 2) return { on: true, centre: true };
+        if (positive) return { on: i > 2 && i - 2 <= filled, centre: false };
+        return { on: i < 2 && 2 - i <= filled, centre: false };
+    });
+
+    return (
+        <span className="inline-flex items-center gap-[2px]" aria-label={`Signal ${signal.score.toFixed(2)}`}>
+            {segments.map((seg, i) => (
+                <span
+                    key={i}
+                    className={cn(
+                        'h-3 w-[3px]',
+                        seg.centre ? 'bg-gray-600 h-2' : seg.on ? cn(tone, dim) : 'bg-white/[0.08]',
+                    )}
+                />
+            ))}
+        </span>
+    );
+};
+
+/** Spelled out on hover, because a bar that cannot explain itself is decoration. */
+function describeSignal(row: { direction: 'Long' | 'Short' | null }, signal: SignalBreakdown): string {
+    const side = row.direction === 'Short' ? 'short' : 'long';
+    const lines = [
+        `Measured, not forecast. Signed for the ${side}.`,
+        `Trend: ${signal.trend > 0 ? '+' : ''}${signal.trend} of ${signal.horizons} horizons going with the position`,
+    ];
+    if (signal.relativeStrength != null) {
+        lines.push(`Relative strength: ${signal.relativeStrength > 0 ? '+' : ''}${(signal.relativeStrength * 100).toFixed(1)}pp vs benchmark`);
+    }
+    if (signal.volumeRatio != null) {
+        lines.push(`Volume: ${signal.volumeRatio.toFixed(2)}x the YTD average (${signal.conviction})`);
+    }
+    return lines.join('\n');
+}
+
 const columns: ColumnDef[] = [
     { key: 'ticker',           label: 'Ticker',     group: 'position' },
     { key: 'lastPrice',        label: 'Price',      group: 'position', tooltip: 'Last fetched price' },
@@ -308,6 +435,8 @@ const columns: ColumnDef[] = [
     { key: 'volatility',       label: 'Vol',        group: 'risk', tooltip: 'Annualized volatility' },
     { key: 'volatilityContribution', label: 'Vol Contrib. %', group: 'risk', tooltip: 'Volatility contribution to portfolio (% of total portfolio vol)' },
     { key: 'volumeIndicator',  label: 'Vol Ratio',  group: 'risk', tooltip: '7D avg volume ÷ YTD avg volume' },
+    { key: 'relativeStrength', label: 'RS',         group: 'signal', tooltip: 'Return minus its benchmark over the momentum window, signed for the position: a short that fell further than the market reads positive' },
+    { key: 'signalScore',      label: 'Signal',     group: 'signal', tooltip: 'Measured state, not a forecast: trend agreement across 1D/7D/1M, relative strength against the benchmark, scaled by whether volume is carrying the move. Signed for the position side.' },
 ];
 
 const columnByKey = new Map<SortKey, ColumnDef>(columns.map(col => [col.key, col]));
@@ -337,16 +466,26 @@ const groupMeta: Record<ColumnGroup, { label: string; icon: React.ReactNode; col
     contribution: { label: 'Contribution',  icon: <Zap className="h-3 w-3" />,       color: 'text-violet-400',  accentColor: 'bg-violet-500' },
     returns:      { label: 'Returns (USD)', icon: <TrendingUp className="h-3 w-3" />,color: 'text-emerald-400', accentColor: 'bg-emerald-500' },
     risk:         { label: 'Risk',          icon: <Flame className="h-3 w-3" />,     color: 'text-rose-400',    accentColor: 'bg-rose-500' },
+    signal:       { label: 'Signal',        icon: <Activity className="h-3 w-3" />,  color: 'text-amber-400',   accentColor: 'bg-amber-500' },
 };
 
 // ─── Main Component ──────────────────────────────────────────
-export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], periodLabel = "YTD", vitals, bookAnalyticsPeriods }: {
+export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], periodLabel = "YTD", vitals, bookAnalyticsPeriods, momentum }: {
     periodicReturns: PeriodicReturn[];
     activeRisks?: RiskAttribution[];
     periodLabel?: string;
     vitals?: Pick<Vitals, 'ytdReturn' | 'ytdReturnGross' | 'ytdSecurityGrossContribution' | 'ytdFinancingCost' | 'financingScope'>;
     bookAnalyticsPeriods?: BookAnalyticsPayload;
+    momentum?: MomentumMetrics | null;
 }) => {
+    const relativeStrengthByTicker = useMemo(() => {
+        const map = new Map<string, number>();
+        for (const entry of momentum?.all_rs ?? []) {
+            if (entry && typeof entry.rs === 'number' && Number.isFinite(entry.rs)) map.set(entry.ticker, entry.rs);
+        }
+        return map;
+    }, [momentum]);
+
     const [bookPeriodKey, setBookPeriodKey] = useState<string>('ytd');
     const [sortKey, setSortKey] = useState<SortKey>('ytdContribution');
     const [sortDir, setSortDir] = useState<SortDir>('desc');
@@ -480,6 +619,13 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
             case 'volatility': return row.volatility ?? null;
             case 'volatilityContribution': return riskMap.get(row.ticker) ?? null;
             case 'volumeIndicator': return row.volumeIndicator ?? null;
+            case 'relativeStrength': {
+                const rs = relativeStrengthByTicker.get(row.ticker);
+                // Signed for the side, so sorting ranks "working for me" rather
+                // than "went up", which are opposite things for a short.
+                return typeof rs === 'number' ? rs * (row.direction === 'Short' ? -1 : 1) : null;
+            }
+            case 'signalScore': return computeSignal(row, relativeStrengthByTicker.get(row.ticker) ?? null)?.score ?? null;
             case 'currentWeight': return row.currentWeight ?? null;
             case 'entryPrice': return row.entryPrice ?? null;
             case 'rSinceEntry': return (row.lastPrice && row.entryPrice) ? ((row.lastPrice - row.entryPrice) / row.entryPrice) : null;
@@ -796,6 +942,37 @@ export const ReturnsHeatmap = React.memo(({ periodicReturns, activeRisks = [], p
                         {row.volumeIndicator != null ? `${row.volumeIndicator.toFixed(2)}×` : '—'}
                     </td>
                 );
+            case 'relativeStrength': {
+                const raw = relativeStrengthByTicker.get(row.ticker);
+                const signed = typeof raw === 'number' ? raw * (row.direction === 'Short' ? -1 : 1) : null;
+                return (
+                    <td key={col.key} className={cn(
+                        "px-4 py-3 text-center font-mono text-[13px] transition-all duration-200",
+                        signed == null ? 'text-gray-600' : signed > 0 ? 'text-emerald-400' : signed < 0 ? 'text-rose-400' : 'text-gray-400',
+                        isHovered && "brightness-125",
+                        groupBorder
+                    )}
+                    title={signed == null ? 'No benchmark comparison for this holding'
+                        : `${row.direction === 'Short' ? 'Short: ' : ''}${(signed * 100).toFixed(1)}pp vs benchmark${row.direction === 'Short' ? ' (sign flipped for the side)' : ''}`}
+                    >
+                        {signed == null ? '—' : `${signed > 0 ? '+' : ''}${(signed * 100).toFixed(1)}`}
+                    </td>
+                );
+            }
+            case 'signalScore': {
+                const signal = computeSignal(row, relativeStrengthByTicker.get(row.ticker) ?? null);
+                return (
+                    <td key={col.key} className={cn(
+                        "px-4 py-3 text-center transition-all duration-200",
+                        isHovered && "brightness-125",
+                        groupBorder
+                    )}
+                    title={signal ? describeSignal(row, signal) : 'Not enough return history to read a signal'}
+                    >
+                        <SignalMeter signal={signal} />
+                    </td>
+                );
+            }
             default:
                 return <td key={col.key} className="px-4 py-3 text-gray-600">—</td>;
         }
