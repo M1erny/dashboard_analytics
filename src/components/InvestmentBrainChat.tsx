@@ -1348,7 +1348,6 @@ export const InvestmentBrainChat: React.FC = () => {
             setIsCatalogueLoading(false);
         }
         // request and errorText are stable helpers defined outside this component.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const saveRouting = async (tier: ModelTier, patch: { model?: string; thinkingLevel?: string }) => {
@@ -1756,7 +1755,6 @@ export const InvestmentBrainChat: React.FC = () => {
         } catch {
             // Coverage detail is a nicety; the panel still works without it.
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const findIssuerCandidates = async (ticker: string, phrase: string) => {
