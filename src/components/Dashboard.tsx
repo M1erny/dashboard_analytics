@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, Suspense, lazy } from 'react';
 import { fetchDashboardData } from '../utils/finance';
-import type { FullRiskReport, CostTier, RebalanceChangeAction, RebalancePositionChange, RebalanceState } from '../utils/finance';
+import type { FullRiskReport, CostTier, MarketDataStatus, RebalanceChangeAction, RebalancePositionChange, RebalanceState } from '../utils/finance';
 import { ExecutiveSummary } from './dashboard/ExecutiveSummary';
 import { ReturnsHeatmap } from './dashboard/ReturnsHeatmap';
 import { FxExposureWidget } from './dashboard/FxExposureWidget';
@@ -9,7 +9,7 @@ import { HistoricalDiagnostics } from './dashboard/HistoricalDiagnostics';
 import {
     LayoutDashboard, ShieldCheck, RefreshCw, Clock, CircleDollarSign, Store,
     Building2, Ban, BrainCircuit, GitBranch, X, CalendarDays, Plus, Minus,
-    Trash2, ArrowRightLeft, type LucideIcon
+    Trash2, ArrowRightLeft, Radio, Database, type LucideIcon
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 
@@ -305,6 +305,57 @@ const RebalanceHistoryModal = ({ rebalance, open, onClose }: {
     );
 };
 
+/** Where the numbers on screen came from.
+ *
+ *  Both "live" and "snapshot" are healthy states, so this is always on screen
+ *  rather than only when something is wrong: the difference decides whether a
+ *  figure is minutes or hours old, and that should never take a click to find
+ *  out. The backend picks the source in this order, and the title text spells
+ *  the same rule out on hover:
+ *
+ *    1. this process fetched within the last 5 minutes  -> reuse that
+ *    2. a saved snapshot under 3 hours old              -> serve it, skip Yahoo
+ *    3. otherwise                                        -> ask Yahoo
+ *    4. Yahoo failed or is rate-limited                  -> last good data, stale
+ */
+const DataSourceBadge: React.FC<{ status?: MarketDataStatus | null }> = ({ status }) => {
+    if (!status?.source) return null;
+
+    const isSnapshot = status.source === 'snapshot';
+    const isStale = status.stale === true;
+    const savedAt = status.fetchedAt ? new Date(status.fetchedAt) : null;
+    const savedLabel = savedAt && !Number.isNaN(savedAt.getTime())
+        ? savedAt.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+        : null;
+
+    const label = isSnapshot ? (status.asOf ? `Snapshot ${status.asOf}` : 'Snapshot') : 'Live';
+    // The backend's own message already names the reason and the retry wait, so
+    // it leads; repeating either here read as a stutter.
+    const explanation = isStale
+        ? `${status.message ?? 'Yahoo Finance could not be reached.'} Showing the last saved market data${savedLabel ? `, fetched ${savedLabel}` : ''}.`
+        : isSnapshot
+            ? `Served from the saved snapshot${savedLabel ? `, fetched ${savedLabel}` : ''}. Yahoo Finance was not called: a snapshot under 3 hours old is used as-is, which keeps the host off Yahoo's rate limit. Force Refresh fetches live.`
+            : `Fetched live from Yahoo Finance by the backend${savedLabel ? ` at ${savedLabel}` : ''}.`;
+
+    const Icon = isSnapshot ? Database : Radio;
+    const tone = isStale
+        ? 'border-amber-500/25 bg-amber-500/[0.07] text-amber-300/90'
+        : isSnapshot
+            ? 'border-white/10 bg-white/[0.04] text-gray-400'
+            : 'border-emerald-500/25 bg-emerald-500/[0.06] text-emerald-300/90';
+
+    return (
+        <span
+            className={cn('inline-flex items-center gap-1.5 whitespace-nowrap border px-1.5 py-0.5', tone)}
+            title={explanation}
+        >
+            <Icon className="h-3 w-3" />
+            {label}
+            {isStale && ' (stale)'}
+        </span>
+    );
+};
+
 export const Dashboard: React.FC = () => {
     const [data, setData] = useState<FullRiskReport | null>(null);
     const [loading, setLoading] = useState(true);
@@ -553,6 +604,7 @@ export const Dashboard: React.FC = () => {
     const portfolioLabel = 'My Portfolio';
 
     const dataIsStale = data.dataStatus?.stale === true;
+    const dataFromSnapshot = data.dataStatus?.source === 'snapshot';
 
     return (
         <div className="relative min-h-[100dvh] overflow-x-hidden bg-[#040704] text-foreground">
@@ -571,7 +623,7 @@ export const Dashboard: React.FC = () => {
                 <div>
                     <span>{COST_TIER_OPTIONS.find(option => option.value === costTier)?.label ?? costTier}</span>
                     <span className={isSwitchingTier || dataIsStale ? 'is-current' : undefined}>
-                        {isSwitchingTier ? 'SYNC' : dataIsStale ? 'STALE' : 'OK'}
+                        {isSwitchingTier ? 'SYNC' : dataIsStale ? 'STALE' : dataFromSnapshot ? 'SNAP' : 'LIVE'}
                     </span>
                 </div>
             </div>
@@ -606,6 +658,7 @@ export const Dashboard: React.FC = () => {
                                         <Clock className="h-3 w-3" />
                                         Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                     </span>
+                                    <DataSourceBadge status={data.dataStatus} />
                                     {isSwitchingTier && (
                                         <span className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-amber-500/20 bg-amber-500/[0.06] px-1.5 py-0.5 text-amber-300/90">
                                             <RefreshCw className="h-3 w-3 animate-spin" />

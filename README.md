@@ -209,6 +209,8 @@ Yahoo Finance throttles shared hosting IPs (HTTP 429), and Render's free tier re
 - `source: "snapshot", stale: false` - served from a snapshot younger than `MARKET_SNAPSHOT_FRESH_SECONDS` (default 3 h); Yahoo was not called.
 - `source: "snapshot", stale: true` - the live fetch failed and the last good frames were served instead; the UI shows a banner with the `asOf` date and the reason.
 
+The dashboard shows which of those three it is, without a click: a badge beside the update time in the header reads `Live`, `Snapshot <date>`, or `Snapshot <date> (stale)`, its hover text spells out the selection rule, and the status bar carries `LIVE` / `SNAP` / `STALE`.
+
 When Yahoo throttles the host, the fetch stops at the first 429 and the host leaves Yahoo alone for `YF_RATE_LIMIT_COOLDOWN_SECONDS` (default 10 min) instead of retrying every ticker three times.
 
 **Scheduled refresh.** `.github/workflows/market-snapshot.yml` runs `backend/refresh_market_snapshot.py` every two hours on weekdays from a GitHub runner and writes the snapshot to the same database, so the web host serves fresh data without calling Yahoo itself. It needs one repository secret: `DATABASE_URL`, the same Supabase connection string the backend uses on Render (Settings -> Secrets and variables -> Actions). Trigger it once by hand from the Actions tab after adding the secret; the dashboard picks the snapshot up within five minutes.
