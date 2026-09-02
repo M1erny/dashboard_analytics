@@ -55,7 +55,20 @@ def check_database_url(require_remote: bool = False) -> str | None:
             raise ConfigError(NO_DATABASE_URL_HELP)
         return None
 
-    parsed = urlparse(raw)
+    try:
+        parsed = urlparse(raw)
+    except ValueError as ex:
+        # urlsplit rejects a "[" anywhere in the netloc outright, because it reads
+        # it as the start of an IPv6 literal. That is precisely the shape of
+        # Supabase's unedited "[YOUR-PASSWORD]", so the most common mistake of all
+        # never reaches the password check below.
+        if any(ch in raw for ch in "[]"):
+            raise ConfigError(PLACEHOLDER_PASSWORD_HELP) from ex
+        raise ConfigError(
+            "DATABASE_URL could not be parsed as a URL. Look for a stray space, or a "
+            "character in the password that has to be percent-encoded (& -> %26, @ -> %40, / -> %2F)."
+        ) from ex
+
     if parsed.scheme not in ("postgresql", "postgres"):
         raise ConfigError(
             f"DATABASE_URL must start with postgresql:// or postgres://, got {parsed.scheme or raw[:20]!r}."
@@ -72,7 +85,47 @@ def check_database_url(require_remote: bool = False) -> str | None:
             "This is what a placeholder looks like - paste the real connection string, "
             "not the example with the dots in it."
         )
+
+    try:
+        password = parsed.password or ""
+    except ValueError as ex:
+        raise ConfigError(f"DATABASE_URL password could not be read: {type(ex).__name__}.") from ex
+
+    if looks_like_placeholder(password):
+        raise ConfigError(PLACEHOLDER_PASSWORD_HELP)
     return raw
+
+
+PLACEHOLDER_PASSWORD_HELP = (
+    "DATABASE_URL still has a stand-in where the password belongs, so it cannot connect. "
+    "Supabase hands out the string with [YOUR-PASSWORD] in it and that has to be replaced "
+    "with the real password.\n"
+    "Avoid retyping it into a template: read it in at a prompt instead, which also keeps it "
+    "out of your shell history.\n"
+    "  PowerShell:  $env:DATABASE_URL = Read-Host 'connection string'\n"
+    "  bash:        read -rs DATABASE_URL && export DATABASE_URL"
+)
+
+
+# Supabase's own connection-string panel hands out "[YOUR-PASSWORD]", and every
+# set of instructions ever written has its own stand-in. None of them connect, and
+# the resulting "password authentication failed" says nothing about why.
+PLACEHOLDER_WORDS = {
+    "password", "yourpassword", "your-password", "your_password",
+    "changeme", "secret", "replace_with_password", "nowe_haslo", "haslo",
+    "putyourpasswordhere", "xxx", "todo",
+}
+
+
+def looks_like_placeholder(password: str) -> bool:
+    value = (password or "").strip()
+    if not value:
+        return False
+    # Bracket characters cannot appear unencoded in a URL password, so their
+    # presence means the template was never filled in.
+    if any(ch in value for ch in "[]<>{}"):
+        return True
+    return value.lower().replace(" ", "") in PLACEHOLDER_WORDS
 
 
 def main() -> int:
@@ -99,6 +152,16 @@ def main() -> int:
             return 1
         except Exception as ex:
             print(f"Could not open the database, nothing fetched: {type(ex).__name__}: {ex}")
+            if "password authentication failed" in str(ex).lower():
+                print(
+                    "\nThe host answered, so the address is right and only the password is wrong. Two usual causes:\n"
+                    "  - it is still a stand-in rather than the real password;\n"
+                    "  - it contains a character that has to be percent-encoded in a URL:\n"
+                    "      &  ->  %26      @  ->  %40      /  ->  %2F\n"
+                    "      #  ->  %23      :  ->  %3A      %  ->  %25\n"
+                    "    Resetting the password in Supabase and taking the generated one avoids this,\n"
+                    "    since those are alphanumeric and need no encoding."
+                )
             return 1
         label = getattr(store, "database_label", type(store).__name__)
         if remote:

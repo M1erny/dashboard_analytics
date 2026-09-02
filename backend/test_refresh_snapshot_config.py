@@ -99,10 +99,47 @@ check(
 check("a URL with no host is rejected", rejection("postgresql:///postgres") is not None)
 check("an empty label inside the host is rejected", rejection("postgresql://u:p@host..com/db") is not None)
 
+# A password that was never substituted. Supabase's panel hands out
+# "[YOUR-PASSWORD]" verbatim, and every set of instructions has its own stand-in;
+# none of them connect, and Postgres only ever says "password authentication
+# failed", which points at the password's value rather than at its absence.
+def url_with_password(password):
+    return f"postgresql://postgres.abc:{password}@aws-0-eu-west-1.pooler.supabase.com:6543/postgres"
+
+
+for placeholder in ("[YOUR-PASSWORD]", "<password>", "{{password}}", "YOUR-PASSWORD",
+                    "your_password", "CHANGEME", "NOWE_HASLO", "password", "TODO"):
+    message = rejection(url_with_password(placeholder)) or ""
+    check(
+        f"the stand-in {placeholder!r} is caught before connecting",
+        message == job.PLACEHOLDER_PASSWORD_HELP,
+        message[:80],
+    )
+
+for real in ("s3cr%26t", "VG635x2Y.D8w", "aBcD1234efGH", "p4ssw0rd-with-dashes", "Secret123"):
+    check(f"the real-looking password {real!r} is accepted", rejection(url_with_password(real)) is None)
+
+check(
+    "a password that merely contains a placeholder word is still accepted",
+    rejection(url_with_password("mypassword2026")) is None,
+    "substring matching would reject real passwords",
+)
+check("an empty password is not treated as a placeholder", not job.looks_like_placeholder(""))
+check(
+    "the stand-in message shows how to read the value in at a prompt",
+    "Read-Host" in job.PLACEHOLDER_PASSWORD_HELP and "read -rs" in job.PLACEHOLDER_PASSWORD_HELP,
+)
+check(
+    "a bracketed password does not crash urlparse before the check runs",
+    isinstance(rejection(url_with_password("[YOUR-PASSWORD]")), str),
+    "urlsplit rejects '[' in the netloc, so this path must be caught",
+)
+
 # The secret must never be echoed back in an error the user may paste anywhere.
-for value in ("postgresql://...", "mysql://user:hunter2@host/db", "supabase"):
+for value in ("postgresql://...", "mysql://user:hunter2@host/db", "supabase",
+              url_with_password("[YOUR-PASSWORD]"), url_with_password("hunter2ABC[x]")):
     message = rejection(value) or ""
-    check(f"the message for {value[:24]!r} does not leak a password", "hunter2" not in message)
+    check(f"the message for {value[:28]!r} does not leak a password", "hunter2" not in message)
 
 # BRAIN_DATABASE_URL takes precedence, matching create_brain_store.
 def brain_wins():
