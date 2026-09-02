@@ -213,7 +213,7 @@ The dashboard shows which of those three it is, without a click: a badge beside 
 
 When Yahoo throttles the host, the fetch stops at the first 429 and the host leaves Yahoo alone for `YF_RATE_LIMIT_COOLDOWN_SECONDS` (default 10 min) instead of retrying every ticker three times.
 
-**Scheduled refresh.** `.github/workflows/market-snapshot.yml` runs `backend/refresh_market_snapshot.py` every two hours on weekdays from a GitHub runner and writes the snapshot to the same database, so the web host serves fresh data without calling Yahoo itself. It needs one repository secret: `DATABASE_URL`, the same Supabase connection string the backend uses on Render (Settings -> Secrets and variables -> Actions). Trigger it once by hand from the Actions tab after adding the secret; the dashboard picks the snapshot up within five minutes.
+**Scheduled refresh.** `.github/workflows/market-snapshot.yml` runs `backend/refresh_market_snapshot.py` every two hours on weekdays from a GitHub runner and writes the snapshot to the same database, so the web host serves fresh data without calling Yahoo itself. It needs one repository secret: `DATABASE_URL`, the same Supabase connection string the backend uses on Render (Settings -> Secrets and variables -> Actions); the workflow passes `--require-remote` so a missing secret fails the run rather than writing to a runner's disk. Run the script by hand the same way, from `backend/`, to refresh the snapshot from your own machine; without `DATABASE_URL` it writes to the local SQLite store and says so. Trigger it once by hand from the Actions tab after adding the secret; the dashboard picks the snapshot up within five minutes.
 
 ## Investment Brain
 
