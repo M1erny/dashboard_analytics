@@ -381,7 +381,20 @@ export interface FullRiskReport {
     rebalance?: RebalanceState;
     currentBookScenario?: CurrentBookScenario | null;
     bookAnalytics?: BookAnalyticsReport;
+    /** Where the market data behind this report came from. `stale` means the
+     *  backend could not reach Yahoo and served its last good snapshot instead. */
+    dataStatus?: MarketDataStatus | null;
     error?: string;
+}
+
+export interface MarketDataStatus {
+    stale: boolean;
+    /** Last market date in the served prices, YYYY-MM-DD. */
+    asOf?: string | null;
+    fetchedAt?: string | null;
+    reason?: 'rate_limited' | 'empty' | 'fetch_error' | string | null;
+    message?: string | null;
+    retryAfterSeconds?: number | null;
 }
 
 export type CostTier = 'institutional' | 'retail' | 'none';
@@ -445,6 +458,7 @@ export const fetchDashboardData = async (retries = 5, delay = 3000, force = fals
                     rebalance: data.rebalance,
                     currentBookScenario: data.currentBookScenario || null,
                     bookAnalytics: data.bookAnalytics,
+                    dataStatus: data.dataStatus ?? null,
                     error: data.error
                 };
             }

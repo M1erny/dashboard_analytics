@@ -1,4 +1,5 @@
 import yfinance as yf
+import yfinance.shared as yf_shared  # per-ticker download errors; not re-exported by the package
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,7 +12,9 @@ from scipy.stats import skew, kurtosis
 # 1. CONFIGURATION: Define Your Portfolio
 # ==========================================
 import json
+import logging
 import os
+import time
 import re
 from urllib.request import Request, urlopen
 
@@ -325,7 +328,107 @@ def _detect_incomplete_tickers(stock_raw, tickers, lookback=SETTLED_GAP_LOOKBACK
     return failed
 
 
+# --- Yahoo rate-limit guard -------------------------------------------------
+# When Yahoo throttles this host it answers HTTP 429 for every ticker, and yfinance
+# reports that per ticker instead of raising. Left alone, fetch_data then retries
+# each of ~45 tickers three times, one second apart: a hundred-plus requests that
+# are all guaranteed to fail, take minutes, and teach Yahoo to keep throttling.
+# So a throttled download is treated as one event: stop, remember it, and refuse
+# to call Yahoo again until the cooldown has passed. The dashboard serves its last
+# good snapshot in the meantime.
+RATE_LIMIT_COOLDOWN_SECONDS = max(60.0, min(float(os.environ.get("YF_RATE_LIMIT_COOLDOWN_SECONDS") or 600.0), 3600.0))
+_rate_limited_until = 0.0
+
+
+class MarketDataRateLimited(Exception):
+    """Yahoo is throttling this host; no market data was fetched."""
+
+    def __init__(self, retry_after: float):
+        self.retry_after = max(0.0, float(retry_after))
+        minutes = max(1, int(round(self.retry_after / 60)))
+        super().__init__(f"Yahoo Finance is rate-limiting this host. Retrying in about {minutes} min.")
+
+
+def _is_rate_limit_error(err) -> bool:
+    text = str(err or "")
+    return "RateLimit" in text or "Too Many Requests" in text or "429" in text
+
+
+def download_errors_rate_limited(errors=None) -> bool:
+    """True when a mapping of per-ticker download errors contains a throttle."""
+    if errors is None:
+        errors = getattr(yf_shared, "_ERRORS", None)
+    return any(_is_rate_limit_error(v) for v in (errors or {}).values())
+
+
+class _YahooLogCapture(logging.Handler):
+    """Collects what yfinance logs during one download.
+
+    yfinance does not raise when a ticker fails inside download(); it logs
+    "N Failed download(s): ['CADUSD=X']: YFRateLimitError(...)" and moves on. In
+    the 1.x line those errors live in a per-call context that is discarded, so
+    the log is the only place a caller can still see them. Attached directly to
+    the 'yfinance' logger, this sees the records whatever the root logger does.
+    """
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+        self.messages: list[str] = []
+
+    def emit(self, record):
+        try:
+            self.messages.append(record.getMessage())
+        except Exception:
+            self.messages.append(str(record.msg))
+
+    def __enter__(self):
+        logging.getLogger("yfinance").addHandler(self)
+        return self
+
+    def __exit__(self, *exc):
+        logging.getLogger("yfinance").removeHandler(self)
+        return False
+
+    def rate_limited(self) -> bool:
+        return any(_is_rate_limit_error(m) for m in self.messages)
+
+
+def note_rate_limit(now=None) -> None:
+    global _rate_limited_until
+    _rate_limited_until = (now if now is not None else time.time()) + RATE_LIMIT_COOLDOWN_SECONDS
+
+
+def clear_rate_limit() -> None:
+    global _rate_limited_until
+    _rate_limited_until = 0.0
+
+
+def rate_limit_remaining(now=None) -> float:
+    return max(0.0, _rate_limited_until - (now if now is not None else time.time()))
+
+
+def _guarded_download(*args, **kwargs):
+    """yf.download that turns a throttled batch into MarketDataRateLimited."""
+    with _YahooLogCapture() as captured:
+        try:
+            frame = yf.download(*args, **kwargs)
+        except Exception as ex:
+            if _is_rate_limit_error(ex):
+                note_rate_limit()
+                raise MarketDataRateLimited(RATE_LIMIT_COOLDOWN_SECONDS) from ex
+            raise
+    if captured.rate_limited() or download_errors_rate_limited():
+        note_rate_limit()
+        raise MarketDataRateLimited(RATE_LIMIT_COOLDOWN_SECONDS)
+    return frame
+
+
 def fetch_data(portfolio_name="main"):
+    remaining = rate_limit_remaining()
+    if remaining > 0:
+        print(f"--- 1. Skipping data download: Yahoo rate limit cooldown, {int(remaining)}s left ---")
+        raise MarketDataRateLimited(remaining)
+
     PORTFOLIO_CONFIG = get_all_position_configs(portfolio_name)
     print("--- 1. Initializing Data Download ---")
     
@@ -350,7 +453,7 @@ def fetch_data(portfolio_name="main"):
     end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     
     print(f"Fetching stock data for {len(tickers)} tickers from {start_date} to {end_date}...")
-    stock_raw = yf.download(tickers, start=start_date, end=end_date, auto_adjust=True, threads=True)
+    stock_raw = _guarded_download(tickers, start=start_date, end=end_date, auto_adjust=True, threads=True)
     print(f"Stock Raw Shape: {stock_raw.shape}")
     if stock_raw.empty:
          print("WARNING: Stock Raw is EMPTY!")
@@ -377,7 +480,7 @@ def fetch_data(portfolio_name="main"):
             print(f"Retrying single download for stock: {t}")
             for attempt in range(3):
                 try:
-                    single_raw = yf.download([t], start=start_date, end=end_date, auto_adjust=True, threads=False, progress=False)
+                    single_raw = _guarded_download([t], start=start_date, end=end_date, auto_adjust=True, threads=False, progress=False)
                     if not single_raw.empty:
                         valid_series = get_ticker_series(single_raw, t)
                         if not valid_series.empty:
@@ -392,6 +495,8 @@ def fetch_data(portfolio_name="main"):
                             print(f"Attempt {attempt+1}: Data downloaded but valid series is empty for {t}")
                     else:
                         print(f"Attempt {attempt+1}: Returned empty DataFrame for {t}")
+                except MarketDataRateLimited:
+                    raise
                 except Exception as ex:
                     print(f"Error recovering stock ticker {t} (attempt {attempt + 1}): {ex}")
                 time.sleep(1)
@@ -462,7 +567,7 @@ def fetch_data(portfolio_name="main"):
         volume_data = pd.DataFrame(1, index=stock_raw.index, columns=stock_raw.columns)
         
     print(f"Fetching FX rates for: {fx_pairs}...")
-    fx_raw = yf.download(fx_pairs, start=start_date, auto_adjust=True, threads=True)
+    fx_raw = _guarded_download(fx_pairs, start=start_date, auto_adjust=True, threads=True)
     
     # --- Recovery logic for failed FX downloads ---
     def get_fx_series(df, fx_t):
@@ -490,7 +595,7 @@ def fetch_data(portfolio_name="main"):
             print(f"Retrying single download for FX: {fx_t}")
             for attempt in range(3):
                 try:
-                    single_raw = yf.download([fx_t], start=start_date, auto_adjust=True, threads=False, progress=False)
+                    single_raw = _guarded_download([fx_t], start=start_date, auto_adjust=True, threads=False, progress=False)
                     if not single_raw.empty:
                         valid_series = get_fx_series(single_raw, fx_t)
                         if not valid_series.empty:
@@ -505,6 +610,8 @@ def fetch_data(portfolio_name="main"):
                             print(f"Attempt {attempt+1}: Data downloaded but valid series is empty for FX {fx_t}")
                     else:
                         print(f"Attempt {attempt+1}: Returned empty DataFrame for FX {fx_t}")
+                except MarketDataRateLimited:
+                    raise
                 except Exception as ex:
                     print(f"Error recovering FX {fx_t} (attempt {attempt + 1}): {ex}")
                 time.sleep(1)

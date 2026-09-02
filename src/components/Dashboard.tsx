@@ -552,6 +552,8 @@ export const Dashboard: React.FC = () => {
 
     const portfolioLabel = 'My Portfolio';
 
+    const dataIsStale = data.dataStatus?.stale === true;
+
     return (
         <div className="relative min-h-[100dvh] overflow-x-hidden bg-[#040704] text-foreground">
             {/* A tiling desktop has no wallpaper glow behind its windows, and the two
@@ -568,7 +570,9 @@ export const Dashboard: React.FC = () => {
                 </div>
                 <div>
                     <span>{COST_TIER_OPTIONS.find(option => option.value === costTier)?.label ?? costTier}</span>
-                    <span className={isSwitchingTier ? 'is-current' : undefined}>{isSwitchingTier ? 'SYNC' : 'OK'}</span>
+                    <span className={isSwitchingTier || dataIsStale ? 'is-current' : undefined}>
+                        {isSwitchingTier ? 'SYNC' : dataIsStale ? 'STALE' : 'OK'}
+                    </span>
                 </div>
             </div>
 
@@ -768,6 +772,26 @@ export const Dashboard: React.FC = () => {
                         </div>
                     </div>
                 </header>
+
+                {dataIsStale && (
+                    <div
+                        role="status"
+                        className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3"
+                    >
+                        <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                        <p className="flex-1 text-xs leading-5 text-amber-200/90">
+                            <span className="font-bold uppercase tracking-[0.08em]">Snapshot</span>
+                            {' '}
+                            {data.dataStatus?.asOf
+                                ? `Market data as of ${data.dataStatus.asOf}.`
+                                : 'Market data is a saved snapshot.'}
+                            {' '}
+                            {data.dataStatus?.reason === 'rate_limited'
+                                ? 'Yahoo Finance is rate-limiting the host; the backend retries on its own once the cooldown passes.'
+                                : (data.dataStatus?.message ?? 'The live fetch failed; the backend retries on the next request.')}
+                        </p>
+                    </div>
+                )}
 
                 {refreshError && (
                     <div className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3">
