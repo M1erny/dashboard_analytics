@@ -1,0 +1,37 @@
+name: Market snapshot refresh
+
+# Fetches the portfolio's market data from a GitHub runner and saves it to the
+# same Postgres the dashboard reads, so the web host serves a fresh snapshot
+# instead of calling Yahoo from its throttled shared IP on every page load.
+#
+# Needs one repository secret: DATABASE_URL (the Supabase connection string the
+# backend already uses on Render). Without it the job fails at the write step.
+
+on:
+  schedule:
+    # Every two hours on weekdays, 06:00-22:00 UTC: covers Warsaw open through
+    # New York close. Times are UTC; GitHub may start a run a few minutes late.
+    - cron: "0 6-22/2 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: market-snapshot
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - name: Fetch and save the snapshot
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: python refresh_market_snapshot.py --portfolio main

@@ -3,8 +3,6 @@ import os
 import html
 import re
 import asyncio
-import base64
-import gzip
 import json
 import math
 from collections import OrderedDict
@@ -1296,16 +1294,29 @@ def _gemini_or_503():
 # --- Market data: cache, last-good snapshot, status -----------------------------
 # Yahoo throttles shared hosts, and a free-tier process restarts with an empty
 # memory. Together those used to mean a blank dashboard whenever the first fetch
-# after a restart failed. The last good frames are therefore also written to the
-# brain store (Postgres on Render), once per market day, and read back when a
-# cold process cannot fetch. Whatever is served, its provenance travels with it in
-# the status below so the UI can say "snapshot as of Friday" instead of nothing.
-MARKET_SNAPSHOT_SETTING_PREFIX = "market.snapshot.v1."
-MARKET_SNAPSHOT_MAX_BYTES = 6 * 1024 * 1024
+# after a restart failed. The good frames therefore also live in the brain store
+# (Postgres on Render) as one setting per portfolio, written by whichever fetched
+# them last: this process after a successful fetch, or the scheduled refresh job
+# (refresh_market_snapshot.py, run from GitHub Actions). While that snapshot is
+# fresh the server serves it and does not call Yahoo at all, which is what
+# actually takes the load off the throttled host. Whatever is served, its
+# provenance travels with it in the status below.
+import market_snapshot
+
+MARKET_SNAPSHOT_SETTING_PREFIX = market_snapshot.SETTING_PREFIX
+MARKET_SNAPSHOT_MAX_BYTES = market_snapshot.MAX_BYTES
+# A snapshot younger than this is served without asking Yahoo. The refresh job
+# runs every two hours on weekdays; three hours leaves room for a late start.
+MARKET_SNAPSHOT_FRESH_SECONDS = max(300.0, min(_env_float("MARKET_SNAPSHOT_FRESH_SECONDS", 3 * 3600.0), 24 * 3600.0))
 _market_data_status: dict[str, dict[str, Any]] = {}
 _market_snapshot_written: dict[str, str] = {}
 _market_data_locks: dict[str, asyncio.Lock] = {}
-_MARKET_FRAME_KEYS = ("usd_prices", "fx_rates", "volume_data", "raw_prices")
+
+# Kept under their old names: tests and the module below use them.
+encode_market_snapshot = market_snapshot.encode
+decode_market_snapshot = market_snapshot.decode
+_market_as_of = market_snapshot.market_as_of
+_iso_from_epoch = market_snapshot.iso_from_epoch
 
 
 def _market_lock(portfolio_name: str) -> asyncio.Lock:
@@ -1318,66 +1329,8 @@ def _market_lock(portfolio_name: str) -> asyncio.Lock:
 def market_data_status(portfolio_name: str = "main") -> dict[str, Any]:
     status = _market_data_status.get(portfolio_name)
     if status is None:
-        return {"stale": False, "asOf": None, "fetchedAt": None, "reason": None, "message": None, "retryAfterSeconds": None}
+        return {"stale": False, "source": None, "asOf": None, "fetchedAt": None, "reason": None, "message": None, "retryAfterSeconds": None}
     return dict(status)
-
-
-def _market_as_of(usd_prices) -> str | None:
-    try:
-        if usd_prices is None or usd_prices.empty:
-            return None
-        return pd.Timestamp(usd_prices.index[-1]).strftime("%Y-%m-%d")
-    except Exception:
-        return None
-
-
-def _iso_from_epoch(epoch: float | None) -> str | None:
-    if not epoch:
-        return None
-    return datetime.utcfromtimestamp(float(epoch)).isoformat() + "Z"
-
-
-def _frame_to_payload(frame):
-    if frame is None:
-        return None
-    return json.loads(frame.to_json(orient="split", date_format="iso", double_precision=10))
-
-
-def _frame_from_payload(payload):
-    if not payload:
-        return None
-    frame = pd.DataFrame(payload.get("data") or [], index=payload.get("index") or [], columns=payload.get("columns") or [])
-    if len(frame.index):
-        frame.index = pd.to_datetime(frame.index)
-        if getattr(frame.index, "tz", None) is not None:
-            frame.index = frame.index.tz_localize(None)
-    return frame
-
-
-def encode_market_snapshot(data, as_of: str | None, fetched_at: float) -> str:
-    usd_prices, fx_rates, volume_data, raw_prices = data
-    payload = {
-        "version": 1,
-        "asOf": as_of,
-        "fetchedAt": _iso_from_epoch(fetched_at),
-        "frames": {
-            "usd_prices": _frame_to_payload(usd_prices),
-            "fx_rates": _frame_to_payload(fx_rates),
-            "volume_data": _frame_to_payload(volume_data),
-            "raw_prices": _frame_to_payload(raw_prices),
-        },
-    }
-    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    return base64.b64encode(gzip.compress(raw, compresslevel=6)).decode("ascii")
-
-
-def decode_market_snapshot(text: str):
-    payload = json.loads(gzip.decompress(base64.b64decode(text)).decode("utf-8"))
-    frames = payload.get("frames") or {}
-    data = tuple(_frame_from_payload(frames.get(key)) for key in _MARKET_FRAME_KEYS)
-    if data[0] is None or data[0].empty:
-        raise ValueError("snapshot holds no prices")
-    return data, payload.get("asOf"), payload.get("fetchedAt")
 
 
 def _persist_market_snapshot(portfolio_name: str, data, as_of: str | None, fetched_at: float) -> None:
@@ -1385,11 +1338,11 @@ def _persist_market_snapshot(portfolio_name: str, data, as_of: str | None, fetch
     if brain_store is None or not as_of or _market_snapshot_written.get(portfolio_name) == as_of:
         return
     try:
-        text = encode_market_snapshot(data, as_of, fetched_at)
+        text = market_snapshot.encode(data, as_of, fetched_at)
         if len(text) > MARKET_SNAPSHOT_MAX_BYTES:
             print(f"Market snapshot for {portfolio_name} not saved: {len(text) // 1024} KB exceeds the cap.")
             return
-        brain_store.set_setting(MARKET_SNAPSHOT_SETTING_PREFIX + portfolio_name, text)
+        brain_store.set_setting(market_snapshot.setting_key(portfolio_name), text)
         _market_snapshot_written[portfolio_name] = as_of
         print(f"Market snapshot for {portfolio_name} saved ({len(text) // 1024} KB, as of {as_of}).")
     except Exception as ex:
@@ -1397,18 +1350,24 @@ def _persist_market_snapshot(portfolio_name: str, data, as_of: str | None, fetch
 
 
 def _load_market_snapshot(portfolio_name: str):
+    """Return (frames, asOf, fetchedAt ISO) from the store, or None."""
     if brain_store is None:
         return None
     try:
-        text = brain_store.get_setting(MARKET_SNAPSHOT_SETTING_PREFIX + portfolio_name)
+        text = brain_store.get_setting(market_snapshot.setting_key(portfolio_name))
         if not text:
             return None
-        data, as_of, fetched_at = decode_market_snapshot(text)
+        data, as_of, fetched_at = market_snapshot.decode(text)
         print(f"Loaded market snapshot for {portfolio_name} (as of {as_of}, fetched {fetched_at}).")
         return data, as_of, fetched_at
     except Exception as ex:
         print(f"Market snapshot load failed for {portfolio_name}: {ex}")
         return None
+
+
+def _snapshot_age_seconds(fetched_at_iso: str | None, now: float) -> float | None:
+    epoch = market_snapshot.epoch_from_iso(fetched_at_iso)
+    return None if epoch is None else max(0.0, now - epoch)
 
 
 def _empty_market_data():
@@ -1434,6 +1393,34 @@ def _get_cached_market_data(force: bool = False, portfolio_name: str = "main"):
         print(f"Using cached market data for {portfolio_name} (age: {int(now - cache_entry['timestamp'])}s)")
         return cache_entry["data"]
 
+    # A fresh snapshot (the refresh job ran recently) is served as-is: no Yahoo
+    # call from this host. A forced refresh is the one place the user has asked
+    # for a live fetch, so it skips this and falls back to the snapshot only on
+    # failure, below.
+    if not force:
+        snapshot = _load_market_snapshot(portfolio_name)
+        if snapshot is not None:
+            snap_data, snap_as_of, snap_fetched_at = snapshot
+            age = _snapshot_age_seconds(snap_fetched_at, now)
+            if age is not None and age <= MARKET_SNAPSHOT_FRESH_SECONDS:
+                cache_entry["data"] = snap_data
+                cache_entry["timestamp"] = now
+                cache_entry["fetchedAt"] = snap_fetched_at
+                cache_entry["asOf"] = snap_as_of or _market_as_of(snap_data[0])
+                _market_snapshot_written[portfolio_name] = cache_entry["asOf"]
+                _market_data_status[portfolio_name] = {
+                    "stale": False,
+                    "source": "snapshot",
+                    "asOf": cache_entry["asOf"],
+                    "fetchedAt": snap_fetched_at,
+                    "reason": None,
+                    "message": None,
+                    "retryAfterSeconds": None,
+                }
+                print(f"Serving fresh market snapshot for {portfolio_name} (age: {int(age)}s); Yahoo not called.")
+                return snap_data
+            print(f"Market snapshot for {portfolio_name} is {int(age) if age is not None else 'of unknown'}s old; fetching.")
+
     print(f"Fetching fresh market data for {portfolio_name}...")
     data = None
     failure: dict[str, Any] = {}
@@ -1456,6 +1443,7 @@ def _get_cached_market_data(force: bool = False, portfolio_name: str = "main"):
         cache_entry["asOf"] = _market_as_of(data[0])
         _market_data_status[portfolio_name] = {
             "stale": False,
+            "source": "yahoo",
             "asOf": cache_entry["asOf"],
             "fetchedAt": _iso_from_epoch(now),
             "reason": None,
@@ -1481,6 +1469,7 @@ def _get_cached_market_data(force: bool = False, portfolio_name: str = "main"):
     fetched_at = cache_entry.get("fetchedAt")
     status = {
         "stale": True,
+        "source": "snapshot" if cache_entry["data"] is not None else None,
         "asOf": cache_entry.get("asOf") if cache_entry["data"] is not None else None,
         "fetchedAt": fetched_at if isinstance(fetched_at, str) else _iso_from_epoch(fetched_at),
         **failure,
