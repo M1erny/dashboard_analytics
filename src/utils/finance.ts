@@ -389,6 +389,9 @@ export interface FullRiskReport {
 
 export interface MarketDataStatus {
     stale: boolean;
+    /** 'yahoo' when this process fetched live; 'snapshot' when served from the
+     *  saved frames (fresh ones come from the scheduled refresh job). */
+    source?: 'yahoo' | 'snapshot' | string | null;
     /** Last market date in the served prices, YYYY-MM-DD. */
     asOf?: string | null;
     fetchedAt?: string | null;

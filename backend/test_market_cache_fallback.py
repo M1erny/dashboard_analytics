@@ -342,6 +342,50 @@ check("and labels it: stale, rate limited, dated", status["stale"] is True and s
 check("the snapshot is stored as already expired so the next request retries", stamp == 0, f"timestamp {stamp}")
 check("the next request did retry Yahoo and served the snapshot again", calls == 2 and len(again[0]) == 3, f"calls={calls}")
 
+# ------------------------------------------------ fresh snapshot from the job
+print("\n=== Fresh snapshot from the scheduled refresh: Yahoo not called ===")
+
+import market_snapshot
+
+fresh_text = market_snapshot.encode(data, "2026-09-02", time.time() - 600)
+old_text = market_snapshot.encode(data, "2026-08-29", time.time() - server.MARKET_SNAPSHOT_FRESH_SECONDS - 60)
+
+
+def unforced(fake):
+    served = server._get_cached_market_data(force=False)
+    status = server.market_data_status("main")
+    # Second unforced request inside the TTL must come from memory, not the store.
+    reads_before = len(server.brain_store.reads)
+    server._get_cached_market_data(force=False)
+    return served, status, fake.calls, len(server.brain_store.reads) - reads_before
+
+
+class CountingStore(FakeStore):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.reads = []
+
+    def get_setting(self, key):
+        self.reads.append(key)
+        return super().get_setting(key)
+
+
+served, status, calls, extra_reads = with_fakes([good_frame()], unforced, store=CountingStore({"market.snapshot.v1.main": fresh_text}))
+check("a fresh snapshot is served without calling Yahoo", calls == 0 and len(served[0]) == 3, f"fetch_data calls={calls}")
+check("and is reported as fresh, from the snapshot", status["stale"] is False and status["source"] == "snapshot" and status["asOf"] == "2026-09-02", str(status))
+check("then cached in memory for the TTL", extra_reads == 0, f"{extra_reads} extra store reads")
+
+served, status, calls, _ = with_fakes([good_frame("2026-09-02")], unforced, store=CountingStore({"market.snapshot.v1.main": old_text}))
+check("a snapshot past the freshness window triggers a live fetch", calls == 1 and status["source"] == "yahoo", f"calls={calls} status={status}")
+
+served, status, calls, _ = with_fakes([good_frame("2026-09-02")], lambda fake: (server._get_cached_market_data(force=True), server.market_data_status("main"), fake.calls, 0), store=CountingStore({"market.snapshot.v1.main": fresh_text}))
+check("a forced refresh always tries Yahoo first", calls == 1 and status["source"] == "yahoo", f"calls={calls} status={status}")
+
+served, status, calls, _ = with_fakes(["rate_limited"], lambda fake: (server._get_cached_market_data(force=True), server.market_data_status("main"), fake.calls, 0), store=CountingStore({"market.snapshot.v1.main": fresh_text}))
+check("and falls back to the snapshot when Yahoo throttles it", calls == 1 and len(served[0]) == 3 and status["stale"] is True and status["source"] == "snapshot", f"calls={calls} status={status}")
+
+check("the job and the server share one codec", server.encode_market_snapshot is market_snapshot.encode and server.decode_market_snapshot is market_snapshot.decode)
+
 broken = FakeStore({"market.snapshot.v1.main": "not-a-snapshot"})
 served, status = with_fakes(["rate_limited"], lambda fake: (server._get_cached_market_data(force=True), server.market_data_status("main")), store=broken)
 check("a corrupt snapshot is skipped, not fatal", served[0].empty and status["asOf"] is None)
