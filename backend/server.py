@@ -1308,6 +1308,22 @@ def _get_cached_market_data(force: bool = False, portfolio_name: str = "main"):
     print(f"Fetching fresh market data for {portfolio_name}...")
     raw_prices, fx_rates, volume_data = risk.fetch_data(portfolio_name)
     usd_prices = risk.normalize_to_base_currency(raw_prices, fx_rates, portfolio_name)
+
+    # A rate-limited download does not raise, it returns an empty frame. Storing
+    # that would pin the failure for the whole TTL and hand the same blank frame
+    # to every other endpoint reading this cache, so a single unlucky fetch blanks
+    # the dashboard for five minutes. Keep the last good snapshot instead, and
+    # leave its timestamp expired so the very next request retries.
+    if usd_prices is None or usd_prices.empty or len(usd_prices) < 2:
+        if cache_entry["data"] is not None:
+            print(
+                f"Market data fetch for {portfolio_name} came back empty; "
+                f"serving the previous snapshot (age: {int(now - cache_entry['timestamp'])}s)."
+            )
+            return cache_entry["data"]
+        print(f"Market data fetch for {portfolio_name} came back empty and nothing is cached.")
+        return (usd_prices, fx_rates, volume_data, raw_prices)
+
     cache_entry["data"] = (usd_prices, fx_rates, volume_data, raw_prices)
     cache_entry["timestamp"] = now
     return cache_entry["data"]
