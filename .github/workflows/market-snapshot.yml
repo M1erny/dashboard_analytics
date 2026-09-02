@@ -34,4 +34,4 @@ jobs:
         working-directory: backend
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
-        run: python refresh_market_snapshot.py --portfolio main
+        run: python refresh_market_snapshot.py --portfolio main --require-remote
