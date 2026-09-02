@@ -467,6 +467,9 @@ export const Dashboard: React.FC = () => {
     }
 
     if (error || !data) {
+        const apiBase = (import.meta.env.VITE_API_URL as string | undefined) ?? '';
+        const metricsProbeUrl = `${apiBase || window.location.origin}/api/metrics?portfolio=main`;
+        const isLocalBackend = /^https?:\/\/(127\.0\.0\.1|localhost)/.test(apiBase) || (!apiBase && /^(127\.0\.0\.1|localhost)$/.test(window.location.hostname));
         return (
             <div className="min-h-screen bg-background text-foreground flex items-center justify-center p-4">
                 <div className="max-w-md w-full bg-rose-500/10 border border-rose-500/20 rounded-xl p-6 text-center">
@@ -479,13 +482,28 @@ export const Dashboard: React.FC = () => {
                     >
                         Retry Connection
                     </button>
-                    <div className="mt-4 text-xs text-gray-500 text-left bg-black/20 p-2 rounded overflow-auto max-h-32">
-                        <p>Troubleshooting:</p>
-                        <ul className="list-disc list-inside mt-1">
-                            <li>Ensure the backend window is open</li>
-                            <li>Check for errors in the backend console</li>
-                            <li>Verify http://127.0.0.1:8000/api/metrics works in browser</li>
-                        </ul>
+                    {/* The advice has to match where the backend actually is. This card
+                        was telling a phone to open a terminal window and check
+                        127.0.0.1:8000, which is only true when running locally. */}
+                    <div className="mt-4 text-xs text-gray-500 text-left bg-black/20 p-2 overflow-auto max-h-40">
+                        {isLocalBackend ? (
+                            <>
+                                <p>The backend is running on this machine:</p>
+                                <ul className="list-disc list-inside mt-1">
+                                    <li>Check the backend terminal for errors</li>
+                                    <li>Open <span className="font-mono">{metricsProbeUrl}</span> in a browser</li>
+                                </ul>
+                            </>
+                        ) : (
+                            <>
+                                <p>The backend is hosted, not on this device.</p>
+                                <ul className="list-disc list-inside mt-1">
+                                    <li>A cold instance takes up to a minute on the first request — retry once</li>
+                                    <li>Market data is fetched from Yahoo, which rate-limits shared hosts; this usually clears on its own</li>
+                                    <li>Still failing? <a className="underline" href={metricsProbeUrl} target="_blank" rel="noreferrer">open the metrics endpoint</a> to see what it returns</li>
+                                </ul>
+                            </>
+                        )}
                     </div>
                 </div>
             </div>
