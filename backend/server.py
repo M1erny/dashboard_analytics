@@ -3,6 +3,8 @@ import os
 import html
 import re
 import asyncio
+import base64
+import gzip
 import json
 import math
 from collections import OrderedDict
@@ -1291,42 +1293,206 @@ def _gemini_or_503():
         )
     return gemini_client
 
+# --- Market data: cache, last-good snapshot, status -----------------------------
+# Yahoo throttles shared hosts, and a free-tier process restarts with an empty
+# memory. Together those used to mean a blank dashboard whenever the first fetch
+# after a restart failed. The last good frames are therefore also written to the
+# brain store (Postgres on Render), once per market day, and read back when a
+# cold process cannot fetch. Whatever is served, its provenance travels with it in
+# the status below so the UI can say "snapshot as of Friday" instead of nothing.
+MARKET_SNAPSHOT_SETTING_PREFIX = "market.snapshot.v1."
+MARKET_SNAPSHOT_MAX_BYTES = 6 * 1024 * 1024
+_market_data_status: dict[str, dict[str, Any]] = {}
+_market_snapshot_written: dict[str, str] = {}
+_market_data_locks: dict[str, asyncio.Lock] = {}
+_MARKET_FRAME_KEYS = ("usd_prices", "fx_rates", "volume_data", "raw_prices")
+
+
+def _market_lock(portfolio_name: str) -> asyncio.Lock:
+    lock = _market_data_locks.get(portfolio_name)
+    if lock is None:
+        lock = _market_data_locks[portfolio_name] = asyncio.Lock()
+    return lock
+
+
+def market_data_status(portfolio_name: str = "main") -> dict[str, Any]:
+    status = _market_data_status.get(portfolio_name)
+    if status is None:
+        return {"stale": False, "asOf": None, "fetchedAt": None, "reason": None, "message": None, "retryAfterSeconds": None}
+    return dict(status)
+
+
+def _market_as_of(usd_prices) -> str | None:
+    try:
+        if usd_prices is None or usd_prices.empty:
+            return None
+        return pd.Timestamp(usd_prices.index[-1]).strftime("%Y-%m-%d")
+    except Exception:
+        return None
+
+
+def _iso_from_epoch(epoch: float | None) -> str | None:
+    if not epoch:
+        return None
+    return datetime.utcfromtimestamp(float(epoch)).isoformat() + "Z"
+
+
+def _frame_to_payload(frame):
+    if frame is None:
+        return None
+    return json.loads(frame.to_json(orient="split", date_format="iso", double_precision=10))
+
+
+def _frame_from_payload(payload):
+    if not payload:
+        return None
+    frame = pd.DataFrame(payload.get("data") or [], index=payload.get("index") or [], columns=payload.get("columns") or [])
+    if len(frame.index):
+        frame.index = pd.to_datetime(frame.index)
+        if getattr(frame.index, "tz", None) is not None:
+            frame.index = frame.index.tz_localize(None)
+    return frame
+
+
+def encode_market_snapshot(data, as_of: str | None, fetched_at: float) -> str:
+    usd_prices, fx_rates, volume_data, raw_prices = data
+    payload = {
+        "version": 1,
+        "asOf": as_of,
+        "fetchedAt": _iso_from_epoch(fetched_at),
+        "frames": {
+            "usd_prices": _frame_to_payload(usd_prices),
+            "fx_rates": _frame_to_payload(fx_rates),
+            "volume_data": _frame_to_payload(volume_data),
+            "raw_prices": _frame_to_payload(raw_prices),
+        },
+    }
+    raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return base64.b64encode(gzip.compress(raw, compresslevel=6)).decode("ascii")
+
+
+def decode_market_snapshot(text: str):
+    payload = json.loads(gzip.decompress(base64.b64decode(text)).decode("utf-8"))
+    frames = payload.get("frames") or {}
+    data = tuple(_frame_from_payload(frames.get(key)) for key in _MARKET_FRAME_KEYS)
+    if data[0] is None or data[0].empty:
+        raise ValueError("snapshot holds no prices")
+    return data, payload.get("asOf"), payload.get("fetchedAt")
+
+
+def _persist_market_snapshot(portfolio_name: str, data, as_of: str | None, fetched_at: float) -> None:
+    """Best effort, once per market day: a failed save must never fail the request."""
+    if brain_store is None or not as_of or _market_snapshot_written.get(portfolio_name) == as_of:
+        return
+    try:
+        text = encode_market_snapshot(data, as_of, fetched_at)
+        if len(text) > MARKET_SNAPSHOT_MAX_BYTES:
+            print(f"Market snapshot for {portfolio_name} not saved: {len(text) // 1024} KB exceeds the cap.")
+            return
+        brain_store.set_setting(MARKET_SNAPSHOT_SETTING_PREFIX + portfolio_name, text)
+        _market_snapshot_written[portfolio_name] = as_of
+        print(f"Market snapshot for {portfolio_name} saved ({len(text) // 1024} KB, as of {as_of}).")
+    except Exception as ex:
+        print(f"Market snapshot save failed for {portfolio_name}: {ex}")
+
+
+def _load_market_snapshot(portfolio_name: str):
+    if brain_store is None:
+        return None
+    try:
+        text = brain_store.get_setting(MARKET_SNAPSHOT_SETTING_PREFIX + portfolio_name)
+        if not text:
+            return None
+        data, as_of, fetched_at = decode_market_snapshot(text)
+        print(f"Loaded market snapshot for {portfolio_name} (as of {as_of}, fetched {fetched_at}).")
+        return data, as_of, fetched_at
+    except Exception as ex:
+        print(f"Market snapshot load failed for {portfolio_name}: {ex}")
+        return None
+
+
+def _empty_market_data():
+    return (pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+
+
 def _get_cached_market_data(force: bool = False, portfolio_name: str = "main"):
-    """Fetch and cache raw market data for a portfolio."""
+    """Return (usd_prices, fx_rates, volume_data, raw_prices) for a portfolio.
+
+    Fresh when possible; otherwise the last good frames from memory or the saved
+    snapshot, flagged as stale in market_data_status(); and only when none of
+    those exist, empty frames. A failed fetch is never stored as data.
+    """
     global _data_cache
     now = time.time()
-    
+
     if portfolio_name not in _data_cache:
-        _data_cache[portfolio_name] = {"data": None, "timestamp": 0}
-        
+        _data_cache[portfolio_name] = {"data": None, "timestamp": 0, "asOf": None, "fetchedAt": None}
+
     cache_entry = _data_cache[portfolio_name]
-    
+
     if not force and cache_entry["data"] and (now - cache_entry["timestamp"]) < CACHE_TTL:
         print(f"Using cached market data for {portfolio_name} (age: {int(now - cache_entry['timestamp'])}s)")
         return cache_entry["data"]
-    
+
     print(f"Fetching fresh market data for {portfolio_name}...")
-    raw_prices, fx_rates, volume_data = risk.fetch_data(portfolio_name)
-    usd_prices = risk.normalize_to_base_currency(raw_prices, fx_rates, portfolio_name)
+    data = None
+    failure: dict[str, Any] = {}
+    try:
+        raw_prices, fx_rates, volume_data = risk.fetch_data(portfolio_name)
+        usd_prices = risk.normalize_to_base_currency(raw_prices, fx_rates, portfolio_name)
+        if usd_prices is None or usd_prices.empty or len(usd_prices) < 2:
+            failure = {"reason": "empty", "message": "Market data download returned no usable prices.", "retryAfterSeconds": None}
+        else:
+            data = (usd_prices, fx_rates, volume_data, raw_prices)
+    except risk.MarketDataRateLimited as ex:
+        failure = {"reason": "rate_limited", "message": str(ex), "retryAfterSeconds": int(ex.retry_after)}
+    except Exception as ex:
+        failure = {"reason": "fetch_error", "message": f"Market data fetch failed: {type(ex).__name__}: {ex}", "retryAfterSeconds": None}
 
-    # A rate-limited download does not raise, it returns an empty frame. Storing
-    # that would pin the failure for the whole TTL and hand the same blank frame
-    # to every other endpoint reading this cache, so a single unlucky fetch blanks
-    # the dashboard for five minutes. Keep the last good snapshot instead, and
-    # leave its timestamp expired so the very next request retries.
-    if usd_prices is None or usd_prices.empty or len(usd_prices) < 2:
-        if cache_entry["data"] is not None:
-            print(
-                f"Market data fetch for {portfolio_name} came back empty; "
-                f"serving the previous snapshot (age: {int(now - cache_entry['timestamp'])}s)."
-            )
-            return cache_entry["data"]
-        print(f"Market data fetch for {portfolio_name} came back empty and nothing is cached.")
-        return (usd_prices, fx_rates, volume_data, raw_prices)
+    if data is not None:
+        cache_entry["data"] = data
+        cache_entry["timestamp"] = now
+        cache_entry["fetchedAt"] = now
+        cache_entry["asOf"] = _market_as_of(data[0])
+        _market_data_status[portfolio_name] = {
+            "stale": False,
+            "asOf": cache_entry["asOf"],
+            "fetchedAt": _iso_from_epoch(now),
+            "reason": None,
+            "message": None,
+            "retryAfterSeconds": None,
+        }
+        _persist_market_snapshot(portfolio_name, data, cache_entry["asOf"], now)
+        return data
 
-    cache_entry["data"] = (usd_prices, fx_rates, volume_data, raw_prices)
-    cache_entry["timestamp"] = now
-    return cache_entry["data"]
+    print(f"Market data fetch for {portfolio_name} failed ({failure['reason']}): {failure['message']}")
+
+    if cache_entry["data"] is None:
+        snapshot = _load_market_snapshot(portfolio_name)
+        if snapshot is not None:
+            snap_data, snap_as_of, snap_fetched_at = snapshot
+            cache_entry["data"] = snap_data
+            cache_entry["asOf"] = snap_as_of or _market_as_of(snap_data[0])
+            cache_entry["fetchedAt"] = snap_fetched_at
+            # Deliberately expired: the snapshot is a stand-in, so the next request
+            # asks Yahoo again instead of sitting on it for a TTL.
+            cache_entry["timestamp"] = 0
+
+    fetched_at = cache_entry.get("fetchedAt")
+    status = {
+        "stale": True,
+        "asOf": cache_entry.get("asOf") if cache_entry["data"] is not None else None,
+        "fetchedAt": fetched_at if isinstance(fetched_at, str) else _iso_from_epoch(fetched_at),
+        **failure,
+    }
+    _market_data_status[portfolio_name] = status
+
+    if cache_entry["data"] is not None:
+        print(f"Serving previous market data for {portfolio_name} (as of {status['asOf']}).")
+        return cache_entry["data"]
+
+    print(f"No market data available for {portfolio_name}: nothing cached, no snapshot.")
+    return _empty_market_data()
 
 
 def _nearest_price(raw_prices, ticker: str, effective_date: str):
@@ -5143,26 +5309,39 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             margin_rate = 0.120
             borrow_fee = 0.025
             
-        # 1. Fetch market data (shared cache — same data for all tiers)
-        usd_prices, fx_rates, volume_data, raw_prices = _get_cached_market_data(force, portfolio_name=portfolio)
-        
-        # 2. Calculate risk metrics with tier-specific rates
-        metrics = risk.calculate_risk_metrics(
-            usd_prices, 
-            volume_data, 
-            fx_rates,
-            margin_rate=margin_rate,
-            borrow_fee=borrow_fee,
-            portfolio_name=portfolio,
-            raw_price_df=raw_prices
-        )
-        
+        # 1+2. Fetch market data (shared cache, same for all tiers) and compute the
+        # risk metrics. Both are blocking pandas/yfinance work, so they run in the
+        # threadpool: done inline they froze the event loop, and under a Yahoo
+        # throttle that froze it for minutes, taking every other endpoint down with
+        # it. The lock keeps concurrent requests (the client retries five times)
+        # from each starting their own fetch.
+        def _fetch_and_compute():
+            usd_prices, fx_rates, volume_data, raw_prices = _get_cached_market_data(force, portfolio_name=portfolio)
+            metrics = risk.calculate_risk_metrics(
+                usd_prices,
+                volume_data,
+                fx_rates,
+                margin_rate=margin_rate,
+                borrow_fee=borrow_fee,
+                portfolio_name=portfolio,
+                raw_price_df=raw_prices
+            )
+            return usd_prices, fx_rates, volume_data, raw_prices, metrics
+
+        async with _market_lock(portfolio):
+            if not force and tier_cache["data"] and (time.time() - tier_cache["timestamp"]) < CACHE_TTL:
+                print(f"Returning cached response for {cache_key} (computed while waiting)")
+                return tier_cache["data"]
+            usd_prices, fx_rates, volume_data, raw_prices, metrics = await run_in_threadpool(_fetch_and_compute)
+        data_status = market_data_status(portfolio)
+
         if metrics is None:
              print("Error: Metrics calculation returned None (insufficient data).")
              # Return a valid structure with nulls/zeros to allow frontend to render empty state
              # rather than crashing with 500
              return {
-                "error": "Insufficient data to calculate metrics. (Likely Yahoo Finance rate limit or connection issue).",
+                "error": data_status.get("message") or "Insufficient data to calculate metrics. (Likely Yahoo Finance rate limit or connection issue).",
+                "dataStatus": data_status,
                 "vitals": { k: 0 for k in ["beta", "annualReturn", "annualVol", "sharpe", "sortino", "maxDrawdown", "cvar95", "rolling1mVol"] }, # Partial fallback
                 "riskAttribution": [],
                 "stressTests": [],
@@ -5860,6 +6039,8 @@ async def get_metrics(force: bool = False, costTier: str = 'retail', portfolio: 
             ra["pctRisk"] = to_float(ra["pctRisk"])
             ra["mctr"] = to_float(ra["mctr"])
 
+        response["dataStatus"] = data_status
+
         # Store in cache
         tier_cache["data"] = response
         # Keep the frames the JSON response cannot carry, so an arbitrary window
@@ -6396,144 +6577,172 @@ async def get_quality(portfolio: str = 'main'):
         except:
             return None
 
+    remaining = risk.rate_limit_remaining()
+    if remaining > 0:
+        cached = _quality_cache.get(portfolio)
+        message = f"Yahoo Finance is rate-limiting this host; fundamentals retry in about {max(1, int(round(remaining / 60)))} min."
+        if cached:
+            print(f"[quality] Rate limit cooldown; serving the previous payload for {portfolio}")
+            return {**cached["data"], "stale": True, "message": message}
+        return {"portfolio": portfolio, "positions": [], "error": message}
+
     results = []
+    throttled = {"hit": False}
 
-    for ticker, cfg in portfolio_config.items():
-        print(f"[quality] Fetching {ticker}…")
-        try:
-            t = yf.Ticker(ticker)
-            info = {}
+    def _collect():
+        for ticker, cfg in portfolio_config.items():
+            print(f"[quality] Fetching {ticker}…")
             try:
-                info = t.info or {}
-            except Exception:
-                pass
+                t = yf.Ticker(ticker)
+                info = {}
+                try:
+                    info = t.info or {}
+                except Exception as info_error:
+                    if risk.download_errors_rate_limited({"info": info_error}):
+                        risk.note_rate_limit()
+                        throttled["hit"] = True
+                        print(f"[quality] Yahoo rate limit hit at {ticker}; stopping the sweep.")
+                        break
 
-            # ── Core quality metrics ──────────────────────────────
-            roe          = sf(info.get("returnOnEquity"))      # proxy for ROIC when no debt breakdown
-            roic_approx  = sf(info.get("returnOnAssets"))      # more conservative ROIC proxy
-            gross_margin = sf(info.get("grossMargins"))
-            op_margin    = sf(info.get("operatingMargins"))
-            net_margin   = sf(info.get("profitMargins"))
-            debt_equity  = sf(info.get("debtToEquity"))        # as ratio (e.g. 0.5 = 50%)
-            rev_growth   = sf(info.get("revenueGrowth"))       # trailing 12m vs prior year
-            current_ratio= sf(info.get("currentRatio"))
-            peg          = sf(info.get("pegRatio"))
-            pe           = sf(info.get("trailingPE"))
-            pb           = sf(info.get("priceToBook"))
+                # ── Core quality metrics ──────────────────────────────
+                roe          = sf(info.get("returnOnEquity"))      # proxy for ROIC when no debt breakdown
+                roic_approx  = sf(info.get("returnOnAssets"))      # more conservative ROIC proxy
+                gross_margin = sf(info.get("grossMargins"))
+                op_margin    = sf(info.get("operatingMargins"))
+                net_margin   = sf(info.get("profitMargins"))
+                debt_equity  = sf(info.get("debtToEquity"))        # as ratio (e.g. 0.5 = 50%)
+                rev_growth   = sf(info.get("revenueGrowth"))       # trailing 12m vs prior year
+                current_ratio= sf(info.get("currentRatio"))
+                peg          = sf(info.get("pegRatio"))
+                pe           = sf(info.get("trailingPE"))
+                pb           = sf(info.get("priceToBook"))
 
-            # ── Owner Earnings (FCF − SBC) / EV ──────────────────
-            fcf          = sf(info.get("freeCashflow"))
-            ev           = sf(info.get("enterpriseValue"))
+                # ── Owner Earnings (FCF − SBC) / EV ──────────────────
+                fcf          = sf(info.get("freeCashflow"))
+                ev           = sf(info.get("enterpriseValue"))
 
-            sbc = None
-            try:
-                cf = t.cashflow
-                if cf is not None and not cf.empty:
-                    for label in ["Stock Based Compensation", "StockBasedCompensation",
-                                  "Share Based Compensation Expense"]:
-                        if label in cf.index:
-                            v = sf(cf.loc[label].iloc[0])
-                            if v is not None:
-                                sbc = abs(v)
-                                break
-            except Exception:
-                pass
+                sbc = None
+                try:
+                    cf = t.cashflow
+                    if cf is not None and not cf.empty:
+                        for label in ["Stock Based Compensation", "StockBasedCompensation",
+                                      "Share Based Compensation Expense"]:
+                            if label in cf.index:
+                                v = sf(cf.loc[label].iloc[0])
+                                if v is not None:
+                                    sbc = abs(v)
+                                    break
+                except Exception:
+                    pass
 
-            fcf_ev_yield = (fcf / ev) if (fcf is not None and ev and ev != 0) else None
-            owner_earnings = (fcf - (sbc or 0)) if fcf is not None else None
-            oe_yield = (owner_earnings / ev) if (owner_earnings is not None and ev and ev != 0) else None
+                fcf_ev_yield = (fcf / ev) if (fcf is not None and ev and ev != 0) else None
+                owner_earnings = (fcf - (sbc or 0)) if fcf is not None else None
+                oe_yield = (owner_earnings / ev) if (owner_earnings is not None and ev and ev != 0) else None
 
-            # ── Munger quality score (0-100) ──────────────────────
-            # Each criterion contributes points; no single factor dominates.
-            score = 0
-            flags = []
+                # ── Munger quality score (0-100) ──────────────────────
+                # Each criterion contributes points; no single factor dominates.
+                score = 0
+                flags = []
 
-            if gross_margin is not None:
-                if gross_margin >= 0.50:  score += 25; flags.append("✓ Pricing power")
-                elif gross_margin >= 0.30: score += 12
-                else: flags.append("✗ Thin margins")
+                if gross_margin is not None:
+                    if gross_margin >= 0.50:  score += 25; flags.append("✓ Pricing power")
+                    elif gross_margin >= 0.30: score += 12
+                    else: flags.append("✗ Thin margins")
 
-            if roic_approx is not None:
-                if roic_approx >= 0.15:   score += 25; flags.append("✓ High ROIC")
-                elif roic_approx >= 0.08:  score += 12
-                else: flags.append("✗ Low ROIC")
+                if roic_approx is not None:
+                    if roic_approx >= 0.15:   score += 25; flags.append("✓ High ROIC")
+                    elif roic_approx >= 0.08:  score += 12
+                    else: flags.append("✗ Low ROIC")
 
-            if oe_yield is not None:
-                if oe_yield >= 0.05:   score += 20; flags.append("✓ Cheap on OE")
-                elif oe_yield >= 0.02: score += 10
-                elif oe_yield < 0:     flags.append("✗ Negative OE yield")
+                if oe_yield is not None:
+                    if oe_yield >= 0.05:   score += 20; flags.append("✓ Cheap on OE")
+                    elif oe_yield >= 0.02: score += 10
+                    elif oe_yield < 0:     flags.append("✗ Negative OE yield")
 
-            if debt_equity is not None:
-                # yfinance returns D/E as percent (e.g. 45.2 means 45.2%)
-                de_ratio = debt_equity / 100 if debt_equity > 5 else debt_equity
-                if de_ratio <= 0.30:   score += 15; flags.append("✓ Fortress balance sheet")
-                elif de_ratio <= 0.80: score += 7
-                else: flags.append("✗ High leverage")
+                if debt_equity is not None:
+                    # yfinance returns D/E as percent (e.g. 45.2 means 45.2%)
+                    de_ratio = debt_equity / 100 if debt_equity > 5 else debt_equity
+                    if de_ratio <= 0.30:   score += 15; flags.append("✓ Fortress balance sheet")
+                    elif de_ratio <= 0.80: score += 7
+                    else: flags.append("✗ High leverage")
 
-            if rev_growth is not None:
-                if rev_growth >= 0.10:  score += 15; flags.append("✓ Revenue growth")
-                elif rev_growth >= 0.0:  score += 7
-                else: flags.append("✗ Revenue shrinking")
+                if rev_growth is not None:
+                    if rev_growth >= 0.10:  score += 15; flags.append("✓ Revenue growth")
+                    elif rev_growth >= 0.0:  score += 7
+                    else: flags.append("✗ Revenue shrinking")
 
-            score = min(score, 100)
+                score = min(score, 100)
 
-            # ── Inversion: biggest risk to the thesis ─────────────
-            inversion_risks = []
-            if gross_margin is not None and gross_margin < 0.20:
-                inversion_risks.append("Commodity-like pricing — margin compression risk")
-            if debt_equity is not None:
-                de_ratio = debt_equity / 100 if debt_equity > 5 else debt_equity
-                if de_ratio > 1.0:
-                    inversion_risks.append("High debt — rising rates could stress coverage")
-            if pe is not None and pe > 40:
-                inversion_risks.append("Rich valuation — growth disappointment = large de-rating")
-            if rev_growth is not None and rev_growth < 0:
-                inversion_risks.append("Declining revenue — business in structural decline?")
-            if oe_yield is not None and oe_yield < 0:
-                inversion_risks.append("Burning cash after SBC — not self-financing")
-            if not inversion_risks:
-                inversion_risks.append("No obvious red flags in available data")
+                # ── Inversion: biggest risk to the thesis ─────────────
+                inversion_risks = []
+                if gross_margin is not None and gross_margin < 0.20:
+                    inversion_risks.append("Commodity-like pricing — margin compression risk")
+                if debt_equity is not None:
+                    de_ratio = debt_equity / 100 if debt_equity > 5 else debt_equity
+                    if de_ratio > 1.0:
+                        inversion_risks.append("High debt — rising rates could stress coverage")
+                if pe is not None and pe > 40:
+                    inversion_risks.append("Rich valuation — growth disappointment = large de-rating")
+                if rev_growth is not None and rev_growth < 0:
+                    inversion_risks.append("Declining revenue — business in structural decline?")
+                if oe_yield is not None and oe_yield < 0:
+                    inversion_risks.append("Burning cash after SBC — not self-financing")
+                if not inversion_risks:
+                    inversion_risks.append("No obvious red flags in available data")
 
-            results.append({
-                "ticker":        ticker,
-                "direction":     cfg.get("type", "Long"),
-                "weight":        cfg.get("weight", 0),
-                "sector":        cfg.get("sector", "Unknown"),
-                "country":       cfg.get("country", "USA"),
-                "name":          info.get("longName") or info.get("shortName") or ticker,
-                # Quality metrics
-                "grossMargin":   sf(gross_margin),
-                "roic":          sf(roic_approx),   # ROA as ROIC proxy
-                "roe":           sf(roe),
-                "debtEquity":    sf(debt_equity),
-                "revenueGrowth": sf(rev_growth),
-                "currentRatio":  sf(current_ratio),
-                "opMargin":      sf(op_margin),
-                "netMargin":     sf(net_margin),
-                "pe":            sf(pe),
-                "pb":            sf(pb),
-                "peg":           sf(peg),
-                "fcfEvYield":    sf(fcf_ev_yield),
-                "ownerEarningsYield": sf(oe_yield),
-                "sbcEstimated":  sbc is None,
-                # Munger lens
-                "qualityScore":  score,
-                "qualityFlags":  flags,
-                "inversionRisks": inversion_risks,
-            })
+                results.append({
+                    "ticker":        ticker,
+                    "direction":     cfg.get("type", "Long"),
+                    "weight":        cfg.get("weight", 0),
+                    "sector":        cfg.get("sector", "Unknown"),
+                    "country":       cfg.get("country", "USA"),
+                    "name":          info.get("longName") or info.get("shortName") or ticker,
+                    # Quality metrics
+                    "grossMargin":   sf(gross_margin),
+                    "roic":          sf(roic_approx),   # ROA as ROIC proxy
+                    "roe":           sf(roe),
+                    "debtEquity":    sf(debt_equity),
+                    "revenueGrowth": sf(rev_growth),
+                    "currentRatio":  sf(current_ratio),
+                    "opMargin":      sf(op_margin),
+                    "netMargin":     sf(net_margin),
+                    "pe":            sf(pe),
+                    "pb":            sf(pb),
+                    "peg":           sf(peg),
+                    "fcfEvYield":    sf(fcf_ev_yield),
+                    "ownerEarningsYield": sf(oe_yield),
+                    "sbcEstimated":  sbc is None,
+                    # Munger lens
+                    "qualityScore":  score,
+                    "qualityFlags":  flags,
+                    "inversionRisks": inversion_risks,
+                })
 
-        except Exception as e:
-            print(f"[quality] Error fetching {ticker}: {e}")
-            results.append({
-                "ticker": ticker,
-                "direction": cfg.get("type", "Long"),
-                "weight": cfg.get("weight", 0),
-                "sector": cfg.get("sector", "Unknown"),
-                "error": str(e),
-                "qualityScore": None,
-                "qualityFlags": [],
-                "inversionRisks": ["Data unavailable"],
-            })
+            except Exception as e:
+                print(f"[quality] Error fetching {ticker}: {e}")
+                results.append({
+                    "ticker": ticker,
+                    "direction": cfg.get("type", "Long"),
+                    "weight": cfg.get("weight", 0),
+                    "sector": cfg.get("sector", "Unknown"),
+                    "error": str(e),
+                    "qualityScore": None,
+                    "qualityFlags": [],
+                    "inversionRisks": ["Data unavailable"],
+                })
+
+
+        return results
+
+    # Dozens of blocking yfinance calls: keep them off the event loop.
+    results = await run_in_threadpool(_collect)
+
+    if throttled["hit"]:
+        cached = _quality_cache.get(portfolio)
+        message = "Yahoo Finance is rate-limiting this host; fundamentals are incomplete."
+        if cached:
+            return {**cached["data"], "stale": True, "message": message}
+        return {"portfolio": portfolio, "positions": results, "error": message}
 
     payload = {"portfolio": portfolio, "positions": results}
     _quality_cache[portfolio] = {"data": payload, "ts": now}
