@@ -12,6 +12,7 @@ import {
     Trash2, ArrowRightLeft, Radio, Database, type LucideIcon
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { marketDataIsBehind } from '../utils/marketStatus';
 
 // ─── Lazy-loaded below-the-fold widgets ──────────────────────
 // These are code-split into separate chunks, loaded only when
@@ -323,6 +324,7 @@ const DataSourceBadge: React.FC<{ status?: MarketDataStatus | null }> = ({ statu
 
     const isSnapshot = status.source === 'snapshot';
     const isStale = status.stale === true;
+    const isBehind = marketDataIsBehind(status);
     const savedAt = status.fetchedAt ? new Date(status.fetchedAt) : null;
     const savedLabel = savedAt && !Number.isNaN(savedAt.getTime())
         ? savedAt.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
@@ -331,14 +333,16 @@ const DataSourceBadge: React.FC<{ status?: MarketDataStatus | null }> = ({ statu
     const label = isSnapshot ? (status.asOf ? `Snapshot ${status.asOf}` : 'Snapshot') : 'Live';
     // The backend's own message already names the reason and the retry wait, so
     // it leads; repeating either here read as a stutter.
-    const explanation = isStale
-        ? `${status.message ?? 'Yahoo Finance could not be reached.'} Showing the last saved market data${savedLabel ? `, fetched ${savedLabel}` : ''}.`
-        : isSnapshot
-            ? `Served from the saved snapshot${savedLabel ? `, fetched ${savedLabel}` : ''}. Yahoo Finance was not called: a snapshot under 3 hours old is used as-is, which keeps the host off Yahoo's rate limit. Force Refresh fetches live.`
-            : `Fetched live from Yahoo Finance by the backend${savedLabel ? ` at ${savedLabel}` : ''}.`;
+    const explanation = isBehind
+        ? `${status.message ?? 'Yahoo Finance could not be reached.'} Showing the last saved market data${savedLabel ? `, fetched ${savedLabel}` : ''}, which is behind the latest close.`
+        : isStale
+            ? `${status.message ?? 'The live refresh failed.'} This snapshot covers the latest close (${status.asOf}), so the figures are current; only the refresh path is degraded. The backend retries on its own.`
+            : isSnapshot
+                ? `Served from the saved snapshot${savedLabel ? `, fetched ${savedLabel}` : ''}. Yahoo Finance was not called: a snapshot under 3 hours old is used as-is, which keeps the host off Yahoo's rate limit. Force Refresh fetches live.`
+                : `Fetched live from Yahoo Finance by the backend${savedLabel ? ` at ${savedLabel}` : ''}.`;
 
     const Icon = isSnapshot ? Database : Radio;
-    const tone = isStale
+    const tone = isBehind
         ? 'border-amber-500/25 bg-amber-500/[0.07] text-amber-300/90'
         : isSnapshot
             ? 'border-white/10 bg-white/[0.04] text-gray-400'
@@ -351,7 +355,7 @@ const DataSourceBadge: React.FC<{ status?: MarketDataStatus | null }> = ({ statu
         >
             <Icon className="h-3 w-3" />
             {label}
-            {isStale && ' (stale)'}
+            {isBehind && ' (behind)'}
         </span>
     );
 };
@@ -603,7 +607,7 @@ export const Dashboard: React.FC = () => {
 
     const portfolioLabel = 'My Portfolio';
 
-    const dataIsStale = data.dataStatus?.stale === true;
+    const dataIsBehind = marketDataIsBehind(data.dataStatus);
     const dataFromSnapshot = data.dataStatus?.source === 'snapshot';
 
     return (
@@ -622,8 +626,8 @@ export const Dashboard: React.FC = () => {
                 </div>
                 <div>
                     <span>{COST_TIER_OPTIONS.find(option => option.value === costTier)?.label ?? costTier}</span>
-                    <span className={isSwitchingTier || dataIsStale ? 'is-current' : undefined}>
-                        {isSwitchingTier ? 'SYNC' : dataIsStale ? 'STALE' : dataFromSnapshot ? 'SNAP' : 'LIVE'}
+                    <span className={isSwitchingTier || dataIsBehind ? 'is-current' : undefined}>
+                        {isSwitchingTier ? 'SYNC' : dataIsBehind ? 'BEHIND' : dataFromSnapshot ? 'SNAP' : 'LIVE'}
                     </span>
                 </div>
             </div>
@@ -826,18 +830,22 @@ export const Dashboard: React.FC = () => {
                     </div>
                 </header>
 
-                {dataIsStale && (
+                {/* Only when the numbers are actually behind. A failed refresh whose
+                    snapshot still covers the latest close is not worth a banner: the
+                    badge says where the data came from, and its hover text explains
+                    the degraded refresh. */}
+                {dataIsBehind && (
                     <div
                         role="status"
                         className="flex items-start gap-3 rounded-lg border border-amber-500/20 bg-amber-500/[0.06] px-4 py-3"
                     >
                         <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
                         <p className="flex-1 text-xs leading-5 text-amber-200/90">
-                            <span className="font-bold uppercase tracking-[0.08em]">Snapshot</span>
+                            <span className="font-bold uppercase tracking-[0.08em]">Behind</span>
                             {' '}
                             {data.dataStatus?.asOf
-                                ? `Market data as of ${data.dataStatus.asOf}.`
-                                : 'Market data is a saved snapshot.'}
+                                ? `The newest market data here is from ${data.dataStatus.asOf}, and later sessions are missing.`
+                                : 'Market data is a saved snapshot of unknown date.'}
                             {' '}
                             {data.dataStatus?.reason === 'rate_limited'
                                 ? 'Yahoo Finance is rate-limiting the host; the backend retries on its own once the cooldown passes.'
