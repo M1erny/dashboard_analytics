@@ -207,9 +207,11 @@ Yahoo Finance throttles shared hosting IPs (HTTP 429), and Render's free tier re
 
 - `source: "yahoo"` - this process fetched live.
 - `source: "snapshot", stale: false` - served from a snapshot younger than `MARKET_SNAPSHOT_FRESH_SECONDS` (default 3 h); Yahoo was not called.
-- `source: "snapshot", stale: true` - the live fetch failed and the last good frames were served instead; the UI shows a banner with the `asOf` date and the reason.
+- `source: "snapshot", stale: true` - the live fetch failed and the last good frames were served instead.
 
-The dashboard shows which of those three it is, without a click: a badge beside the update time in the header reads `Live`, `Snapshot <date>`, or `Snapshot <date> (stale)`, its hover text spells out the selection rule, and the status bar carries `LIVE` / `SNAP` / `STALE`.
+The dashboard shows which of those three it is, without a click: a badge beside the update time in the header reads `Live`, `Snapshot <date>`, or `Snapshot <date> (behind)`, its hover text spells out the selection rule, and the status bar carries `LIVE` / `SNAP` / `BEHIND`.
+
+Note that `stale: true` and "behind" are deliberately different questions. `stale` says only that the refresh failed; whether the *figures* are out of date depends on the newest market date they contain. Markets are shut most of the time, so a snapshot taken at the last close holds exactly what a successful fetch would have returned. The UI escalates to amber, and shows a banner, only when `asOf` is more than `CURRENT_WITHIN_DAYS` (4 calendar days, enough to span a long weekend) behind - that is, when whole sessions are missing. A failed refresh over current data is reported quietly in the badge's hover text instead.
 
 When Yahoo throttles the host, the fetch stops at the first 429 and the host leaves Yahoo alone for `YF_RATE_LIMIT_COOLDOWN_SECONDS` (default 10 min) instead of retrying every ticker three times.
 
