@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import risk
 import market_snapshot
 from brain_store import create_brain_store
+from gemini_client import load_backend_env
 
 
 class ConfigError(Exception):
@@ -28,9 +29,11 @@ class ConfigError(Exception):
 
 NO_DATABASE_URL_HELP = (
     "DATABASE_URL is not set. Copy the connection string from Render "
-    "(service -> Environment) and set it first:\n"
-    "  PowerShell:  $env:DATABASE_URL = 'postgresql://user:password@host:6543/postgres?sslmode=require'\n"
-    "  bash:        export DATABASE_URL='postgresql://user:password@host:6543/postgres?sslmode=require'"
+    "(service -> Environment). For one run, set it in the shell:\n"
+    "  PowerShell:  $env:DATABASE_URL = Read-Host 'connection string'\n"
+    "  bash:        read -rs DATABASE_URL && export DATABASE_URL\n"
+    "To keep it for every run, put a line DATABASE_URL=... in backend/.env "
+    "(ignored by git); this script reads that file, as the server does."
 )
 
 
@@ -138,6 +141,12 @@ def main() -> int:
         help="fail unless DATABASE_URL is set (the scheduled workflow uses this)",
     )
     args = parser.parse_args()
+
+    # backend/.env is where the README tells you to keep local secrets, and the
+    # server reads it, so the job must too or "it works in server.py" would not
+    # carry over. Real environment variables win over the file, which is what
+    # lets the GitHub Actions secret take effect unchanged.
+    load_backend_env()
 
     # Open the store before fetching. Connecting costs a second; the fetch costs
     # a minute and 1.2 MB, and throwing that away over a typo in a password is

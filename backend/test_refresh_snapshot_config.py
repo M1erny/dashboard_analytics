@@ -152,6 +152,68 @@ def brain_wins():
 
 check("BRAIN_DATABASE_URL overrides DATABASE_URL", with_env("postgresql://...", brain_wins) == REAL)
 
+# backend/.env. The loader is the server's own; what matters here is that the
+# job calls it before checking, and that a real variable still wins over the
+# file, so the GitHub Actions secret is never overridden by a stray local .env.
+print("\n=== Refresh job: backend/.env ===")
+
+import sys as _sys
+
+calls = {"n": 0}
+
+
+def fake_loader_setting(value):
+    def loader():
+        calls["n"] += 1
+        os.environ.setdefault("DATABASE_URL", value)
+    return loader
+
+
+def run_main_until_store(argv, loader):
+    """Drive main() far enough to see what URL it resolved, without a network.
+
+    Both exits out of main() are stubbed: opening the store, and the market
+    fetch that follows it (or replaces it under --dry-run). Leaving fetch_data
+    real made the dry-run case call Yahoo for 43 tickers from inside a test.
+    """
+    saved = (job.load_backend_env, job.create_brain_store, job.risk.fetch_data, _sys.argv)
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_store():
+        seen["url"] = os.environ.get("DATABASE_URL")
+        raise _Stop()
+
+    def fake_fetch(portfolio_name="main"):
+        seen["fetched"] = True
+        raise _Stop()
+
+    job.load_backend_env, job.create_brain_store, job.risk.fetch_data, _sys.argv = loader, fake_store, fake_fetch, argv
+    try:
+        try:
+            job.main()
+        except _Stop:
+            pass
+    finally:
+        job.load_backend_env, job.create_brain_store, job.risk.fetch_data, _sys.argv = saved
+    return seen
+
+
+calls["n"] = 0
+seen = with_env(None, lambda: run_main_until_store(["job"], fake_loader_setting(REAL)))
+check("main() loads backend/.env before opening the store", calls["n"] == 1 and seen.get("url") == REAL, f"calls={calls['n']} seen={seen!r}")
+
+calls["n"] = 0
+# A password that is not on the stand-in list, or the guard rejects it first.
+other = "postgresql://ci:C1pass987xyz@ci.example.com:5432/postgres"
+seen = with_env(other, lambda: run_main_until_store(["job"], fake_loader_setting(REAL)))
+check("a real environment variable wins over backend/.env", seen.get("url") == other, f"seen={seen!r}")
+
+seen = with_env(None, lambda: run_main_until_store(["job", "--dry-run"], fake_loader_setting(REAL)))
+check("--dry-run never opens the store but does fetch", "url" not in seen and seen.get("fetched") is True, f"seen={seen!r}")
+
 print()
 if FAILED:
     print(f"FAILED: {len(FAILED)} check(s): {', '.join(FAILED)}")
