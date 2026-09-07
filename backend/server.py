@@ -245,6 +245,7 @@ embedding_backfill_job: dict[str, Any] = {
 
 drive_index_job: dict[str, Any] = {
     "running": False,
+    "embeddingQueued": False,
     "startedAt": None,
     "finishedAt": None,
     "folderId": None,
@@ -317,6 +318,7 @@ def _public_embedding_job() -> dict[str, Any]:
 def _public_drive_job() -> dict[str, Any]:
     return {
         "running": drive_index_job.get("running", False),
+        "embeddingQueued": drive_index_job.get("embeddingQueued", False),
         "startedAt": drive_index_job.get("startedAt"),
         "finishedAt": drive_index_job.get("finishedAt"),
         "folderId": drive_index_job.get("folderId"),
@@ -888,8 +890,11 @@ async def _run_drive_index_job(
     max_bytes: int,
     changed_files_limit: int | None,
     force: bool,
+    embed_after_sync: bool = True,
+    embed_max_chunks: int = 5_000,
 ) -> None:
     store = brain_store
+    drive_index_job["embeddingQueued"] = False
     if not store or not index_drive_folder:
         drive_index_job.update({
             "running": False,
@@ -950,6 +955,17 @@ async def _run_drive_index_job(
                 f"{summary.get('found', 0)} Drive file(s)."
             ),
         })
+        # What a sync produced is searchable by exact words only until embedded.
+        # Queue that step the way agent imports already do; the job runs in the
+        # background with its own running guard, so a second sync cannot pile on.
+        indexed_count = int(summary.get("indexed", 0) or 0)
+        if embed_after_sync and indexed_count > 0:
+            queued = _queue_embedding_after_import(embed_max_chunks, cap=100_000)
+            drive_index_job["embeddingQueued"] = queued
+            if queued:
+                drive_index_job["message"] += " Embedding of the new passages queued."
+            else:
+                drive_index_job["message"] += " New passages await embedding (Embed Missing)."
     except Exception as exc:
         drive_index_job["message"] = f"Drive sync stopped: {_clean_public_error(exc)}"
     finally:
@@ -1071,14 +1087,21 @@ def _local_indexing_enabled() -> bool:
     return os.environ.get("BRAIN_ENABLE_LOCAL_INDEXING", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _queue_embedding_after_import(max_chunks: int) -> bool:
+def _queue_embedding_after_import(max_chunks: int, *, cap: int = 500) -> bool:
+    """Start the embedding backfill in the background, if nothing stops it.
+
+    Returns False rather than raising when the provider is not configured or a
+    backfill is already running, because the caller has just finished an import
+    or a sync that succeeded on its own terms; embedding is the follow-up, not a
+    condition of that success.
+    """
     if not gemini_client or not gemini_client.configured:
         return False
     if embedding_backfill_job.get("running"):
         return False
     asyncio.create_task(_run_embedding_backfill_job(
         batch_size=5,
-        max_chunks=max(1, min(int(max_chunks), 500)),
+        max_chunks=max(1, min(int(max_chunks), int(cap))),
         force=False,
     ))
     return True
@@ -1146,6 +1169,12 @@ class BrainDriveIndexRequest(BaseModel):
     # one pass, not to bound the library. Leaving it low silently strands files.
     changedFilesLimit: int | None = Field(default=2000, ge=1, le=20_000)
     force: bool = False
+    # A newly indexed passage is reachable by exact words only until it is
+    # embedded. Agent imports queue that step; a Drive sync did not, which left
+    # every synced file half-searchable until someone pressed Embed Missing and
+    # showed up in answers as "N passages are still unembedded".
+    embedAfterSync: bool = True
+    embedMaxChunks: int = Field(default=5_000, ge=1, le=100_000)
 
 
 class BrainEmbeddingBackfillRequest(BaseModel):
@@ -2134,7 +2163,7 @@ async def index_google_drive_brain_folder(payload: BrainDriveIndexRequest):
     if not index_drive_folder:
         raise HTTPException(status_code=503, detail="Google Drive indexer is not available")
     try:
-        return await _run_brain_step(
+        result = await _run_brain_step(
             "Google Drive indexing",
             index_drive_folder,
             store,
@@ -2145,6 +2174,14 @@ async def index_google_drive_brain_folder(payload: BrainDriveIndexRequest):
             force=payload.force,
             timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
         )
+        summary = (result or {}).get("summary") or {}
+        indexed_count = int(summary.get("indexed", 0) or 0)
+        result["embeddingQueued"] = bool(
+            payload.embedAfterSync
+            and indexed_count > 0
+            and _queue_embedding_after_import(payload.embedMaxChunks, cap=100_000)
+        )
+        return result
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
@@ -2165,6 +2202,8 @@ async def start_google_drive_brain_index(payload: BrainDriveIndexRequest):
         max_bytes=payload.maxBytes,
         changed_files_limit=payload.changedFilesLimit,
         force=payload.force,
+        embed_after_sync=payload.embedAfterSync,
+        embed_max_chunks=payload.embedMaxChunks,
     ))
     return {
         **_public_drive_job(),
