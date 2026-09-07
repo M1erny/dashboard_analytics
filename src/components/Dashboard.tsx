@@ -325,29 +325,42 @@ const DataSourceBadge: React.FC<{ status?: MarketDataStatus | null }> = ({ statu
     const isSnapshot = status.source === 'snapshot';
     const isStale = status.stale === true;
     const isBehind = marketDataIsBehind(status);
-    const savedAt = status.fetchedAt ? new Date(status.fetchedAt) : null;
-    // Full date, time and zone. Two clocks share this header: when the browser
-    // loaded the page, and when the market data was actually fetched from Yahoo
-    // (or written as a snapshot). The second is the one that answers "how old is
-    // this", so it is spelled out rather than left to a hover.
-    const savedLabel = savedAt && !Number.isNaN(savedAt.getTime())
-        ? savedAt.toLocaleString([], {
-            year: 'numeric', month: '2-digit', day: '2-digit',
-            hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
-        })
+    const savedAtRaw = status.fetchedAt ? new Date(status.fetchedAt) : null;
+    const savedAt = savedAtRaw && !Number.isNaN(savedAtRaw.getTime()) ? savedAtRaw : null;
+
+    // Two clocks share this header: when the browser loaded the page, and when
+    // the market data was actually fetched. The second answers "how old is this",
+    // so it belongs on the badge - but only the part the market date beside it
+    // does not already say. Spelling the full date out a second time made the
+    // chip wider than the header column and it spilled over the next card.
+    const savedFull = savedAt?.toLocaleString([], {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+    }) ?? null;
+    // The fetch date is worth showing only when it differs from the market date
+    // already printed beside it. Compared against today instead, a snapshot of an
+    // old close read "2026-08-14 · 08/14, 08:10 PM" and said the date twice.
+    const savedDay = savedAt
+        ? `${savedAt.getFullYear()}-${String(savedAt.getMonth() + 1).padStart(2, '0')}-${String(savedAt.getDate()).padStart(2, '0')}`
+        : null;
+    const savedOnMarketDay = savedDay !== null && savedDay === (status.asOf ?? savedDay);
+    const savedShort = savedAt
+        ? (savedOnMarketDay
+            ? savedAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+            : savedAt.toLocaleString([], { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }))
         : null;
 
     const base = isSnapshot ? (status.asOf ? `Snapshot ${status.asOf}` : 'Snapshot') : 'Live';
-    const label = savedLabel ? `${base} · fetched ${savedLabel}` : base;
+    const label = savedShort ? `${base} · ${savedShort}` : base;
     // The backend's own message already names the reason and the retry wait, so
     // it leads; repeating either here read as a stutter.
     const explanation = isBehind
-        ? `${status.message ?? 'Yahoo Finance could not be reached.'} Showing the last saved market data${savedLabel ? `, fetched ${savedLabel}` : ''}, which is behind the latest close.`
+        ? `${status.message ?? 'Yahoo Finance could not be reached.'} Showing the last saved market data${savedFull ? `, fetched ${savedFull}` : ''}, which is behind the latest close.`
         : isStale
             ? `${status.message ?? 'The live refresh failed.'} This snapshot covers the latest close (${status.asOf}), so the figures are current; only the refresh path is degraded. The backend retries on its own.`
             : isSnapshot
-                ? `Served from the saved snapshot${savedLabel ? `, fetched ${savedLabel}` : ''}. Yahoo Finance was not called: a snapshot under 3 hours old is used as-is, which keeps the host off Yahoo's rate limit. Force Refresh fetches live.`
-                : `Fetched live from Yahoo Finance by the backend${savedLabel ? ` at ${savedLabel}` : ''}.`;
+                ? `Served from the saved snapshot${savedFull ? `, fetched ${savedFull}` : ''}. Yahoo Finance was not called: a snapshot under 3 hours old is used as-is, which keeps the host off Yahoo's rate limit. Force Refresh fetches live.`
+                : `Fetched live from Yahoo Finance by the backend${savedFull ? ` at ${savedFull}` : ''}.`;
 
     const Icon = isSnapshot ? Database : Radio;
     const tone = isBehind
@@ -358,12 +371,14 @@ const DataSourceBadge: React.FC<{ status?: MarketDataStatus | null }> = ({ statu
 
     return (
         <span
-            className={cn('inline-flex items-center gap-1.5 whitespace-nowrap border px-1.5 py-0.5', tone)}
+            className={cn('inline-flex min-w-0 max-w-full shrink items-start gap-1.5 border px-1.5 py-0.5 leading-4', tone)}
             title={explanation}
         >
-            <Icon className="h-3 w-3" />
-            {label}
-            {isBehind && ' (behind)'}
+            <Icon className="mt-px h-3 w-3 shrink-0" />
+            {/* Wrapping, not truncating. At phone width the chip has room for the
+                market date or the fetch time but not both on one line, and the
+                fetch time is the half a reader cannot reconstruct. */}
+            <span className="min-w-0 break-words">{label}{isBehind && ' (behind)'}</span>
         </span>
     );
 };
