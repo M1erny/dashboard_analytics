@@ -326,11 +326,19 @@ const DataSourceBadge: React.FC<{ status?: MarketDataStatus | null }> = ({ statu
     const isStale = status.stale === true;
     const isBehind = marketDataIsBehind(status);
     const savedAt = status.fetchedAt ? new Date(status.fetchedAt) : null;
+    // Full date, time and zone. Two clocks share this header: when the browser
+    // loaded the page, and when the market data was actually fetched from Yahoo
+    // (or written as a snapshot). The second is the one that answers "how old is
+    // this", so it is spelled out rather than left to a hover.
     const savedLabel = savedAt && !Number.isNaN(savedAt.getTime())
-        ? savedAt.toLocaleString([], { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+        ? savedAt.toLocaleString([], {
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
+        })
         : null;
 
-    const label = isSnapshot ? (status.asOf ? `Snapshot ${status.asOf}` : 'Snapshot') : 'Live';
+    const base = isSnapshot ? (status.asOf ? `Snapshot ${status.asOf}` : 'Snapshot') : 'Live';
+    const label = savedLabel ? `${base} · fetched ${savedLabel}` : base;
     // The backend's own message already names the reason and the retry wait, so
     // it leads; repeating either here read as a stutter.
     const explanation = isBehind
@@ -660,7 +668,7 @@ export const Dashboard: React.FC = () => {
                                 <span className="text-[11px] font-normal text-gray-500 tracking-[0.12em] uppercase mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
                                     <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
                                         <Clock className="h-3 w-3" />
-                                        Updated {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                        Loaded {lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                                     </span>
                                     <DataSourceBadge status={data.dataStatus} />
                                     {isSwitchingTier && (
