@@ -1,5 +1,6 @@
 import json
 import math
+import threading
 import os
 import re
 from contextlib import contextmanager
@@ -16,6 +17,40 @@ import source_dates
 
 MEMORY_TYPES = {"liked", "passed", "trend", "framework", "question"}
 EMBEDDING_DIMENSIONS = 3072
+
+# pgvector's HNSW index on the `vector` type stops at 2000 dimensions, and
+# gemini-embedding-001 produces 3072. So "CREATE INDEX ... USING hnsw (embedding
+# vector_cosine_ops)" fails on Supabase, and for a long time that failure was
+# swallowed: every semantic search was a sequential scan of every 3072-float row,
+# and once the library passed ten thousand passages it started timing out (504).
+# pgvector documents the way through: index and compare the half-precision cast.
+# halfvec supports HNSW up to 4000 dimensions, the precision loss is irrelevant
+# for ranking, and no row has to be re-embedded. The ORDER BY expression must
+# match the indexed expression exactly for the planner to use the index, which is
+# why both come from the same constant.
+VECTOR_EXPR = f"embedding::halfvec({EMBEDDING_DIMENSIONS})"
+VECTOR_PARAM = f"%s::halfvec({EMBEDDING_DIMENSIONS})"
+VECTOR_INDEX_NAME = "idx_chunks_embedding_hnsw_halfvec"
+# CONCURRENTLY: a plain CREATE INDEX holds a lock that blocks writes to chunks
+# for the whole build, and the embedding backfill is usually writing right after
+# a restart. Its connections give up on a lock after 4 s and would mark those
+# chunks failed. A concurrent build blocks nobody; the price is that it cannot
+# run inside a transaction and that an interrupted build leaves an invalid index
+# behind, which _ensure_vector_index checks for and drops before rebuilding.
+VECTOR_INDEX_SQL = f"""
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS {VECTOR_INDEX_NAME}
+    ON chunks USING hnsw (({VECTOR_EXPR}) halfvec_cosine_ops)
+    WHERE embedding IS NOT NULL
+"""
+VECTOR_INDEX_STATE_SQL = """
+    SELECT i.indisvalid
+      FROM pg_index i
+      JOIN pg_class c ON c.oid = i.indexrelid
+     WHERE c.relname = %s
+"""
+# Building the index over the whole library takes longer than the 12 s statement
+# timeout every ordinary connection carries, so the build gets its own budget.
+VECTOR_INDEX_BUILD_TIMEOUT_MS = int(os.environ.get("BRAIN_VECTOR_INDEX_TIMEOUT_MS") or 600_000)
 
 
 CHUNK_COLUMNS = """
@@ -35,6 +70,26 @@ CHUNK_COLUMNS = """
     c.embedding::text AS embedding,
     c.created_at,
     c.updated_at
+"""
+
+# Both sides of the comparison go through the same cast the index is built on;
+# a bare `c.embedding <=> ...` would ignore the index and scan every row.
+SEMANTIC_SEARCH_SQL = f"""
+    SELECT {CHUNK_COLUMNS},
+           1 - (c.{VECTOR_EXPR} <=> {VECTOR_PARAM}) AS score
+      FROM chunks c
+     WHERE c.embedding IS NOT NULL
+     ORDER BY c.{VECTOR_EXPR} <=> {VECTOR_PARAM}
+     LIMIT %s
+"""
+SEMANTIC_SEARCH_IN_SOURCES_SQL = f"""
+    SELECT {CHUNK_COLUMNS},
+           1 - (c.{VECTOR_EXPR} <=> {VECTOR_PARAM}) AS score
+      FROM chunks c
+     WHERE c.embedding IS NOT NULL
+       AND c.source_id IN ({{source_placeholders}})
+     ORDER BY c.{VECTOR_EXPR} <=> {VECTOR_PARAM}
+     LIMIT %s
 """
 
 
@@ -344,19 +399,60 @@ class PostgresBrainStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_theses_company ON theses(company)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_brain_index_search ON brain_index USING GIN(search_vector)")
-            conn.execute("SAVEPOINT vector_index")
+        # The vector index is built separately: it needs a longer statement
+        # timeout than this connection carries, it must not hold up startup, and
+        # its outcome has to be visible rather than swallowed.
+        self.vector_index_state: dict[str, Any] = {"index": VECTOR_INDEX_NAME, "status": "pending", "error": None}
+        threading.Thread(target=self._ensure_vector_index, name="brain-vector-index", daemon=True).start()
+
+    def _ensure_vector_index(self) -> None:
+        """Create the halfvec HNSW index if missing, and record what happened.
+
+        Uses a dedicated autocommit connection: CREATE INDEX CONCURRENTLY cannot
+        run inside a transaction, and the build needs a longer statement timeout
+        than ordinary connections carry. Until it finishes, searches still work by
+        sequential scan, exactly as before; they just become fast once it exists.
+        The state is reported by /api/brain/status, so a missing index is a
+        visible fact rather than a silent slowdown.
+        """
+        self.vector_index_state = {"index": VECTOR_INDEX_NAME, "status": "building", "error": None}
+        try:
+            conn = psycopg.connect(
+                self.database_url,
+                row_factory=dict_row,
+                prepare_threshold=None,
+                connect_timeout=10,
+                autocommit=True,
+                # lock_timeout 0: a concurrent build waits for in-flight writers to
+                # finish rather than giving up on them.
+                options=f"-c statement_timeout={int(VECTOR_INDEX_BUILD_TIMEOUT_MS)} -c lock_timeout=0",
+            )
             try:
-                conn.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
-                    ON chunks USING hnsw (embedding vector_cosine_ops)
-                    WHERE embedding IS NOT NULL
-                    """
-                )
-                conn.execute("RELEASE SAVEPOINT vector_index")
-            except Exception:
-                conn.execute("ROLLBACK TO SAVEPOINT vector_index")
-                conn.execute("RELEASE SAVEPOINT vector_index")
+                row = conn.execute(VECTOR_INDEX_STATE_SQL, (VECTOR_INDEX_NAME,)).fetchone()
+                if row and not row["indisvalid"]:
+                    # Left behind by a build that was interrupted; IF NOT EXISTS
+                    # would keep it, so it has to go first.
+                    conn.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {VECTOR_INDEX_NAME}")
+                    row = None
+                if not row:
+                    conn.execute(VECTOR_INDEX_SQL)
+                    row = conn.execute(VECTOR_INDEX_STATE_SQL, (VECTOR_INDEX_NAME,)).fetchone()
+            finally:
+                conn.close()
+            if row and row["indisvalid"]:
+                self.vector_index_state = {"index": VECTOR_INDEX_NAME, "status": "ok", "error": None}
+                print(f"[brain] vector index {VECTOR_INDEX_NAME} is in place.")
+            else:
+                self.vector_index_state = {
+                    "index": VECTOR_INDEX_NAME, "status": "missing",
+                    "error": "CREATE INDEX returned but the catalogue shows no valid index",
+                }
+                print(f"[brain] vector index {VECTOR_INDEX_NAME} missing after CREATE INDEX; semantic search will scan sequentially.")
+        except Exception as exc:
+            text = str(exc).strip()
+            reason = (text.splitlines()[0][:300] if text else type(exc).__name__)
+            self.vector_index_state = {"index": VECTOR_INDEX_NAME, "status": "failed", "error": reason}
+            print(f"[brain] vector index build failed; semantic search will scan sequentially. {reason}")
 
     @staticmethod
     def _now() -> str:
@@ -1049,14 +1145,7 @@ class PostgresBrainStore:
         embedding_literal = self._embedding_literal(query_embedding)
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                f"""
-                SELECT {CHUNK_COLUMNS},
-                       1 - (c.embedding <=> %s::vector) AS score
-                  FROM chunks c
-                 WHERE c.embedding IS NOT NULL
-                 ORDER BY c.embedding <=> %s::vector
-                 LIMIT %s
-                """,
+                SEMANTIC_SEARCH_SQL,
                 (embedding_literal, embedding_literal, limit),
             ).fetchall()
 
@@ -1088,15 +1177,7 @@ class PostgresBrainStore:
         source_placeholders = ", ".join("%s" for _ in clean_source_ids)
         with self._lock, self._connect() as conn:
             rows = conn.execute(
-                f"""
-                SELECT {CHUNK_COLUMNS},
-                       1 - (c.embedding <=> %s::vector) AS score
-                  FROM chunks c
-                 WHERE c.embedding IS NOT NULL
-                   AND c.source_id IN ({source_placeholders})
-                 ORDER BY c.embedding <=> %s::vector
-                 LIMIT %s
-                """,
+                SEMANTIC_SEARCH_IN_SOURCES_SQL.format(source_placeholders=source_placeholders),
                 (embedding_literal, *clean_source_ids, embedding_literal, limit),
             ).fetchall()
 
