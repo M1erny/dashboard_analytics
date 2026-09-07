@@ -3403,16 +3403,45 @@ def _market_session_is_complete(timestamp: Any, country: str) -> bool:
     return (now_local.hour, now_local.minute) >= (close_hour, close_minute)
 
 
+# Two languages, one gate. The owner asks in Polish at least as often as in
+# English, and a question that does not match here is answered from the target
+# configuration alone, with the model told that live data "was not required".
+# Polish inflects, so the patterns match stems with the common endings spelled
+# out, and each carries an ASCII twin because diacritics are often dropped when
+# typing quickly (wolumen/zmiennosc/obsuniecie).
 _MARKET_DATA_INTENT_PATTERNS = {
-    "price_momentum_or_volume": r"\b(momentum|volume|technical|price action|relative strength|moving average|trend|weakness|breakout|selloff|liquidity)\b",
-    "live_performance": r"\b(ytd|return|performance|contribution|p&l|pnl|profit|loss|financing|alpha|sharpe|sortino|batting average)\b",
-    "live_risk": r"\b(beta|volatility|drawdown|var|cvar|portfolio risk|book risk|risk attribution|stress test|correlation|concentration|exposure|leverage)\b",
-    "current_book_state": r"\b(current weight|drifted weight|live weight|today(?:'s)? weight|current portfolio|current book|latest portfolio)\b",
-    "portfolio_action": r"\b(sell|reduce|trim|exit|cover|rebalance|resize|increase|decrease|add to|position sizing)\b",
-    "explicit_live_data": r"\b(live data|market data|yahoo|latest price|current price|today|right now)\b",
+    "price_momentum_or_volume": (
+        r"\b(momentum|volumes?|technicals?|price action|relative strength|moving averages?|trends?|weakness|breakouts?|selloffs?|liquidity"
+        r"|wolumen\w*|trend\w*|si[łl][aęey] relatywn\w*|[śs]redni\w* krocz[aą]c\w*|wybici\w*|wyprzeda\w*|p[łl]ynno\w*|s[łl]abo[śs]\w*)\b"
+    ),
+    "live_performance": (
+        r"\b(ytd|returns?|performance|contributions?|p&l|pnl|profits?|loss(?:es)?|financing|alpha|sharpe|sortino|batting average"
+        r"|wynik\w*|zwrot\w*|stop[aęy] zwrotu|zysk\w*|strat[aąęy]\w*|kontrybucj\w*|wk[łl]ad\w*|alf[aąęy]|finansowani\w*"
+        r"|od pocz[aą]tku roku|w tym roku|jak idzie|jak si[ęe] trzyma|jak wygl[aą]da)\b"
+    ),
+    "live_risk": (
+        r"\b(beta|volatility|drawdowns?|var|cvar|portfolio risk|book risk|risk attribution|stress tests?|correlations?|concentration|exposures?|leverage"
+        r"|bet[aąęy]|zmienno[śs]\w*|obsuni[ęe]ci\w*|ryzyk\w*|korelacj\w*|koncentracj\w*|ekspozycj\w*|d[źz]wigni\w*|lewar\w*|stres[- ]?test\w*)\b"
+    ),
+    "current_book_state": (
+        r"\b(current weights?|drifted weights?|live weights?|today(?:'s)? weights?|current portfolio|current book|latest portfolio|current holdings|current positions?"
+        r"|wag[aąęiy]|wagach|wagami|portfel\w*|pozycj\w*|alokacj\w*|obecn\w*|aktualn\w*|bie[żz][aą]c\w*|dryf\w*|ksi[ąa][żz]k[aęi]\b|udzia[łl]\w*)\b"
+    ),
+    "portfolio_action": (
+        # "What bets should be made" is a sizing question: the answer depends on
+        # what the book already holds, so it needs the live book like sell/trim do.
+        r"\b(sell|reduce|trim|exit|cover|rebalance|resize|increase|decrease|add to|position sizing"
+        r"|bets?|bet on|buy|invest(?:ing|ment)?|allocat\w*|overweight|underweight|which positions?|what (?:to|should i) (?:buy|own|hold|add)"
+        r"|sprzeda\w*|zmniejsz\w*|zredukuj\w*|przyci[ąa][łl]\w*|zwi[ęe]ksz\w*|dokup\w*|zamkn\w*|wyj[śs][ćc]|wyjd\w*|rebalans\w*|zrebalansuj|dowa[żz]\w*|pokry[ćc]|pokryj\w*|rozmiar\w* pozycj\w*)\b"
+    ),
+    "explicit_live_data": (
+        r"\b(live data|market data|yahoo|latest prices?|current prices?|today|right now"
+        r"|dane rynkowe|dane na [żz]ywo|na [żz]ywo|aktualn\w* cen\w*|bie[żz][aą]c\w* cen\w*|ostatni\w* cen\w*|dzisiaj|dzi[śs]|teraz)\b"
+    ),
 }
 _NO_MARKET_DATA_PATTERN = re.compile(
-    r"\b(without (?:live |current )?market data|documents? only|research only|drive only|do not (?:fetch|use) market data)\b",
+    r"\b(without (?:live |current )?market data|documents? only|research only|drive only|do not (?:fetch|use) market data"
+    r"|bez danych rynkowych|tylko (?:z )?dokument\w*|tylko research|tylko z dysku|nie pobieraj danych(?: rynkowych)?)\b",
     re.IGNORECASE,
 )
 
