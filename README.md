@@ -446,6 +446,7 @@ Current security posture:
 - Public `anon` and `authenticated` table grants are revoked.
 - The dashboard uses the Render backend, which connects through the private Postgres connection string.
 - Do not expose `DATABASE_URL` or service credentials in the frontend.
+- Semantic search relies on an HNSW index over the half-precision cast of the 3072-dimension embeddings (`idx_chunks_embedding_hnsw_halfvec`); pgvector cannot index the raw `vector(3072)` column. The backend builds it in the background on first start and reports the outcome under `vectorIndex` in `GET /api/brain/status`. If it shows `failed`, the Supabase project needs pgvector 0.7 or newer.
 - The Research Agent downloads only public HTTP(S) URLs and rejects private/local network addresses.
 
 Brain tables:

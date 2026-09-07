@@ -1701,6 +1701,9 @@ async def get_brain_status():
         "state": "ready",
         "database": getattr(store, "database_label", str(getattr(store, "db_path", "unknown"))),
         "storage": getattr(store, "storage_label", "unknown"),
+        # Postgres only: whether the halfvec HNSW index exists. Without it every
+        # semantic search scans the whole library and times out past ~10k rows.
+        "vectorIndex": getattr(store, "vector_index_state", None),
         "search": getattr(store, "search_label", "unknown"),
         "vectorSearch": getattr(store, "vector_search_label", "unknown"),
         "embeddingProvider": "google_ai_studio" if gemini_client and gemini_client.configured else "not_configured",
