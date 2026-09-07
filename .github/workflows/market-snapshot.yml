@@ -9,9 +9,14 @@ name: Market snapshot refresh
 
 on:
   schedule:
-    # Every two hours on weekdays, 06:00-22:00 UTC: covers Warsaw open through
-    # New York close. Times are UTC; GitHub may start a run a few minutes late.
-    - cron: "0 6-22/2 * * 1-5"
+    # Every two hours on weekdays, 06:23-22:23 UTC: covers Warsaw open through
+    # New York close. Times are UTC.
+    #
+    # Minute 23, not 0. GitHub's scheduler is most loaded at the top of the hour,
+    # and its docs say schedules there are delayed or skipped. The first week
+    # showed it: runs set for :00 started 7 to 105 minutes late, and one Monday
+    # three consecutive slots never ran at all. Any other minute is off-peak.
+    - cron: "23 6-22/2 * * 1-5"
   workflow_dispatch:
 
 concurrency:
