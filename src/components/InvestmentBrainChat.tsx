@@ -946,7 +946,10 @@ const answerCaveats = (retrieval?: RetrievalDiagnostics, semanticError?: string)
         caveats.push(`Nothing was retrieved, and ${retrieval.indexGap}. That is a gap in the index, not proof the library has nothing on the subject.`);
     }
     if (semanticError) {
-        caveats.push('Vector retrieval was unavailable; exact search still contributed.');
+        // The backend already reduced the exception to a short public reason.
+        // Dropping it here left the owner staring at "unavailable" with no way
+        // to tell a Gemini quota problem from a Supabase timeout.
+        caveats.push(`Vector retrieval was unavailable (${semanticError}); exact search still contributed.`);
     }
     if (retrieval?.weakSemanticFallback) {
         caveats.push(`Nothing in the brain cleared the relevance floor. This answer leans on ${retrieval.weakSemanticFallback} weak match${retrieval.weakSemanticFallback === 1 ? '' : 'es'} — read it as an evidence gap, not a finding.`);
