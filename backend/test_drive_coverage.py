@@ -162,7 +162,11 @@ from brain_store import BrainStore
 with tempfile.TemporaryDirectory() as directory:
     store = BrainStore(Path(directory) / "coverage.db")
 
-    body = " ".join(f"word{n}" for n in range(5_000))
+    # Varied vocabulary on purpose: the chunker now drops a window with fewer
+    # than three distinct words as noise, and "word0 word1 word2 ..." is one
+    # word repeated, which no real filing is.
+    vocabulary = ["revenue", "margin", "guidance", "segment", "backlog", "capex", "cash", "debt", "outlook", "risk"]
+    body = " ".join(f"{vocabulary[n % len(vocabulary)]} {n}" for n in range(2_500))
     saved_source, _changed = store.upsert_file_source(
         title="Long filing",
         body=body[:4000],

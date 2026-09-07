@@ -181,4 +181,39 @@ assert office_extract._Budget(0).limit is None
 assert office_extract._Budget(-1).limit is None
 assert office_extract._Budget(10).limit == 10
 
+# --- error cells are not content ---------------------------------------------
+# A sheet full of failed formulas was indexed as text and produced chunks like
+# "#VALUE! #VALUE! #N/A 0.0" that matched every semantic query. Excel writes a
+# failed formula as t="e" with the token in <v>; some writers store the token as
+# a cached string instead. Both must vanish, and a row left empty by that must
+# not survive as a blank line.
+ERROR_SHEET = build_archive(
+    {
+        "xl/workbook.xml": """<?xml version="1.0"?>
+        <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+                  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <sheets><sheet name="Data" sheetId="1" r:id="rId1"/></sheets>
+        </workbook>""",
+        "xl/sharedStrings.xml": """<?xml version="1.0"?>
+        <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>Ticker</t></si><si><t>Verdict</t></si><si><t>CDR</t></si><si><t>Tak</t></si></sst>""",
+        "xl/worksheets/sheet1.xml": """<?xml version="1.0"?>
+        <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+          <sheetData>
+            <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>
+            <row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2" t="s"><v>3</v></c><c r="C2" t="e"><v>#VALUE!</v></c></row>
+            <row r="3"><c r="A3" t="e"><v>#N/A</v></c><c r="B3" t="e"><v>#DIV/0!</v></c><c r="C3" t="str"><v>#REF!</v></c></row>
+            <row r="4"><c r="A4"><v>44256.68886</v></c><c r="B4" t="str"><v>#NAME?</v></c></row>
+          </sheetData>
+        </worksheet>""",
+    }
+)
+error_text, error_meta = office_extract.extract_xlsx(ERROR_SHEET)
+for token in ("#VALUE!", "#N/A", "#DIV/0!"):
+    assert token not in error_text, f"error cell {token} survived extraction: {error_text!r}"
+for token in ("#REF!", "#NAME?"):
+    assert token not in error_text, f"error token cached as a string survived: {error_text!r}"
+assert error_meta["rows"] == 3, f"a row made only of errors must not become a blank line: rows={error_meta['rows']} {error_text!r}"
+assert "Ticker\tVerdict" in error_text and "CDR\tTak" in error_text and "44256.68886" in error_text, error_text
+print("  [PASS] Excel error cells are dropped, real cells on the same rows are kept")
+
 print("OOXML extraction checks passed.")

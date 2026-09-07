@@ -129,4 +129,20 @@ if server is not None:
     # The coverage report must measure against the same byte limit the sync uses.
     assert server.DRIVE_SYNC_MAX_BYTES == drive_indexer.DEFAULT_MAX_BYTES
 
+# --- chunks with no words are not indexed -----------------------------------
+# What reached the index from a broken spreadsheet: error tokens and serial
+# dates, no words. Such a chunk is near every query in embedding space and
+# crowds real passages out. A numeric table keeps its chunk as long as a header
+# row gives it a few words; a Polish header counts the same as an English one.
+from brain_ingestion import chunk_text, is_noise_chunk
+
+assert is_noise_chunk("#VALUE! #VALUE! 44256.68886 44256.68886 0.0 #N/A 10 0 0.0"), "a pure error/number grid must be noise"
+assert is_noise_chunk("Tak 0 #N/A 0 Tak 0 0 Tak"), "one repeated word is still noise"
+assert not is_noise_chunk("Ticker Weight Return CDR 0.10 0.31 LPP 0.075 0.12"), "a table with a header is content"
+assert not is_noise_chunk("Spółka Waga Zwrot CDR 0,10 31%"), "a Polish header is content"
+assert not is_noise_chunk("Wniosek odrzucony 1.0 0.0 Wniosek odrzucony 1.0 przyczyna brak danych"), "three distinct words clear the bar"
+assert chunk_text("#VALUE! #N/A 44256.68886 0.0 " * 200, source_title="Broken sheet") == [], "a noise-only document yields no chunks"
+assert len(chunk_text("Ticker Weight Return " + "CDR 0.10 0.31 " * 400, source_title="Table")) >= 1, "a table with a header still chunks"
+print("  [PASS] noise chunks are dropped, tables with headers are kept")
+
 print("Ingestion no-truncation contract checks passed.")

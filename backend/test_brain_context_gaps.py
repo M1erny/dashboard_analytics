@@ -122,6 +122,60 @@ def main():
         f"{timeout}s vs the frontend's 90s ask timeout",
     )
 
+    # --- The gate speaks Polish ------------------------------------------------
+    # The owner asks in Polish at least as often as in English. Before this, every
+    # Polish question about weights, performance or risk fell through the gate and
+    # was answered from the target configuration, with the model told that live
+    # data "was not required". Each probe is a real question shape, with and
+    # without diacritics, since those are often dropped when typing quickly.
+    print("\n=== Market-data gate: Polish and English ===")
+    wants_live_book = [
+        "jakie mam obecne wagi w portfelu?",
+        "jak idzie portfel w tym roku?",
+        "ile mam ekspozycji na PLN?",
+        "jaka jest beta portfela?",
+        "jaki mam drawdown?",
+        "jaka jest zmienność portfela?",
+        "jaka jest zmiennosc portfela?",
+        "czy powinienem zmniejszyć CDR?",
+        "czy powinienem zmniejszyc CDR?",
+        "wolumen na XTB ostatnio?",
+        "które pozycje mają najlepsze momentum?",
+        "jaki jest mój zwrot od początku roku?",
+        "co sądzisz o wynikach CD Projekt?",
+        "what are my current weights?",
+        "what are my current holdings?",
+        "how is the portfolio performing YTD?",
+        # Sizing questions: the answer depends on what the book already holds.
+        "based on the ai chip architecture and the presistent layer - tell me what bets shoould be made and why",
+        "what should I buy?",
+        "where should I allocate more?",
+        "should I go overweight semis?",
+        "what should I invest in next?",
+        "which positions to add?",
+    ]
+    stays_on_documents = [
+        "podsumuj ostatni raport Budimex",
+        "opisz strategię Benefit Systems z raportu",
+        "co pisze Buffett o rowach ochronnych?",
+        "streszcz list do akcjonariuszy",
+    ]
+    opts_out = [
+        "tylko z dokumentów: co pisze Budimex o marżach?",
+        "tylko z dokumentow: co pisze Budimex o marzach?",
+        "bez danych rynkowych, jaka jest teza dla LPP?",
+        "documents only: what does the 10-K say about margins?",
+    ]
+    for question in wants_live_book:
+        intent = server._brain_market_data_intent(question)
+        check(f"asks for the live book: {question!r}", intent["requested"], str(intent))
+    for question in stays_on_documents:
+        intent = server._brain_market_data_intent(question)
+        check(f"stays on documents: {question!r}", not intent["requested"], str(intent))
+    for question in opts_out:
+        intent = server._brain_market_data_intent(question)
+        check(f"honours the opt-out: {question!r}", intent["explicitlyDisabled"] and not intent["requested"], str(intent))
+
     print()
     if FAILURES:
         print(f"{len(FAILURES)} FAILED:")

@@ -177,8 +177,20 @@ def extract_xlsx(source: bytes | str | Path, *, max_chars: int = 0) -> tuple[str
     }
 
 
+# Excel writes a formula that failed as an error cell: t="e" with the token in
+# <v>. Those tokens are not content, and a sheet full of them indexed as text
+# produced chunks like "#VALUE! #VALUE! #N/A 0.0" that matched every query,
+# because noise is close to everything in embedding space.
+EXCEL_ERROR_TOKENS = frozenset({
+    "#VALUE!", "#N/A", "#REF!", "#DIV/0!", "#NAME?", "#NUM!", "#NULL!",
+    "#SPILL!", "#CALC!", "#GETTING_DATA", "#FIELD!", "#CONNECT!", "#BLOCKED!",
+})
+
+
 def _cell_text(cell: ElementTree.Element, strings: list[str]) -> str:
     cell_type = cell.get("t")
+    if cell_type == "e":
+        return ""
     if cell_type == "s":
         value = cell.find("s:v", SHEET_NS)
         if value is None or not (value.text or "").strip():
@@ -194,12 +206,16 @@ def _cell_text(cell: ElementTree.Element, strings: list[str]) -> str:
         return "".join(node.text or "" for node in inline.findall(".//s:t", SHEET_NS))[:MAX_CELL_CHARS]
     if cell_type == "str":
         # A formula cell carries its cached result in <v>. The formula itself is
-        # not the number the owner reads, so the cached value is what we keep.
+        # not the number the owner reads, so the cached value is what we keep -
+        # unless the cached result is itself an error token some writers store
+        # this way rather than as t="e".
         value = cell.find("s:v", SHEET_NS)
-        return (value.text or "")[:MAX_CELL_CHARS] if value is not None else ""
+        text = (value.text or "") if value is not None else ""
+        return "" if text.strip().upper() in EXCEL_ERROR_TOKENS else text[:MAX_CELL_CHARS]
 
     value = cell.find("s:v", SHEET_NS)
-    return (value.text or "")[:MAX_CELL_CHARS] if value is not None else ""
+    text = (value.text or "") if value is not None else ""
+    return "" if text.strip().upper() in EXCEL_ERROR_TOKENS else text[:MAX_CELL_CHARS]
 
 
 def extract_pptx(source: bytes | str | Path, *, max_chars: int = 0) -> tuple[str, dict[str, Any]]:

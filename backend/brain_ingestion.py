@@ -25,6 +25,19 @@ def stable_hash(*parts: str) -> str:
     return digest.hexdigest()
 
 
+# A chunk with almost no words is a table body without its header, a run of
+# serial dates, or an error-token grid. Embedded, it sits near every query and
+# crowds real passages out of the top results. Three distinct words is a low bar
+# on purpose: a numeric table with a header row clears it; pure noise does not.
+MIN_DISTINCT_WORDS_PER_CHUNK = 3
+_WORD_TOKEN = re.compile(r"[^\W\d_]{2,}", re.UNICODE)
+
+
+def is_noise_chunk(body: str) -> bool:
+    distinct = {match.group(0).casefold() for match in _WORD_TOKEN.finditer(body or "")}
+    return len(distinct) < MIN_DISTINCT_WORDS_PER_CHUNK
+
+
 def chunk_text(
     text: str,
     *,
@@ -50,7 +63,7 @@ def chunk_text(
             break
 
         body = " ".join(part_words).strip()
-        if not body:
+        if not body or is_noise_chunk(body):
             continue
 
         chunks.append(
