@@ -27,10 +27,14 @@ import {
     Sparkles,
     Telescope,
     X,
+    FileText, Paperclip, SlidersHorizontal,
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { API_BASE, api } from '../lib/brainApi';
 import { BrainSelfBuild } from './BrainSelfBuild';
+import { BrainAttachPicker } from './BrainAttachPicker';
+import { HealthIndicator } from './HealthIndicator';
+import { attachmentLabel, type AttachableSource } from '../lib/attachments';
 import { BrainDriveCoverage } from './BrainDriveCoverage';
 import { BrainFilesByDate } from './BrainFilesByDate';
 
@@ -473,6 +477,8 @@ type ChatMessage = {
     // A failed exchange stays visible but is never replayed to the model as if the
     // Brain had said it. The backend renders every non-user turn as "Assistant: ...".
     failed?: boolean;
+    // Files the investor attached to this one question, shown under it.
+    attachments?: AttachableSource[];
 };
 
 type SavedThreadSummary = {
@@ -538,6 +544,8 @@ const request = async (url: string, options: RequestInit = {}, timeoutMs = 65000
 // Single source of truth for how long an ask may run. Used by both the fetch and the
 // waiting indicator so the countdown can never disagree with the real abort deadline.
 const askTimeoutMs = (fullDocumentCount: number) => (fullDocumentCount ? 150000 : 90000);
+// Mirrors MAX_ATTACHED_SOURCES in server.py.
+const MAX_ATTACHMENTS = 6;
 
 /**
  * `fetch` rejects with a bare `TypeError` — "Failed to fetch" in Chrome, "Load
@@ -1007,6 +1015,9 @@ export const InvestmentBrainChat: React.FC = () => {
     const [systemPrompt, setSystemPrompt] = useState(() => bootstrapSnapshot.current?.systemPrompt?.systemPrompt ?? '');
     const [savedSystemPrompt, setSavedSystemPrompt] = useState(() => bootstrapSnapshot.current?.systemPrompt?.systemPrompt ?? '');
     const [defaultSystemPrompt, setDefaultSystemPrompt] = useState(() => bootstrapSnapshot.current?.systemPrompt?.defaultSystemPrompt ?? '');
+    // The saved prompt comes back as the default text when nothing was customised, so
+    // "is there a prompt" is always true; what matters to show is whether it differs.
+    const hasCustomPrompt = Boolean(systemPrompt.trim()) && systemPrompt.trim() !== defaultSystemPrompt.trim();
     const [systemPromptLimit, setSystemPromptLimit] = useState(() => bootstrapSnapshot.current?.systemPrompt?.maxChars ?? 6000);
     const [isSystemPromptOpen, setIsSystemPromptOpen] = useState(false);
     const [isSystemPromptLoading, setIsSystemPromptLoading] = useState(false);
@@ -1050,6 +1061,18 @@ export const InvestmentBrainChat: React.FC = () => {
     // A question can be routed to the important tier without changing the saved
     // default, so a one-off deep question does not make every answer slow.
     const [deepMode, setDeepMode] = useState(false);
+    // Files attached to the next question only; cleared once it is sent.
+    const [attachments, setAttachments] = useState<AttachableSource[]>([]);
+    const [isAttachOpen, setIsAttachOpen] = useState(false);
+    const [isContextMenuOpen, setIsContextMenuOpen] = useState(false);
+    const addAttachment = useCallback((source: AttachableSource) => {
+        if (typeof source.id !== 'number') return;
+        setAttachments(current => current.some(item => item.id === source.id) || current.length >= MAX_ATTACHMENTS ? current : [...current, source]);
+    }, []);
+    const removeAttachment = useCallback((sourceId: number) => {
+        setAttachments(current => current.filter(item => item.id !== sourceId));
+    }, []);
+    const closeAttach = useCallback(() => setIsAttachOpen(false), []);
     const [agentSearch, setAgentSearch] = useState<AgentSearchResponse | null>(null);
     const [isAgentWorking, setIsAgentWorking] = useState(false);
     const outputRef = useRef<HTMLDivElement | null>(null);
@@ -1187,16 +1210,19 @@ export const InvestmentBrainChat: React.FC = () => {
         const question = draft.trim();
         if (!ready || !question || isAsking) return;
 
-        const userMessage: ChatMessage = { id: messageId(), role: 'user', content: question };
+        const sentAttachments = attachments;
+        const userMessage: ChatMessage = { id: messageId(), role: 'user', content: question, attachments: sentAttachments.length ? sentAttachments : undefined };
+        const documentCount = fullContextSources.length + sentAttachments.length;
         const exchangeId = conversationId();
         const priorConversation = thread
             .filter(message => !message.failed)
             .map(message => ({ role: message.role, content: message.content }));
         setThread(current => [...current, userMessage]);
         setDraft('');
+        setAttachments([]);
         setIsAsking(true);
-        setNotice(fullContextSources.length
-            ? `Reading ${fullContextSources.length} full document${fullContextSources.length === 1 ? '' : 's'}, then retrieving supporting evidence...`
+        setNotice(documentCount
+            ? `Reading ${documentCount} full document${documentCount === 1 ? '' : 's'}, then retrieving supporting evidence...`
             : 'Searching evidence, then reading the strongest source files...');
 
         const askStartedAt = Date.now();
@@ -1214,8 +1240,9 @@ export const InvestmentBrainChat: React.FC = () => {
                     threadTitle: priorConversation.find(message => message.role === 'user')?.content ?? question,
                     autoSave: true,
                     tier: deepMode ? 'important' : 'standard',
+                    attachedSourceIds: sentAttachments.flatMap(source => typeof source.id === 'number' ? [source.id] : []),
                 }),
-            }, askTimeoutMs(fullContextSources.length));
+            }, askTimeoutMs(documentCount));
             if (!response.ok) throw new Error(await errorText(response, 'The Brain could not complete this question.'));
             const payload = await response.json() as AnalysisResponse;
             if (payload.context?.portfolio) setPortfolioContext(payload.context.portfolio);
@@ -1253,11 +1280,13 @@ export const InvestmentBrainChat: React.FC = () => {
         } catch (error) {
             const elapsedMs = Date.now() - askStartedAt;
             if (error instanceof TypeError) setNotice('Connection lost. Checking whether the backend is still up...');
-            const text = await diagnoseAskFailure(error, elapsedMs, fullContextSources.length);
+            const text = await diagnoseAskFailure(error, elapsedMs, documentCount);
             setThread(current => [...current, { id: messageId(), role: 'assistant', content: text, status: 'No new conclusion was generated.', failed: true }]);
             // Give the question back so it can be retried without retyping. Only when the
             // composer is still empty: the textarea stays editable during the wait.
             setDraft(current => current.trim() ? current : question);
+            // The attachments belong to the question: give them back with it.
+            setAttachments(current => current.length ? current : sentAttachments);
             setNotice(text);
         } finally {
             setIsAsking(false);
@@ -1932,6 +1961,7 @@ export const InvestmentBrainChat: React.FC = () => {
             { id: 'new-thread', label: 'New thread', group: 'Thread', icon: Plus, disabled: isAsking, run: resetThread },
             { id: 'reload-threads', label: 'Reload saved threads', group: 'Thread', icon: History, disabled: !ready || isSavedThreadsLoading, run: () => void loadSavedThreads() },
             { id: 'reference', label: 'Reference layer', group: 'Context', icon: BookOpenCheck, disabled: !ready, hint: referenceSources.length ? referenceSources.map(source => sourceName(source)).join(' · ') : 'No standing framework selected', run: () => void openReferencePicker() },
+            { id: 'attach', label: 'Attach files to the next question', group: 'Context', icon: Paperclip, disabled: !ready, hint: attachments.length ? attachments.map(attachmentLabel).join(' · ') : 'Search the library or paste a Drive link', run: () => setIsAttachOpen(true) },
             { id: 'full-files', label: 'Full-document context', group: 'Context', icon: FileSearch, disabled: !ready, hint: fullContextSources.length ? fullContextSources.map(source => sourceName(source)).join(' · ') : 'No whole files selected', run: () => void openFullContextPicker() },
             { id: 'prompt', label: 'AI system prompt', group: 'Context', icon: Sparkles, disabled: !ready, hint: systemPrompt ? excerpt(systemPrompt, 72) : 'Default research instructions', run: () => void openSystemPrompt() },
             { id: 'search', label: 'Search sources', group: 'Library', icon: Search, run: () => setPanelTab('search') },
@@ -1952,7 +1982,7 @@ export const InvestmentBrainChat: React.FC = () => {
         }
         return commands;
         // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [ready, isAsking, isSavedThreadsLoading, referenceSources, fullContextSources, systemPrompt, embeddings.missing, drive?.connected, drive?.folderUrl, isRailOpen, deepMode, activeModelLabel, routing?.standard?.model, routing?.important?.model]);
+    }, [ready, isAsking, isSavedThreadsLoading, referenceSources, fullContextSources, attachments, systemPrompt, embeddings.missing, drive?.connected, drive?.folderUrl, isRailOpen, deepMode, activeModelLabel, routing?.standard?.model, routing?.important?.model]);
 
     const paletteMatches = useMemo(() => {
         const query = paletteQuery.trim().toLowerCase();
@@ -2126,8 +2156,18 @@ export const InvestmentBrainChat: React.FC = () => {
                             {thread.map(message => (
                                 <article key={message.id} className="mx-auto w-full max-w-3xl">
                                     {message.role === 'user' ? (
-                                        <div className="flex justify-end">
+                                        <div className="flex flex-col items-end gap-1.5">
                                             <p className="max-w-[85%] whitespace-pre-wrap rounded-xl rounded-br-sm border border-sky-500/20 bg-sky-500/[0.08] px-4 py-2.5 text-sm leading-6 text-slate-100">{message.content}</p>
+                                            {message.attachments?.length ? (
+                                                <div className="flex max-w-[85%] flex-wrap justify-end gap-1">
+                                                    {message.attachments.map(source => (
+                                                        <span key={source.id} className="inline-flex max-w-full items-center gap-1 border border-cyan-500/25 px-1.5 py-0.5 text-[10px] text-cyan-200/80" title="Attached and read in full for this question">
+                                                            <Paperclip className="h-2.5 w-2.5 shrink-0" />
+                                                            <span className="truncate">{attachmentLabel(source)}</span>
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            ) : null}
                                         </div>
                                     ) : (
                                         <div className="border-l-2 border-emerald-400/25 pl-4 sm:pl-5">
@@ -2156,7 +2196,7 @@ export const InvestmentBrainChat: React.FC = () => {
                                     </div>
                                     {askElapsed >= 60 && (
                                         <p className="mt-2 text-xs leading-5 text-amber-200/70">
-                                            Still working. This request stops at {Math.round(askTimeoutMs(fullContextSources.length) / 1000)}s, and your question is kept so you can retry.
+                                            Still working. This request stops at {Math.round(askTimeoutMs(fullContextSources.length + (thread.at(-1)?.attachments?.length ?? 0)) / 1000)}s, and your question is kept so you can retry.
                                         </p>
                                     )}
                                 </article>
@@ -2167,15 +2207,23 @@ export const InvestmentBrainChat: React.FC = () => {
                     {/* ── Composer: context is attached here, not in a distant panel ── */}
                     <div ref={composerRef} className="shrink-0 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-6">
                         <div className="mx-auto w-full max-w-3xl rounded-xl border border-white/[0.1] bg-white/[0.025] focus-within:border-emerald-500/35">
-                            <div className="flex flex-wrap items-center gap-1 border-b border-white/[0.06] px-2 py-1.5">
-                                <ContextChip onClick={() => void openReferencePicker()} disabled={!ready} active={referenceSources.length > 0} tone="violet" icon={BookOpenCheck} title={referenceSources.map(source => sourceName(source)).join('\n') || 'Files used as a standing framework in every answer'}>
-                                    Reference{referenceSources.length ? ` ${referenceSources.length}` : ''}
+                            {/* Three controls, in the order they are used. Attach is per question;
+                                Context holds the standing settings that apply to every answer and
+                                change rarely; Deep picks the model for this question. The command
+                                palette stays one keystroke away and in the thread rail. */}
+                            <div className="relative flex flex-wrap items-center gap-1 border-b border-white/[0.06] px-2 py-1.5">
+                                <ContextChip onClick={() => setIsAttachOpen(true)} disabled={!ready} active={attachments.length > 0} tone="cyan" icon={Paperclip} title="Attach exact files to this question: search your library or paste a Google Drive link. Read in full, this question only.">
+                                    Attach{attachments.length ? ` ${attachments.length}` : ''}
                                 </ContextChip>
-                                <ContextChip onClick={() => void openFullContextPicker()} disabled={!ready} active={fullContextSources.length > 0} tone="cyan" icon={FileSearch} title={fullContextSources.map(source => sourceName(source)).join('\n') || 'Indexed files included in full, not by retrieval'}>
-                                    Full files{fullContextSources.length ? ` ${fullContextSources.length}` : ''}
-                                </ContextChip>
-                                <ContextChip onClick={() => void openSystemPrompt()} disabled={!ready} active={Boolean(systemPrompt)} tone="amber" icon={Sparkles} title={systemPrompt ? excerpt(systemPrompt, 240) : 'Default research instructions'}>
-                                    Prompt
+                                <ContextChip
+                                    onClick={() => setIsContextMenuOpen(open => !open)}
+                                    disabled={!ready}
+                                    active={(referenceSources.length + fullContextSources.length + (hasCustomPrompt ? 1 : 0)) > 0}
+                                    tone="violet"
+                                    icon={SlidersHorizontal}
+                                    title="Standing context used in every answer: reference frameworks, always-included files, research instructions"
+                                >
+                                    Context{(referenceSources.length + fullContextSources.length + (hasCustomPrompt ? 1 : 0)) ? ` ${referenceSources.length + fullContextSources.length + (hasCustomPrompt ? 1 : 0)}` : ''}
                                 </ContextChip>
                                 <ContextChip
                                     onClick={() => setDeepMode(deep => !deep)}
@@ -2189,10 +2237,49 @@ export const InvestmentBrainChat: React.FC = () => {
                                 >
                                     Deep
                                 </ContextChip>
-                                <ContextChip onClick={() => { setPaletteQuery(''); setIsPaletteOpen(true); }} tone="slate" icon={Command} title={`All Brain commands (${modKeyLabel}K)`}>
-                                    Tools
-                                </ContextChip>
+                                {isContextMenuOpen && (
+                                    <>
+                                        <div className="fixed inset-0 z-30" onClick={() => setIsContextMenuOpen(false)} aria-hidden="true" />
+                                        <div role="menu" aria-label="Standing context" className="absolute bottom-full left-2 z-40 mb-1 w-[min(88vw,340px)] border border-white/[0.12] bg-[#080d08] p-1 shadow-2xl">
+                                            <p className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-[0.1em] text-slate-500">Used in every answer</p>
+                                            {[
+                                                { key: 'reference', icon: BookOpenCheck, label: 'Reference frameworks', value: referenceSources.length ? `${referenceSources.length} selected` : 'none', hint: referenceSources.map(source => sourceName(source)).join(' · '), run: () => void openReferencePicker() },
+                                                { key: 'full', icon: FileSearch, label: 'Files read in every answer', value: fullContextSources.length ? `${fullContextSources.length} pinned` : 'none', hint: fullContextSources.map(source => sourceName(source)).join(' · '), run: () => void openFullContextPicker() },
+                                                { key: 'prompt', icon: Sparkles, label: 'Research instructions', value: hasCustomPrompt ? 'custom' : 'default', hint: hasCustomPrompt ? excerpt(systemPrompt, 90) : '', run: () => void openSystemPrompt() },
+                                                { key: 'commands', icon: Command, label: 'All commands', value: `${modKeyLabel}K`, hint: '', run: () => { setPaletteQuery(''); setIsPaletteOpen(true); } },
+                                            ].map(item => (
+                                                <button
+                                                    key={item.key}
+                                                    type="button"
+                                                    role="menuitem"
+                                                    onClick={() => { setIsContextMenuOpen(false); item.run(); }}
+                                                    className="flex w-full items-start gap-2.5 px-3 py-2 text-left hover:bg-white/[0.05]"
+                                                >
+                                                    <item.icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
+                                                    <span className="min-w-0 flex-1">
+                                                        <span className="flex items-baseline justify-between gap-2 text-xs text-slate-100">
+                                                            <span>{item.label}</span>
+                                                            <span className="shrink-0 text-[10px] text-slate-500">{item.value}</span>
+                                                        </span>
+                                                        {item.hint && <span className="mt-0.5 block truncate text-[11px] text-slate-500">{item.hint}</span>}
+                                                    </span>
+                                                </button>
+                                            ))}
+                                        </div>
+                                    </>
+                                )}
                             </div>
+                            {attachments.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5 border-b border-white/[0.06] px-3 py-2" aria-label="Attached to this question">
+                                    {attachments.map(source => (
+                                        <span key={source.id} className="inline-flex max-w-full items-center gap-1 border border-cyan-500/30 bg-cyan-500/[0.06] px-2 py-0.5 text-[11px] text-cyan-100">
+                                            <FileText className="h-3 w-3 shrink-0" />
+                                            <span className="truncate">{attachmentLabel(source)}</span>
+                                            <button type="button" onClick={() => typeof source.id === 'number' && removeAttachment(source.id)} className="shrink-0 text-cyan-300/70 hover:text-white" aria-label={`Remove ${attachmentLabel(source)}`}><X className="h-3 w-3" /></button>
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
                             <div className="flex items-end gap-2 p-2">
                                 <textarea
                                     ref={draftRef}
@@ -2832,6 +2919,7 @@ export const InvestmentBrainChat: React.FC = () => {
 
             {/* ── Status bar: the state an editor keeps at the bottom, not in cards ── */}
             <footer className="flex h-7 shrink-0 items-center gap-3 border-t border-white/[0.07] bg-[#080d08] px-3 text-[10px] text-slate-500">
+                <HealthIndicator url={api('/api/health')} placement="up" align="left" actions={{ embeddings: () => void embedMissing(), drive_sync: () => void syncDrive(), embedding_job: () => void embedMissing() }} className="shrink-0" />
                 <span className="inline-flex shrink-0 items-center gap-1.5">
                     <span className={cn('h-1.5 w-1.5 rounded-full', ready ? allEmbedded ? 'bg-emerald-400' : 'bg-amber-400' : 'bg-rose-400')} />
                     <span className={cn('font-semibold', ready ? 'text-slate-300' : 'text-rose-300')}>{ready ? libraryState : backendState === 'checking' ? 'Checking Brain' : 'Backend offline'}</span>
@@ -2902,6 +2990,14 @@ export const InvestmentBrainChat: React.FC = () => {
                     </section>
                 </div>
             )}
+            <BrainAttachPicker
+                open={isAttachOpen}
+                onClose={closeAttach}
+                attached={attachments}
+                onAdd={addAttachment}
+                onRemove={removeAttachment}
+                max={MAX_ATTACHMENTS}
+            />
             {isReferencePickerOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
                     <section role="dialog" aria-modal="true" aria-labelledby="reference-layer-title" className="flex max-h-[min(720px,calc(100vh-32px))] w-full max-w-2xl flex-col rounded-lg border border-white/[0.12] bg-[#0c130c] shadow-2xl">

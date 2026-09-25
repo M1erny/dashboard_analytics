@@ -18,7 +18,7 @@ import pandas as pd
 import numpy as np
 import time
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote_plus
 from zoneinfo import ZoneInfo
@@ -62,7 +62,9 @@ try:
         configured_redirect_uri,
         extension_for_file,
         google_drive_auth_url,
+        DriveFileError,
         index_drive_folder,
+        index_single_drive_file,
         parse_drive_folder_id,
     )
     from gemini_client import (
@@ -97,6 +99,11 @@ except ImportError as e:
     extension_for_file = None
     google_drive_auth_url = None
     index_drive_folder = None
+    index_single_drive_file = None
+
+    class DriveFileError(RuntimeError):  # keeps `except DriveFileError` valid without the module
+        status_code = 503
+
     parse_drive_folder_id = None
     GeminiClient = None
     load_backend_env = None
@@ -217,6 +224,10 @@ REFERENCE_SOURCE_IDS_SETTING = "brain.reference_source_ids.v1"
 MAX_REFERENCE_SOURCES = 6
 FULL_CONTEXT_SOURCE_IDS_SETTING = "brain.full_context_source_ids.v1"
 MAX_FULL_CONTEXT_SOURCES = 4
+# Files attached to one question, read in full. Separate from the pinned set above,
+# which applies to every question; attachments come first in the shared budget,
+# because attaching a file to a question is the more specific instruction.
+MAX_ATTACHED_SOURCES = 6
 FULL_CONTEXT_MAX_CHARS_PER_SOURCE = max(20_000, min(_env_int("BRAIN_FULL_CONTEXT_MAX_CHARS_PER_SOURCE", 250_000), 1_000_000))
 FULL_CONTEXT_TOTAL_MAX_CHARS = max(100_000, min(_env_int("BRAIN_FULL_CONTEXT_TOTAL_MAX_CHARS", 800_000), 1_500_000))
 FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS = max(15.0, min(_env_float("BRAIN_FULL_CONTEXT_GENERATION_TIMEOUT_SECONDS", 45.0), 120.0))
@@ -304,6 +315,8 @@ def _utc_now_iso() -> str:
 def _public_embedding_job() -> dict[str, Any]:
     return {
         "running": embedding_backfill_job.get("running", False),
+        "interrupted": embedding_backfill_job.get("interrupted", False),
+        "restoredFrom": embedding_backfill_job.get("restoredFrom"),
         "startedAt": embedding_backfill_job.get("startedAt"),
         "finishedAt": embedding_backfill_job.get("finishedAt"),
         "model": embedding_backfill_job.get("model"),
@@ -318,6 +331,8 @@ def _public_embedding_job() -> dict[str, Any]:
 def _public_drive_job() -> dict[str, Any]:
     return {
         "running": drive_index_job.get("running", False),
+        "interrupted": drive_index_job.get("interrupted", False),
+        "restoredFrom": drive_index_job.get("restoredFrom"),
         "embeddingQueued": drive_index_job.get("embeddingQueued", False),
         "startedAt": drive_index_job.get("startedAt"),
         "finishedAt": drive_index_job.get("finishedAt"),
@@ -334,6 +349,8 @@ def _public_drive_job() -> dict[str, Any]:
 def _public_espi_issuer_job() -> dict[str, Any]:
     return {
         "running": espi_issuer_job.get("running", False),
+        "interrupted": espi_issuer_job.get("interrupted", False),
+        "restoredFrom": espi_issuer_job.get("restoredFrom"),
         "startedAt": espi_issuer_job.get("startedAt"),
         "finishedAt": espi_issuer_job.get("finishedAt"),
         "requested": espi_issuer_job.get("requested", 0),
@@ -341,6 +358,61 @@ def _public_espi_issuer_job() -> dict[str, Any]:
         "errors": espi_issuer_job.get("errors", [])[-10:],
         "message": espi_issuer_job.get("message", "Idle"),
     }
+
+
+# Last write failure per ops record, surfaced by /api/health. Empty when healthy.
+_ops_persist_errors: dict[str, str] = {}
+
+
+def _persist_ops_record_sync(name: str, state: dict[str, Any]) -> None:
+    error = ops_state.save(brain_store, name, state)
+    if error:
+        _ops_persist_errors[name] = error
+        print(f"[ops] could not persist {name}: {error}")
+    else:
+        _ops_persist_errors.pop(name, None)
+
+
+async def _persist_job(name: str, state: dict[str, Any]) -> None:
+    """Write a job record at a lifecycle transition. Never raises, never blocks long."""
+    if brain_store is None:
+        return
+    try:
+        await asyncio.wait_for(run_in_threadpool(_persist_ops_record_sync, name, dict(state)), timeout=10)
+    except Exception as exc:
+        _ops_persist_errors[name] = f"{type(exc).__name__}: {exc}"[:200]
+
+
+def _restore_ops_state_sync() -> dict[str, bool]:
+    """Fold saved job records and the Yahoo cooldown back in after a restart."""
+    restored: dict[str, bool] = {}
+    for name, target in (
+        ("drive_index", drive_index_job),
+        ("embedding_backfill", embedding_backfill_job),
+        ("espi_issuer", espi_issuer_job),
+    ):
+        restored[name] = ops_state.restore_job(target, ops_state.load(brain_store, name))
+    cooldown = ops_state.load(brain_store, "yahoo_cooldown") or {}
+    until = float(cooldown.get("until") or 0)
+    if risk and until > time.time():
+        # Forgetting it would send the first request after a restart straight
+        # back to the host that just refused us.
+        risk._rate_limited_until = max(float(getattr(risk, "_rate_limited_until", 0.0)), until)
+        restored["yahoo_cooldown"] = True
+    return restored
+
+
+@app.on_event("startup")
+async def _restore_ops_state_on_startup() -> None:
+    if brain_store is None:
+        return
+    try:
+        restored = await asyncio.wait_for(run_in_threadpool(_restore_ops_state_sync), timeout=15)
+        if any(restored.values()):
+            print(f"[ops] restored after restart: {', '.join(k for k, v in restored.items() if v)}")
+    except Exception as exc:
+        _ops_persist_errors["restore"] = f"{type(exc).__name__}: {exc}"[:200]
+        print(f"[ops] restore failed: {exc}")
 
 
 def _clean_public_error(error: Exception | str) -> str:
@@ -608,6 +680,20 @@ def _parse_full_context_source_ids(value: str | None) -> list[int]:
     return source_ids
 
 
+def _clean_attached_source_ids(values: list[Any] | None) -> list[int]:
+    clean: list[int] = []
+    for value in values or []:
+        try:
+            source_id = int(value)
+        except (TypeError, ValueError):
+            continue
+        if source_id > 0 and source_id not in clean:
+            clean.append(source_id)
+        if len(clean) >= MAX_ATTACHED_SOURCES:
+            break
+    return clean
+
+
 async def _full_context_sources_from_store(store: Any) -> tuple[list[int], list[dict[str, Any]]]:
     if not hasattr(store, "get_setting"):
         return [], []
@@ -747,6 +833,7 @@ async def _build_full_document_context(
             "availableChars": available_chars,
             "contextTruncated": len(context_text) < available_chars,
             "indexTruncated": index_truncated,
+            "attached": bool(source.get("attachedToQuestion")),
         })
         remaining_chars -= len(context_text)
     return documents
@@ -762,6 +849,7 @@ def _public_full_document_context(items: list[dict[str, Any]]) -> list[dict[str,
             "availableChars": item.get("availableChars", 0),
             "contextTruncated": item.get("contextTruncated", False),
             "indexTruncated": item.get("indexTruncated", False),
+            "attached": item.get("attached", False),
         }
         for item in items
     ]
@@ -777,6 +865,8 @@ def _format_full_document_context(items: list[dict[str, Any]]) -> str:
             flags.append("context cap reached")
         if item.get("indexTruncated"):
             flags.append("index extraction cap reached")
+        if item.get("attached"):
+            flags.insert(0, "attached by the investor to this question")
         flag_text = f" | {', '.join(flags)}" if flags else " | full indexed text"
         blocks.append(
             f"[F{index}] {source_title} | {item.get('charsIncluded', 0)} characters | "
@@ -914,7 +1004,9 @@ async def _run_drive_index_job(
         "counts": None,
         "results": [],
         "message": "Drive sync started.",
+        "interrupted": False,
     })
+    await _persist_job("drive_index", drive_index_job)
 
     try:
         def update_progress(progress: dict[str, Any]) -> None:
@@ -971,6 +1063,7 @@ async def _run_drive_index_job(
     finally:
         drive_index_job["running"] = False
         drive_index_job["finishedAt"] = _utc_now_iso()
+        await _persist_job("drive_index", drive_index_job)
 
 
 async def _run_embedding_backfill_job(*, batch_size: int, max_chunks: int, force: bool) -> None:
@@ -993,7 +1086,9 @@ async def _run_embedding_backfill_job(*, batch_size: int, max_chunks: int, force
         "embedded": 0,
         "errors": [],
         "message": "Embedding job started.",
+        "interrupted": False,
     })
+    await _persist_job("embedding_backfill", embedding_backfill_job)
 
     processed = 0
     skipped_chunk_ids: set[int] = set()
@@ -1081,6 +1176,7 @@ async def _run_embedding_backfill_job(*, batch_size: int, max_chunks: int, force
         embedding_backfill_job["finishedAt"] = _utc_now_iso()
         if embedding_backfill_job.get("embedded", 0) > 0 and not str(embedding_backfill_job.get("message", "")).startswith("Embedding job stopped"):
             embedding_backfill_job["message"] = "Embedding job finished."
+        await _persist_job("embedding_backfill", embedding_backfill_job)
 
 
 def _local_indexing_enabled() -> bool:
@@ -1268,6 +1364,13 @@ class BrainCompanyAnalysisRequest(BaseModel):
     # Which tier answers this one question. Anything unrecognised falls back to
     # the standard tier rather than erroring, so an older client keeps working.
     tier: str | None = Field(default=None, max_length=20)
+    # Library source ids to read in full for this question only.
+    attachedSourceIds: list[int] = Field(default_factory=list, max_length=MAX_ATTACHED_SOURCES)
+
+
+class BrainDriveAttachRequest(BaseModel):
+    link: str = Field(..., min_length=5, max_length=2000)
+    force: bool = False
 
 
 class BrainModelChoice(BaseModel):
@@ -1331,12 +1434,18 @@ def _gemini_or_503():
 # actually takes the load off the throttled host. Whatever is served, its
 # provenance travels with it in the status below.
 import market_snapshot
+import ops_state
 
 MARKET_SNAPSHOT_SETTING_PREFIX = market_snapshot.SETTING_PREFIX
 MARKET_SNAPSHOT_MAX_BYTES = market_snapshot.MAX_BYTES
 # A snapshot younger than this is served without asking Yahoo. The refresh job
 # runs every two hours on weekdays; three hours leaves room for a late start.
-MARKET_SNAPSHOT_FRESH_SECONDS = max(300.0, min(_env_float("MARKET_SNAPSHOT_FRESH_SECONDS", 3 * 3600.0), 24 * 3600.0))
+# Eight hours, not three. GitHub's scheduler delivers roughly half of the refresh
+# job's slots, up to two hours late (measured over the first two weeks), so a
+# three-hour window kept expiring between runs and sent Render back to Yahoo from
+# the shared IP the job exists to spare. The data is daily bars: between closes a
+# snapshot eight hours old holds the same numbers as one eight minutes old.
+MARKET_SNAPSHOT_FRESH_SECONDS = max(300.0, min(_env_float("MARKET_SNAPSHOT_FRESH_SECONDS", 8 * 3600.0), 24 * 3600.0))
 _market_data_status: dict[str, dict[str, Any]] = {}
 _market_snapshot_written: dict[str, str] = {}
 _market_data_locks: dict[str, asyncio.Lock] = {}
@@ -1372,6 +1481,10 @@ def _persist_market_snapshot(portfolio_name: str, data, as_of: str | None, fetch
             print(f"Market snapshot for {portfolio_name} not saved: {len(text) // 1024} KB exceeds the cap.")
             return
         brain_store.set_setting(market_snapshot.setting_key(portfolio_name), text)
+        brain_store.set_setting(
+            market_snapshot.meta_key(portfolio_name),
+            market_snapshot.encode_meta(as_of, fetched_at, "backend", len(text)),
+        )
         _market_snapshot_written[portfolio_name] = as_of
         print(f"Market snapshot for {portfolio_name} saved ({len(text) // 1024} KB, as of {as_of}).")
     except Exception as ex:
@@ -1462,6 +1575,7 @@ def _get_cached_market_data(force: bool = False, portfolio_name: str = "main"):
             data = (usd_prices, fx_rates, volume_data, raw_prices)
     except risk.MarketDataRateLimited as ex:
         failure = {"reason": "rate_limited", "message": str(ex), "retryAfterSeconds": int(ex.retry_after)}
+        _persist_ops_record_sync("yahoo_cooldown", {"until": time.time() + float(ex.retry_after)})
     except Exception as ex:
         failure = {"reason": "fetch_error", "message": f"Market data fetch failed: {type(ex).__name__}: {ex}", "retryAfterSeconds": None}
 
@@ -1655,6 +1769,75 @@ async def get_status():
 # ==========================================
 # Investment Brain API (SQLite + unified FTS)
 # ==========================================
+
+# ── Health ─────────────────────────────────────────────────────────────────────
+# One place that answers "is anything wrong right now?". The rules live in
+# health.py; this only gathers inputs, each one allowed to fail on its own, since
+# a health view that errors when the store is slow is worse than no health view.
+import health as health_rules
+
+HEALTH_CACHE_SECONDS = 20.0
+_health_cache: dict[str, Any] = {"payload": None, "expiresAt": 0.0}
+
+
+async def _health_input(label: str, func, *args, timeout: float = 6.0):
+    try:
+        return await asyncio.wait_for(run_in_threadpool(func, *args), timeout=timeout), None
+    except Exception as exc:
+        return None, f"{label}: {type(exc).__name__}"
+
+
+@app.get("/api/health")
+async def get_health(refresh: bool = False):
+    now_mono = time.monotonic()
+    cached = _health_cache.get("payload")
+    if cached is not None and not refresh and now_mono < float(_health_cache.get("expiresAt") or 0):
+        return cached
+
+    now = datetime.now(timezone.utc)
+    input_errors: list[str] = []
+    store = brain_store
+
+    snapshot_meta = None
+    if store is not None:
+        raw_meta, error = await _health_input("snapshot metadata", store.get_setting, market_snapshot.meta_key("main"))
+        snapshot_meta = market_snapshot.decode_meta(raw_meta)
+        if error:
+            input_errors.append(error)
+
+    embeddings = None
+    status_payload = brain_status_cache.get("payload") or {}
+    if status_payload.get("embeddings"):
+        embeddings = status_payload["embeddings"]
+    elif store is not None and hasattr(store, "embedding_stats"):
+        embeddings, error = await _health_input("embedding coverage", store.embedding_stats, timeout=8.0)
+        if error:
+            input_errors.append(error)
+
+    cooldown = float(risk.rate_limit_remaining()) if risk and hasattr(risk, "rate_limit_remaining") else 0.0
+    checks = [
+        health_rules.check_market_data(_market_data_status.get("main"), snapshot_meta, cooldown, now),
+        health_rules.check_snapshot_refresh(snapshot_meta, MARKET_SNAPSHOT_FRESH_SECONDS, now),
+    ]
+    if store is None:
+        checks.append(health_rules._check("brain_store", "fail", f"The brain store did not start: {brain_store_error or 'unknown reason'}.",
+                                          action="Check DATABASE_URL on Render."))
+    else:
+        checks.append(health_rules.check_vector_index(getattr(store, "vector_index_state", None)))
+        checks.append(health_rules.check_embeddings(embeddings, embedding_backfill_job))
+        drive_job = {k: v for k, v in _public_drive_job().items() if k != "results"}
+        checks.append(health_rules._check_job("drive_sync", "Drive sync", drive_job, failure_prefix="Drive sync stopped"))
+        checks.append(health_rules._check_job("embedding_job", "Embedding", _public_embedding_job(), failure_prefix="Embedding job stopped"))
+    checks.append(health_rules.check_llm(bool(gemini_client and gemini_client.configured)))
+    checks.append(health_rules.check_ops_persistence(_ops_persist_errors))
+
+    payload = health_rules.assemble(checks, now=now)
+    if input_errors:
+        payload["inputErrors"] = input_errors
+    _health_cache["payload"] = payload
+    _health_cache["expiresAt"] = now_mono + HEALTH_CACHE_SECONDS
+    return payload
+
 
 @app.get("/api/brain/status")
 async def get_brain_status():
@@ -2189,6 +2372,50 @@ async def index_google_drive_brain_folder(payload: BrainDriveIndexRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/api/brain/drive/attach")
+async def attach_drive_file(payload: BrainDriveAttachRequest):
+    """Index one Drive file named by link or id, and return it ready to attach.
+
+    Reading a file in full needs only its chunks, not their embeddings, so an
+    attached file is usable the moment this returns. Embedding is queued anyway so
+    later questions can also find it by meaning.
+    """
+    store = _brain_or_503()
+    if not index_single_drive_file:
+        raise HTTPException(status_code=503, detail="Google Drive indexer is not available")
+    try:
+        result = await _run_brain_step(
+            "Drive file attach",
+            index_single_drive_file,
+            store,
+            payload.link,
+            force=payload.force,
+            timeout=BRAIN_INDEX_TIMEOUT_SECONDS,
+        )
+    except DriveFileError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    except RuntimeError as exc:
+        text = str(exc)
+        status = 409 if "not connected" in text.lower() or "GOOGLE_CLIENT_ID" in text else 502
+        raise HTTPException(status_code=status, detail=text)
+
+    if result.get("status") not in ("indexed", "unchanged") or not result.get("sourceId"):
+        raise HTTPException(status_code=422, detail=result.get("reason") or "The file could not be indexed.")
+
+    sources = await _load_reference_sources(store, [int(result["sourceId"])])
+    embedding_queued = False
+    if result.get("status") == "indexed":
+        brain_status_cache["expiresAt"] = 0.0
+        embedding_queued = _queue_embedding_after_import(2_000, cap=100_000)
+    return {
+        "status": result["status"],
+        "source": _public_source_reference(sources[0]) if sources else None,
+        "sourceId": int(result["sourceId"]),
+        "chunks": result.get("chunks"),
+        "embeddingQueued": embedding_queued,
+    }
 
 
 @app.post("/api/brain/index/drive/start")
@@ -4366,7 +4593,9 @@ async def _run_espi_issuer_lookup_job(portfolio: str = "main") -> None:
         "resolved": 0,
         "errors": [],
         "message": "Looking up issuer names.",
+        "interrupted": False,
     })
+    await _persist_job("espi_issuer", espi_issuer_job)
     try:
         if not store or not espi_sources or not risk:
             espi_issuer_job["message"] = "Issuer lookup cannot start: the brain or the filings module is unavailable."
@@ -4435,6 +4664,7 @@ async def _run_espi_issuer_lookup_job(portfolio: str = "main") -> None:
     finally:
         espi_issuer_job["running"] = False
         espi_issuer_job["finishedAt"] = _utc_now_iso()
+        await _persist_job("espi_issuer", espi_issuer_job)
 
 
 def _queue_espi_issuer_lookup(portfolio: str = "main") -> bool:
@@ -4966,6 +5196,14 @@ async def analyze_company_with_brain(payload: BrainCompanyAnalysisRequest):
     system_prompt_task = asyncio.create_task(_system_prompt_from_store(store))
     _, selected_reference_sources = await reference_sources_task
     _, selected_full_context_sources = await full_context_sources_task
+    attached_ids = _clean_attached_source_ids(payload.attachedSourceIds)
+    attached_sources = await _load_reference_sources(store, attached_ids) if attached_ids else []
+    for source in attached_sources:
+        source["attachedToQuestion"] = True
+    attached_found = {int(source["id"]) for source in attached_sources}
+    selected_full_context_sources = attached_sources + [
+        source for source in selected_full_context_sources if int(source["id"]) not in attached_found
+    ]
     system_prompt = await system_prompt_task
 
     candidate_limit = min(payload.limit * 4, 40)

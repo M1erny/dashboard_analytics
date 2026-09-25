@@ -206,7 +206,7 @@ These are performance caches only. Supabase remains the durable source of Brain 
 Yahoo Finance throttles shared hosting IPs (HTTP 429), and Render's free tier restarts with an empty memory. So the market frames behind `/api/metrics` are also saved to Supabase as one compressed setting per portfolio (`market.snapshot.v1.<portfolio>`, about 1.4 MB), and every metrics response carries a `dataStatus` saying where its data came from:
 
 - `source: "yahoo"` - this process fetched live.
-- `source: "snapshot", stale: false` - served from a snapshot younger than `MARKET_SNAPSHOT_FRESH_SECONDS` (default 3 h); Yahoo was not called.
+- `source: "snapshot", stale: false` - served from a snapshot younger than `MARKET_SNAPSHOT_FRESH_SECONDS` (default 8 h, since GitHub's scheduler delivers only about half of the refresh runs); Yahoo was not called.
 - `source: "snapshot", stale: true` - the live fetch failed and the last good frames were served instead.
 
 The dashboard shows which of those three it is, without a click: a badge beside the update time in the header reads `Live`, `Snapshot <date>`, or `Snapshot <date> (behind)`, its hover text spells out the selection rule, and the status bar carries `LIVE` / `SNAP` / `BEHIND`.
@@ -216,6 +216,26 @@ Note that `stale: true` and "behind" are deliberately different questions. `stal
 When Yahoo throttles the host, the fetch stops at the first 429 and the host leaves Yahoo alone for `YF_RATE_LIMIT_COOLDOWN_SECONDS` (default 10 min) instead of retrying every ticker three times.
 
 **Scheduled refresh.** `.github/workflows/market-snapshot.yml` runs `backend/refresh_market_snapshot.py` every two hours on weekdays (at :23 past the hour, off GitHub's congested top-of-hour slot) from a GitHub runner and writes the snapshot to the same database, so the web host serves fresh data without calling Yahoo itself. It needs one repository secret: `DATABASE_URL`, the same Supabase connection string the backend uses on Render (Settings -> Secrets and variables -> Actions); the workflow passes `--require-remote` so a missing secret fails the run rather than writing to a runner's disk. Run the script by hand the same way, from `backend/`, to refresh the snapshot from your own machine. It reads `backend/.env` like the server does, so a `DATABASE_URL=...` line there makes it a one-command job (and a Task Scheduler / cron entry); a real environment variable still takes precedence. Without `DATABASE_URL` anywhere it writes to the local SQLite store and says so. Trigger it once by hand from the Actions tab after adding the secret; the dashboard picks the snapshot up within five minutes.
+
+## Health
+
+`GET /api/health` answers "is anything wrong right now?" in one payload: an overall status (`ok`, `unknown`, `warn`, `fail`), the issues worst first, and every check with a sentence and, where there is one, the action. Both the dashboard's status bar and the Brain's footer show it as a dot and a word; clicking opens the list, and in the Brain an issue it can fix itself (embedding backlog, Drive sync) carries the button.
+
+| check | what it watches |
+| --- | --- |
+| `market_data` | whether the figures are current, a Yahoo cooldown, a failed live refresh |
+| `snapshot_refresh` | age and writer of the saved snapshot; warns on a weekday when the scheduled refresh has missed its runs |
+| `vector_index` | the halfvec HNSW index (Postgres); a missing index means every semantic search scans the library |
+| `embeddings` | the unembedded backlog, ignored below 2% or while the backfill runs |
+| `drive_sync`, `embedding_job` | last run, errors, and whether a run was interrupted by a restart |
+| `llm` | whether Gemini is configured |
+| `ops_persistence` | whether job state could be saved |
+
+The rules live in `backend/health.py` and do no I/O, so each is tested on plain data (`backend/test_health.py`). Results are cached for 20 s; `?refresh=true` skips the cache.
+
+### Job state survives restarts
+
+Render's free tier sleeps and restarts, and every restart used to reset each job record to "Idle". The Drive sync, the embedding backfill and the ESPI issuer lookup now write their record to the brain store (`ops.state.v1.<job>`) when they start and when they finish, and the backend reads them back at startup. A job that was running when the process died comes back as **interrupted**, with its start time and last progress, instead of looking as though it never ran. The Yahoo rate-limit cooldown is kept the same way, so a restart does not send the first request straight back to the host that just refused it. Per-file result lists are not stored, only their counts. `backend/ops_state.py`.
 
 ## Investment Brain
 
@@ -281,6 +301,13 @@ Main Brain capabilities:
 - Follow-up questions in the same Brain thread.
 - Automatic Google Drive transcript saving after every completed exchange.
 - Source references when Drive metadata is available.
+
+### Attaching files to a question
+
+The composer has three controls. **Attach** puts exact files on the next question: search the library by words, or paste a Google Drive link or file id. A pasted file that is not in the library yet is indexed on the spot (`POST /api/brain/drive/attach`), through the same pipeline the folder sync uses, and it may live anywhere the connected Google account can open, not only in the Brain folder. Attached files are read **in full** for that question, ahead of any pinned files in the shared character budget, and the model is told the investor attached them. They need no embedding to be read; embedding is queued anyway so later questions can find them by meaning. Up to 6 per question; they clear once the question is sent, and come back with it if it fails.
+
+**Context** holds what applies to every answer and changes rarely: reference frameworks, files read in every answer, and the research instructions. **Deep** sends the question to the important-task model.
+
 
 ### Durable conversation transcripts
 

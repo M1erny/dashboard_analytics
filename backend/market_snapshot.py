@@ -25,6 +25,35 @@ def setting_key(portfolio_name: str) -> str:
     return SETTING_PREFIX + str(portfolio_name or "main").strip()
 
 
+# A few hundred bytes describing the snapshot, written next to it. The health view
+# needs "how old is the saved data and who wrote it" on every poll, and decoding
+# the 1.2 MB snapshot to find out would cost more than the answer is worth.
+META_PREFIX = "market.snapshot_meta.v1."
+
+
+def meta_key(portfolio_name: str) -> str:
+    return META_PREFIX + str(portfolio_name or "main").strip()
+
+
+def encode_meta(as_of: str | None, fetched_at: float, writer: str, size_chars: int) -> str:
+    return json.dumps({
+        "asOf": as_of,
+        "fetchedAt": iso_from_epoch(fetched_at),
+        "writer": writer,
+        "sizeChars": int(size_chars),
+    }, separators=(",", ":"))
+
+
+def decode_meta(text: str | None) -> dict | None:
+    if not text:
+        return None
+    try:
+        value = json.loads(text)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def iso_from_epoch(epoch: float | None) -> str | None:
     if not epoch:
         return None

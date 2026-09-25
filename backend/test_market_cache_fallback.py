@@ -317,8 +317,11 @@ def persist_once_per_day(fake):
 store = FakeStore()
 writes = with_fakes([good_frame(), good_frame(), good_frame("2026-01-07")], persist_once_per_day, store=store)
 keys = [k for k, _ in writes]
+snapshot_writes = [k for k in keys if k == "market.snapshot.v1.main"]
+meta_writes = [k for k in keys if k == "market.snapshot_meta.v1.main"]
 check("a good fetch saves the snapshot", len(writes) >= 1 and keys[0] == "market.snapshot.v1.main", str(keys))
-check("the same market date is not saved twice; a new one is", len(writes) == 2, f"{len(writes)} writes")
+check("the same market date is not saved twice; a new one is", len(snapshot_writes) == 2, f"{len(snapshot_writes)} snapshot writes: {keys}")
+check("each snapshot write carries its small metadata record for /api/health", len(meta_writes) == len(snapshot_writes), str(keys))
 
 failing_store = FakeStore(write_raises=True)
 served = with_fakes([good_frame()], lambda fake: server._get_cached_market_data(force=True), store=failing_store)

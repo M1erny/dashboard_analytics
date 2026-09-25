@@ -208,7 +208,12 @@ def main() -> int:
 
     label = getattr(store, "database_label", type(store).__name__)
     store.set_setting(market_snapshot.setting_key(args.portfolio), text)
-    print(f"Saved {market_snapshot.setting_key(args.portfolio)} to {label}.")
+    writer = "github-actions" if os.environ.get("GITHUB_ACTIONS") == "true" else "local"
+    store.set_setting(
+        market_snapshot.meta_key(args.portfolio),
+        market_snapshot.encode_meta(as_of, fetched_at, writer, len(text)),
+    )
+    print(f"Saved {market_snapshot.setting_key(args.portfolio)} to {label} (writer: {writer}).")
     return 0
 
 

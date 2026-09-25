@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { marketDataIsBehind } from '../utils/marketStatus';
+import { HealthIndicator } from './HealthIndicator';
 
 // ─── Lazy-loaded below-the-fold widgets ──────────────────────
 // These are code-split into separate chunks, loaded only when
@@ -315,7 +316,7 @@ const RebalanceHistoryModal = ({ rebalance, open, onClose }: {
  *  the same rule out on hover:
  *
  *    1. this process fetched within the last 5 minutes  -> reuse that
- *    2. a saved snapshot under 3 hours old              -> serve it, skip Yahoo
+ *    2. a saved snapshot under 8 hours old              -> serve it, skip Yahoo
  *    3. otherwise                                        -> ask Yahoo
  *    4. Yahoo failed or is rate-limited                  -> last good data, stale
  */
@@ -359,7 +360,7 @@ const DataSourceBadge: React.FC<{ status?: MarketDataStatus | null }> = ({ statu
         : isStale
             ? `${status.message ?? 'The live refresh failed.'} This snapshot covers the latest close (${status.asOf}), so the figures are current; only the refresh path is degraded. The backend retries on its own.`
             : isSnapshot
-                ? `Served from the saved snapshot${savedFull ? `, fetched ${savedFull}` : ''}. Yahoo Finance was not called: a snapshot under 3 hours old is used as-is, which keeps the host off Yahoo's rate limit. Force Refresh fetches live.`
+                ? `Served from the saved snapshot${savedFull ? `, fetched ${savedFull}` : ''}. Yahoo Finance was not called: a snapshot under 8 hours old is used as-is, which keeps the host off Yahoo's rate limit. Force Refresh fetches live.`
                 : `Fetched live from Yahoo Finance by the backend${savedFull ? ` at ${savedFull}` : ''}.`;
 
     const Icon = isSnapshot ? Database : Radio;
@@ -648,6 +649,7 @@ export const Dashboard: React.FC = () => {
                     <span>{lastUpdated.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
                 <div>
+                    <HealthIndicator url={`${(import.meta.env.VITE_API_URL as string | undefined) || ''}/api/health`} placement="down" />
                     <span>{COST_TIER_OPTIONS.find(option => option.value === costTier)?.label ?? costTier}</span>
                     <span className={isSwitchingTier || dataIsBehind ? 'is-current' : undefined}>
                         {isSwitchingTier ? 'SYNC' : dataIsBehind ? 'BEHIND' : dataFromSnapshot ? 'SNAP' : 'LIVE'}

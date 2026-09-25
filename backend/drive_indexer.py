@@ -637,6 +637,17 @@ class GoogleDriveClient:
 
         return files
 
+    def get_file(self, file_id: str) -> dict[str, Any]:
+        """Metadata for one file by id; raises httpx.HTTPStatusError on 4xx/5xx."""
+        params = {
+            "supportsAllDrives": "true",
+            "fields": "id,name,mimeType,size,md5Checksum,createdTime,modifiedTime,webViewLink,parents,appProperties",
+        }
+        with httpx.Client(timeout=30) as client:
+            response = client.get(f"{DRIVE_API_BASE}/files/{file_id}", headers=self._headers(), params=params)
+            response.raise_for_status()
+            return response.json()
+
     def download_file(self, file: dict[str, Any], *, max_bytes: int | None = None) -> tuple[bytes, str, dict[str, Any]]:
         file_id = file["id"]
         mime_type = str(file.get("mimeType") or "")
@@ -811,6 +822,214 @@ def reconcile_legacy_source_drive_links(
     return linked
 
 
+def _index_one_drive_file(
+    store,
+    client: "GoogleDriveClient",
+    file: dict[str, Any],
+    *,
+    relative_path: str,
+    folder_id: str | None,
+    indexed_at: str,
+    max_bytes: int,
+    max_pdf_pages: int,
+    max_extracted_chars: int,
+    force: bool,
+    file_identity: str,
+    revision_identity: str,
+    existing: dict[str, Any] | None,
+    size: int,
+    extra_metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Download, extract, store and chunk one Drive file; return its result row.
+
+    The folder sync and the attach-one-file path both come through here, so a
+    file attached by link is indexed byte for byte the way a synced one is.
+    """
+    data, downloaded_extension, download_metadata = client.download_file(file, max_bytes=max_bytes)
+
+    file_hash = sha256_bytes(data)
+    extracted_text, extraction_metadata = extract_drive_file_text(
+        data,
+        downloaded_extension,
+        max_pdf_pages=max_pdf_pages,
+        max_extracted_chars=max_extracted_chars,
+    )
+    clean_text = normalize_text(extracted_text)
+    if not clean_text:
+        return {
+            "id": file["id"],
+            "name": file.get("name"),
+            "relativePath": relative_path,
+            "status": "skipped",
+            "reason": "no extractable text",
+            "bytes": len(data),
+        }
+
+    title = str(file.get("name") or file["id"]).rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip()
+    title = (title or str(file.get("name") or file["id"]))[:300]
+    tags = ["google-drive", downloaded_extension.lstrip(".")]
+    metadata = {
+        "sourceType": "google_drive",
+        "fileIdentity": file_identity,
+        "fileHash": file_hash,
+        "driveRevisionIdentity": revision_identity or file_hash,
+        "driveFileId": file["id"],
+        "driveFolderId": folder_id,
+        "fileName": file.get("name"),
+        "relativePath": relative_path,
+        "extension": downloaded_extension,
+        "mimeType": file.get("mimeType"),
+        "bytes": len(data),
+        "driveSize": size or None,
+        "uploadedAt": file.get("createdTime"),
+        "modifiedAt": file.get("modifiedTime"),
+        "indexedAt": indexed_at,
+        "webViewLink": file.get("webViewLink"),
+        "storageMode": "drive_metadata_source_preview_chunks_full_text",
+        "renderSafeLimits": {
+            "maxBytes": max_bytes,
+            "maxPdfPages": max_pdf_pages,
+            "maxExtractedChars": max_extracted_chars,
+        },
+        **download_metadata,
+        **extraction_metadata,
+        **(extra_metadata or {}),
+    }
+    source, changed = store.upsert_file_source(
+        title=title,
+        body=source_preview(file, clean_text),
+        tags=tags,
+        metadata=metadata,
+        force=force,
+    )
+
+    chunks = chunk_text(
+        clean_text,
+        source_title=title,
+        tags=tags,
+        chunk_words=900,
+        overlap_words=120,
+    )
+    for chunk in chunks:
+        chunk_metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
+        chunk["metadata"] = {
+            **chunk_metadata,
+            "fileIdentity": file_identity,
+            "driveFileId": file["id"],
+            "relativePath": relative_path,
+            "webViewLink": file.get("webViewLink"),
+            "sourceHash": file_hash,
+        }
+        chunk["contentHash"] = stable_hash(file_hash, str(chunk["ordinal"]), chunk["body"])
+
+    saved_chunks = store.add_chunks(source["id"], chunks) if changed else []
+    return {
+        "id": file["id"],
+        "name": file.get("name"),
+        "relativePath": relative_path,
+        "status": "indexed",
+        "reason": "updated" if existing else "created",
+        "sourceId": source["id"],
+        "chunks": len(saved_chunks),
+        "bytes": len(data),
+        "webViewLink": file.get("webViewLink"),
+    }
+
+
+
+class DriveFileError(RuntimeError):
+    """A single-file request failed for a reason the caller should show as-is."""
+
+    def __init__(self, status_code: int, message: str):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+_DRIVE_ID_PATTERNS = (
+    re.compile(r"/(?:file|document|spreadsheets|presentation|forms)/(?:u/\d+/)?d/([A-Za-z0-9_-]{20,})"),
+    re.compile(r"[?&]id=([A-Za-z0-9_-]{20,})"),
+    re.compile(r"/folders/([A-Za-z0-9_-]{20,})"),
+)
+_BARE_DRIVE_ID = re.compile(r"^[A-Za-z0-9_-]{20,100}$")
+
+
+def parse_drive_file_id(value: str | None) -> str | None:
+    """Pull a Drive file id out of a share link, an open link, or a bare id."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for pattern in _DRIVE_ID_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return match.group(1)
+    return text if _BARE_DRIVE_ID.match(text) else None
+
+
+def index_single_drive_file(store, file_ref: str, *, force: bool = False) -> dict[str, Any]:
+    """Index exactly one Drive file, named by link or id, wherever it lives.
+
+    Used to attach a document to a question on demand. The file does not have to
+    be inside the Brain folder: the Brain holds drive.readonly, so anything the
+    connected account can open is readable. An unchanged file already in the
+    library is returned as it is rather than re-downloaded.
+    """
+    file_id = parse_drive_file_id(file_ref)
+    if not file_id:
+        raise DriveFileError(400, "That is not a Google Drive file link or id.")
+
+    client = GoogleDriveClient(store=store)
+    try:
+        file = client.get_file(file_id)
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code == 404:
+            raise DriveFileError(404, "Drive has no such file, or it is not shared with the Google account the Brain is connected to.") from exc
+        if code in (401, 403):
+            raise DriveFileError(403, "The Brain's Google account is not allowed to open this file. Share it with that account, or reconnect Drive.") from exc
+        raise DriveFileError(502, f"Drive answered HTTP {code} for this file.") from exc
+
+    if file.get("mimeType") == FOLDER_MIME_TYPE:
+        raise DriveFileError(400, "That link is a folder. Attach a single file, or put the folder under the Brain folder and run Sync Drive.")
+    if is_brain_conversation_transcript(file):
+        raise DriveFileError(400, "That is a saved Brain conversation; transcripts are deliberately kept out of the index.")
+    extension = extension_for_file(file)
+    if not extension or extension not in SUPPORTED_EXTENSIONS:
+        raise DriveFileError(415, f"No text extractor for {file.get('mimeType') or file.get('name')}.")
+
+    max_bytes = max(1024, _env_int("BRAIN_DRIVE_MAX_BYTES", DEFAULT_MAX_BYTES))
+    size = int(file.get("size") or 0)
+    if size and size > max_bytes:
+        raise DriveFileError(413, f"The file is {size:,} bytes, over the {max_bytes:,} byte sync limit (BRAIN_DRIVE_MAX_BYTES).")
+
+    file_identity = f"google-drive:{file['id']}"
+    revision_identity = str(file.get("md5Checksum") or file.get("modifiedTime") or "")
+    existing = store.get_file_source_by_identity(file_identity)
+    existing_revision = (existing or {}).get("metadata", {}).get("driveRevisionIdentity") if existing else None
+    if existing and existing_revision == revision_identity and not force:
+        return {
+            "id": file["id"], "name": file.get("name"), "status": "unchanged",
+            "sourceId": existing["id"], "webViewLink": file.get("webViewLink"), "chunks": None,
+        }
+
+    parents = file.get("parents") or []
+    return _index_one_drive_file(
+        store,
+        client,
+        file,
+        relative_path=str(file.get("name") or file["id"]),
+        folder_id=parents[0] if parents else None,
+        indexed_at=datetime.now(timezone.utc).isoformat(),
+        max_bytes=max_bytes,
+        max_pdf_pages=max(0, _env_int("BRAIN_DRIVE_MAX_PDF_PAGES", DEFAULT_MAX_PDF_PAGES) or 0),
+        max_extracted_chars=max(0, _env_int("BRAIN_DRIVE_MAX_EXTRACTED_CHARS", DEFAULT_MAX_EXTRACTED_CHARS) or 0),
+        force=force,
+        file_identity=file_identity,
+        revision_identity=revision_identity,
+        existing=existing,
+        size=size,
+        extra_metadata={"attachedDirectly": True},
+    )
+
 def index_drive_folder(
     store,
     *,
@@ -961,96 +1180,22 @@ def index_drive_folder(
                 continue
 
             changed_files_started += 1
-            data, downloaded_extension, download_metadata = client.download_file(file, max_bytes=max_bytes)
-
-            file_hash = sha256_bytes(data)
-            extracted_text, extraction_metadata = extract_drive_file_text(
-                data,
-                downloaded_extension,
+            results.append(_index_one_drive_file(
+                store,
+                client,
+                file,
+                relative_path=relative_path,
+                folder_id=clean_folder_id,
+                indexed_at=indexed_at,
+                max_bytes=max_bytes,
                 max_pdf_pages=max_pdf_pages,
                 max_extracted_chars=max_extracted_chars,
-            )
-            clean_text = normalize_text(extracted_text)
-            if not clean_text:
-                results.append({
-                    "id": file["id"],
-                    "name": file.get("name"),
-                    "relativePath": relative_path,
-                    "status": "skipped",
-                    "reason": "no extractable text",
-                    "bytes": len(data),
-                })
-                emit_progress(relative_path)
-                continue
-
-            title = str(file.get("name") or file["id"]).rsplit(".", 1)[0].replace("_", " ").replace("-", " ").strip()
-            title = (title or str(file.get("name") or file["id"]))[:300]
-            tags = ["google-drive", downloaded_extension.lstrip(".")]
-            metadata = {
-                "sourceType": "google_drive",
-                "fileIdentity": file_identity,
-                "fileHash": file_hash,
-                "driveRevisionIdentity": revision_identity or file_hash,
-                "driveFileId": file["id"],
-                "driveFolderId": clean_folder_id,
-                "fileName": file.get("name"),
-                "relativePath": relative_path,
-                "extension": downloaded_extension,
-                "mimeType": file.get("mimeType"),
-                "bytes": len(data),
-                "driveSize": size or None,
-                "uploadedAt": file.get("createdTime"),
-                "modifiedAt": file.get("modifiedTime"),
-                "indexedAt": indexed_at,
-                "webViewLink": file.get("webViewLink"),
-                "storageMode": "drive_metadata_source_preview_chunks_full_text",
-                "renderSafeLimits": {
-                    "maxBytes": max_bytes,
-                    "maxPdfPages": max_pdf_pages,
-                    "maxExtractedChars": max_extracted_chars,
-                },
-                **download_metadata,
-                **extraction_metadata,
-            }
-            source, changed = store.upsert_file_source(
-                title=title,
-                body=source_preview(file, clean_text),
-                tags=tags,
-                metadata=metadata,
                 force=force,
-            )
-
-            chunks = chunk_text(
-                clean_text,
-                source_title=title,
-                tags=tags,
-                chunk_words=900,
-                overlap_words=120,
-            )
-            for chunk in chunks:
-                chunk_metadata = chunk.get("metadata") if isinstance(chunk.get("metadata"), dict) else {}
-                chunk["metadata"] = {
-                    **chunk_metadata,
-                    "fileIdentity": file_identity,
-                    "driveFileId": file["id"],
-                    "relativePath": relative_path,
-                    "webViewLink": file.get("webViewLink"),
-                    "sourceHash": file_hash,
-                }
-                chunk["contentHash"] = stable_hash(file_hash, str(chunk["ordinal"]), chunk["body"])
-
-            saved_chunks = store.add_chunks(source["id"], chunks) if changed else []
-            results.append({
-                "id": file["id"],
-                "name": file.get("name"),
-                "relativePath": relative_path,
-                "status": "indexed",
-                "reason": "updated" if existing else "created",
-                "sourceId": source["id"],
-                "chunks": len(saved_chunks),
-                "bytes": len(data),
-                "webViewLink": file.get("webViewLink"),
-            })
+                file_identity=file_identity,
+                revision_identity=revision_identity,
+                existing=existing,
+                size=size,
+            ))
             emit_progress(relative_path)
         except Exception as exc:
             if "exceeds maxBytes" in str(exc):
