@@ -1206,6 +1206,12 @@ export const InvestmentBrainChat: React.FC = () => {
         ].filter(Boolean).join(' ').toLowerCase().includes(query));
     }, [availableFullContextSources, fullContextFilter]);
 
+    // Remove one standing source without opening the picker. Uses the same save
+    // paths as the pickers, so the server's answer stays the source of truth.
+    const idsOf = (sources: SourceReference[]) => sources.flatMap(source => typeof source.id === 'number' ? [source.id] : []);
+    const unpinFullContextSource = (sourceId: number) => void saveFullContextSet(idsOf(fullContextSources).filter(id => id !== sourceId));
+    const unpinReferenceSource = (sourceId: number) => void saveReferenceSet(idsOf(referenceSources).filter(id => id !== sourceId));
+
     const sendQuestion = async () => {
         const question = draft.trim();
         if (!ready || !question || isAsking) return;
@@ -2243,13 +2249,13 @@ export const InvestmentBrainChat: React.FC = () => {
                                         <div role="menu" aria-label="Standing context" className="absolute bottom-full left-2 z-40 mb-1 w-[min(88vw,340px)] border border-white/[0.12] bg-[#080d08] p-1 shadow-2xl">
                                             <p className="px-3 pb-1 pt-2 text-[10px] uppercase tracking-[0.1em] text-slate-500">Used in every answer</p>
                                             {[
-                                                { key: 'reference', icon: BookOpenCheck, label: 'Reference frameworks', value: referenceSources.length ? `${referenceSources.length} selected` : 'none', hint: referenceSources.map(source => sourceName(source)).join(' · '), run: () => void openReferencePicker() },
-                                                { key: 'full', icon: FileSearch, label: 'Files read in every answer', value: fullContextSources.length ? `${fullContextSources.length} pinned` : 'none', hint: fullContextSources.map(source => sourceName(source)).join(' · '), run: () => void openFullContextPicker() },
-                                                { key: 'prompt', icon: Sparkles, label: 'Research instructions', value: hasCustomPrompt ? 'custom' : 'default', hint: hasCustomPrompt ? excerpt(systemPrompt, 90) : '', run: () => void openSystemPrompt() },
-                                                { key: 'commands', icon: Command, label: 'All commands', value: `${modKeyLabel}K`, hint: '', run: () => { setPaletteQuery(''); setIsPaletteOpen(true); } },
+                                                { key: 'reference', icon: BookOpenCheck, label: 'Reference frameworks', value: referenceSources.length ? `${referenceSources.length} selected · edit` : 'none · add', hint: '', sources: referenceSources, unpin: unpinReferenceSource, run: () => void openReferencePicker() },
+                                                { key: 'full', icon: FileSearch, label: 'Files read in every answer', value: fullContextSources.length ? `${fullContextSources.length} pinned · edit` : 'none · add', hint: '', sources: fullContextSources, unpin: unpinFullContextSource, run: () => void openFullContextPicker() },
+                                                { key: 'prompt', icon: Sparkles, label: 'Research instructions', value: hasCustomPrompt ? 'custom' : 'default', hint: hasCustomPrompt ? excerpt(systemPrompt, 90) : '', sources: [] as SourceReference[], unpin: undefined, run: () => void openSystemPrompt() },
+                                                { key: 'commands', icon: Command, label: 'All commands', value: `${modKeyLabel}K`, hint: '', sources: [] as SourceReference[], unpin: undefined, run: () => { setPaletteQuery(''); setIsPaletteOpen(true); } },
                                             ].map(item => (
+                                                <div key={item.key}>
                                                 <button
-                                                    key={item.key}
                                                     type="button"
                                                     role="menuitem"
                                                     onClick={() => { setIsContextMenuOpen(false); item.run(); }}
@@ -2264,13 +2270,39 @@ export const InvestmentBrainChat: React.FC = () => {
                                                         {item.hint && <span className="mt-0.5 block truncate text-[11px] text-slate-500">{item.hint}</span>}
                                                     </span>
                                                 </button>
+                                                {/* Every source listed by name, each removable here: a single
+                                                    truncated line hid which files were pinned at all. */}
+                                                {item.sources.length > 0 && item.unpin && (
+                                                    <ul className="mb-1 ml-9 mr-2 space-y-0.5">
+                                                        {item.sources.map(source => (
+                                                            <li key={source.id} className="flex items-center gap-2 text-[11px] text-slate-300">
+                                                                <span className="min-w-0 flex-1 truncate" title={sourceName(source)}>{sourceName(source)}</span>
+                                                                <button type="button" onClick={() => typeof source.id === 'number' && item.unpin?.(source.id)} disabled={isFullContextSaving || isReferenceSaving} className="shrink-0 p-0.5 text-slate-500 hover:text-rose-300 disabled:opacity-40" aria-label={`Stop using ${sourceName(source)} in every answer`}><X className="h-3 w-3" /></button>
+                                                            </li>
+                                                        ))}
+                                                    </ul>
+                                                )}
+                                                </div>
                                             ))}
                                         </div>
                                     </>
                                 )}
                             </div>
+                            {(referenceSources.length > 0 || fullContextSources.length > 0) && (
+                                <div className="flex flex-wrap items-center gap-1.5 border-b border-white/[0.06] px-3 py-2" aria-label="Used in every answer">
+                                    <span className="text-[10px] uppercase tracking-[0.08em] text-slate-500">Every answer</span>
+                                    {[...fullContextSources.map(source => ({ source, kind: 'full' as const })), ...referenceSources.map(source => ({ source, kind: 'reference' as const }))].map(({ source, kind }) => (
+                                        <span key={`${kind}-${source.id}`} className="inline-flex max-w-full items-center gap-1 border border-violet-400/25 bg-violet-400/[0.05] px-2 py-0.5 text-[11px] text-violet-100/90" title={kind === 'full' ? 'Read in full in every answer' : 'Reference framework in every answer'}>
+                                            {kind === 'full' ? <FileSearch className="h-3 w-3 shrink-0" /> : <BookOpenCheck className="h-3 w-3 shrink-0" />}
+                                            <span className="truncate">{sourceName(source)}</span>
+                                            <button type="button" disabled={isFullContextSaving || isReferenceSaving} onClick={() => { if (typeof source.id !== 'number') return; if (kind === 'full') unpinFullContextSource(source.id); else unpinReferenceSource(source.id); }} className="shrink-0 text-violet-300/60 hover:text-white disabled:opacity-40" aria-label={`Stop using ${sourceName(source)} in every answer`}><X className="h-3 w-3" /></button>
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
                             {attachments.length > 0 && (
-                                <div className="flex flex-wrap gap-1.5 border-b border-white/[0.06] px-3 py-2" aria-label="Attached to this question">
+                                <div className="flex flex-wrap items-center gap-1.5 border-b border-white/[0.06] px-3 py-2" aria-label="Attached to this question">
+                                    <span className="text-[10px] uppercase tracking-[0.08em] text-slate-500">This question</span>
                                     {attachments.map(source => (
                                         <span key={source.id} className="inline-flex max-w-full items-center gap-1 border border-cyan-500/30 bg-cyan-500/[0.06] px-2 py-0.5 text-[11px] text-cyan-100">
                                             <FileText className="h-3 w-3 shrink-0" />
