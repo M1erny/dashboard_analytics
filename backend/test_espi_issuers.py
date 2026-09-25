@@ -125,7 +125,12 @@ def counting_resolver(tickers):
 server.espi_issuer_job.update({"running": False})
 with Patched(risk=FakeRisk(), brain_store=store, _resolve_issuer_names_from_market=counting_resolver):
     run(server._run_espi_issuer_lookup_job("main"))
-check("the lookup job refuses to run on an unreadable cache", store.writes == [], store.writes)
+# The job records its own lifecycle under ops.state.*; what must not happen is a
+# write to the issuer data it could not read.
+data_writes = [w for w in store.writes if not str(w[0]).startswith("ops.state.")]
+check("the lookup job refuses to run on an unreadable cache", data_writes == [], data_writes)
+check("and records that it skipped, so the reason survives a restart",
+      any(str(k).startswith("ops.state.v1.espi_issuer") and "could not be read" in v for k, v in store.writes))
 check("and does not call the provider either", resolver_calls == [], resolver_calls)
 check("the stored map is untouched",
       json.loads(store.settings[server.ESPI_ISSUER_NAMES_SETTING]) == TEN_NAMES)
